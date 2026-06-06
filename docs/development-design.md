@@ -133,6 +133,7 @@ Initial commands:
 - `taskfence task <task-id> --workspace <workspace>`
 - `taskfence inputs <task-id> --workspace <workspace>`
 - `taskfence artifacts <task-id> --workspace <workspace>`
+- `taskfence compare <left-task-id> <right-task-id> --workspace <workspace>`
 - `taskfence status <task-id> --workspace <workspace>`
 - `taskfence events <task-id> --workspace <workspace>`
 - `taskfence logs <task-id>`
@@ -462,9 +463,9 @@ or Web UI queries require structured persistence.
 
 Current filesystem-backed state can read reports, structured event summaries,
 captured diffs, captured logs, resolved task inputs, artifact manifests, and
-workspace-local task summaries from `.taskfence/tasks`. Task summaries use structured
-`task.resolved.json` and `events.jsonl` evidence and do not infer status from
-rendered report text.
+workspace-local task summaries and comparisons from `.taskfence/tasks`. Task
+summaries use structured `task.resolved.json` and `events.jsonl` evidence and do
+not infer status from rendered report text.
 
 Responsibilities:
 

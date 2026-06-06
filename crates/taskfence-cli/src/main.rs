@@ -100,6 +100,16 @@ enum Command {
         #[arg(long, default_value = ".")]
         workspace: Utf8PathBuf,
     },
+    /// Compare two locally recorded task summaries.
+    Compare {
+        /// Left task ID to compare.
+        left_task_id: String,
+        /// Right task ID to compare.
+        right_task_id: String,
+        /// Workspace that owns the .taskfence task evidence directory.
+        #[arg(long, default_value = ".")]
+        workspace: Utf8PathBuf,
+    },
     /// Show the latest locally recorded task status.
     Status {
         /// Task ID to query.
@@ -196,6 +206,11 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
         Command::Task { task_id, workspace } => show_task(workspace, task_id),
         Command::Inputs { task_id, workspace } => show_inputs(workspace, task_id),
         Command::Artifacts { task_id, workspace } => show_artifacts(workspace, task_id),
+        Command::Compare {
+            left_task_id,
+            right_task_id,
+            workspace,
+        } => show_compare(workspace, left_task_id, right_task_id),
         Command::Status { task_id, workspace } => show_status(workspace, task_id),
         Command::Events { task_id, workspace } => show_events(workspace, task_id),
         Command::Approvals { workspace } => show_approvals(workspace),
@@ -392,6 +407,16 @@ fn show_artifacts(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Re
     Ok(())
 }
 
+fn show_compare(
+    workspace: Utf8PathBuf,
+    left_task_id: String,
+    right_task_id: String,
+) -> taskfence_core::Result<()> {
+    let text = compare_text(workspace, &TaskId(left_task_id), &TaskId(right_task_id))?;
+    print!("{text}");
+    Ok(())
+}
+
 fn show_status(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<()> {
     let text = status_text(workspace, &TaskId(task_id))?;
     print!("{text}");
@@ -478,6 +503,17 @@ fn artifacts_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::R
         task_id,
         &store.read_artifacts(task_id)?,
     ))
+}
+
+fn compare_text(
+    workspace: Utf8PathBuf,
+    left_task_id: &TaskId,
+    right_task_id: &TaskId,
+) -> taskfence_core::Result<String> {
+    let store = LocalTaskEvidenceStore::new(workspace);
+    let left = store.read_task_summary(left_task_id)?;
+    let right = store.read_task_summary(right_task_id)?;
+    Ok(render_task_comparison(&left, &right))
 }
 
 fn status_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Result<String> {
@@ -881,6 +917,60 @@ fn render_task_artifacts(task_id: &TaskId, artifacts: &TaskArtifacts) -> String 
     rendered
 }
 
+fn render_task_comparison(left: &TaskSummary, right: &TaskSummary) -> String {
+    let mut rendered = String::new();
+    rendered.push_str("Task comparison\n");
+    rendered.push_str("FIELD\tLEFT\tRIGHT\n");
+    push_comparison_row(&mut rendered, "task", &left.task_id.0, &right.task_id.0);
+    push_comparison_row(
+        &mut rendered,
+        "status",
+        &task_status_text(left),
+        &task_status_text(right),
+    );
+    push_comparison_row(
+        &mut rendered,
+        "goal",
+        left.goal.as_deref().unwrap_or("-"),
+        right.goal.as_deref().unwrap_or("-"),
+    );
+    push_comparison_row(
+        &mut rendered,
+        "artifacts",
+        &artifact_flags(left),
+        &artifact_flags(right),
+    );
+    push_comparison_row(
+        &mut rendered,
+        "warnings",
+        &left.warnings.len().to_string(),
+        &right.warnings.len().to_string(),
+    );
+    push_comparison_row(
+        &mut rendered,
+        "evidence",
+        left.task_dir.as_str(),
+        right.task_dir.as_str(),
+    );
+    rendered
+}
+
+fn push_comparison_row(rendered: &mut String, field: &str, left: &str, right: &str) {
+    rendered.push_str(field);
+    rendered.push('\t');
+    rendered.push_str(&compact_cell(left));
+    rendered.push('\t');
+    rendered.push_str(&compact_cell(right));
+    rendered.push('\n');
+}
+
+fn task_status_text(task: &TaskSummary) -> String {
+    task.status
+        .as_ref()
+        .map(|status| format!("{status:?}"))
+        .unwrap_or_else(|| "-".into())
+}
+
 fn artifact_flags(task: &TaskSummary) -> String {
     let mut flags = Vec::new();
     if task.has_report {
@@ -1245,6 +1335,50 @@ mod tests {
                 assert_eq!(workspace, Utf8PathBuf::from("repo"));
             }
             other => panic!("expected artifacts command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_compare_task_ids() {
+        let cli = Cli::try_parse_from(["taskfence", "compare", "left-task", "right-task"]).unwrap();
+
+        match cli.command {
+            Command::Compare {
+                left_task_id,
+                right_task_id,
+                workspace,
+            } => {
+                assert_eq!(left_task_id, "left-task");
+                assert_eq!(right_task_id, "right-task");
+                assert_eq!(workspace, Utf8PathBuf::from("."));
+            }
+            other => panic!("expected compare command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_compare_workspace() {
+        let cli = Cli::try_parse_from([
+            "taskfence",
+            "compare",
+            "left-task",
+            "right-task",
+            "--workspace",
+            "repo",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Compare {
+                left_task_id,
+                right_task_id,
+                workspace,
+            } => {
+                assert_eq!(left_task_id, "left-task");
+                assert_eq!(right_task_id, "right-task");
+                assert_eq!(workspace, Utf8PathBuf::from("repo"));
+            }
+            other => panic!("expected compare command, got {other:?}"),
         }
     }
 
@@ -1753,6 +1887,57 @@ mod tests {
     }
 
     #[test]
+    fn compare_command_reads_local_task_summaries() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let left_task_file = Utf8PathBuf::from_path_buf(temp.path().join("left.yaml")).unwrap();
+        fs::write(
+            &left_task_file,
+            task_yaml("compare-left", &workspace, "echo ok"),
+        )
+        .unwrap();
+        let right_task_file = Utf8PathBuf::from_path_buf(temp.path().join("right.yaml")).unwrap();
+        fs::write(
+            &right_task_file,
+            task_yaml("compare-right", &workspace, "echo ok"),
+        )
+        .unwrap();
+
+        run_task_with_runner(
+            left_task_file,
+            &FakeRunner::succeeding(),
+            RunApprovalMode::FailClosed,
+        )
+        .unwrap();
+        let right_err = run_task_with_runner(
+            right_task_file,
+            &FakeRunner::failing(7),
+            RunApprovalMode::FailClosed,
+        )
+        .unwrap_err();
+        assert!(matches!(right_err, TaskFenceError::Runner(_)));
+
+        let text = compare_text(
+            workspace,
+            &TaskId("compare-left".into()),
+            &TaskId("compare-right".into()),
+        )
+        .unwrap();
+
+        assert!(text.contains("Task comparison\n"));
+        assert!(text.contains("FIELD\tLEFT\tRIGHT\n"));
+        assert!(text.contains("task\tcompare-left\tcompare-right\n"));
+        assert!(text.contains("status\tSucceeded\tFailed\n"));
+        assert!(text.contains("goal\tCLI test\tCLI test\n"));
+        assert!(text.contains("artifacts\treport,diff\treport,diff\n"));
+        assert!(text.contains("warnings\t0\t0\n"));
+        assert!(text.contains(".taskfence/tasks/compare-left"));
+        assert!(text.contains(".taskfence/tasks/compare-right"));
+        assert!(!text.contains("# Task Report"));
+    }
+
+    #[test]
     fn status_command_reads_local_task_status() {
         let temp = tempfile::tempdir().unwrap();
         let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
@@ -1959,6 +2144,23 @@ mod tests {
         let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
 
         let err = artifacts_text(workspace, &TaskId("missing".into())).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("directory not found"))
+        );
+    }
+
+    #[test]
+    fn compare_command_surfaces_missing_task_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+
+        let err = compare_text(
+            workspace,
+            &TaskId("missing-left".into()),
+            &TaskId("missing-right".into()),
+        )
+        .unwrap_err();
 
         assert!(
             matches!(err, TaskFenceError::State(message) if message.contains("directory not found"))

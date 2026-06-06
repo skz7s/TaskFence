@@ -77,6 +77,9 @@ Initial commands:
 - `taskfence artifacts <task-id> --workspace <workspace>` lists known local
   evidence files and immediate custom artifact files without reading their
   contents or traversing artifact subdirectories.
+- `taskfence compare <left-task-id> <right-task-id> --workspace <workspace>`
+  compares two local task summaries from structured evidence without reading
+  report text or artifact contents.
 - `taskfence status <task-id> --workspace <workspace>` reads the latest
   structured local task status from task evidence.
 - `taskfence events <task-id> --workspace <workspace>` reads a structured local
@@ -284,10 +287,11 @@ Current local artifacts are written under `.taskfence/tasks/<task-id>/` in the
 task workspace and include the resolved task JSON, JSONL audit events,
 stdout/stderr logs when present, a diff artifact, and a Markdown report. The
 local CLI can list workspace-local task summaries and read structured event
-summaries, resolved task inputs, artifact manifests, latest task statuses,
-captured diffs, generated reports, or captured logs from that workspace-local
-artifact directory, but it does not yet provide cross-workspace indexing, Web UI
-queries, replay execution, or SQLite-backed state.
+summaries, resolved task inputs, artifact manifests, task summary comparisons,
+latest task statuses, captured diffs, generated reports, or captured logs from
+that workspace-local artifact directory, but it does not yet provide
+cross-workspace indexing, Web UI queries, replay execution, or SQLite-backed
+state.
 
 ## Security Boundary
 
