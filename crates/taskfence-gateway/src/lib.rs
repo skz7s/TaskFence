@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use taskfence_core::{
-    Action, ActionDecision, AuditEvent, AuditLogger, PolicyEngine, RedactedValue, ResolvedTask,
-    TaskFenceError, ToolAction,
+    Action, ActionDecision, ApprovalDecision, ApprovalEngine, ApprovalRecord, AuditEvent,
+    AuditLogger, PolicyEngine, RedactedValue, ResolvedTask, TaskFenceError, ToolAction,
 };
 use time::OffsetDateTime;
 
@@ -10,11 +10,13 @@ use time::OffsetDateTime;
 pub struct GatewayMediation {
     pub action: ToolAction,
     pub decision: ActionDecision,
+    pub approval: Option<ApprovalRecord>,
 }
 
 pub struct GatewayMediator<'a> {
     policy: &'a dyn PolicyEngine,
     audit: &'a dyn AuditLogger,
+    approval: Option<&'a dyn ApprovalEngine>,
     supported_protocols: BTreeSet<String>,
 }
 
@@ -23,8 +25,14 @@ impl<'a> GatewayMediator<'a> {
         Self {
             policy,
             audit,
+            approval: None,
             supported_protocols: BTreeSet::from(["mcp".into()]),
         }
+    }
+
+    pub fn with_approval(mut self, approval: &'a dyn ApprovalEngine) -> Self {
+        self.approval = Some(approval);
+        self
     }
 
     pub fn with_supported_protocols<I, S>(mut self, protocols: I) -> Self
@@ -61,11 +69,50 @@ impl<'a> GatewayMediator<'a> {
         self.audit.record(AuditEvent::PolicyDecision {
             task_id: task.id.clone(),
             at: OffsetDateTime::now_utc(),
-            action: wrapped,
+            action: wrapped.clone(),
             decision: decision.clone(),
         })?;
 
-        Ok(GatewayMediation { action, decision })
+        let approval = match decision {
+            ActionDecision::Allow { .. } | ActionDecision::Deny { .. } => None,
+            ActionDecision::RequireApproval { .. } => match self.approval {
+                Some(_) => Some(self.request_tool_approval(task, wrapped, decision.clone())?),
+                // Policy-only mediation is still useful for evidence and compatibility.
+                None => None,
+            },
+        };
+
+        Ok(GatewayMediation {
+            action,
+            decision,
+            approval,
+        })
+    }
+
+    fn request_tool_approval(
+        &self,
+        task: &ResolvedTask,
+        action: Action,
+        decision: ActionDecision,
+    ) -> taskfence_core::Result<ApprovalRecord> {
+        let approval = self.approval.ok_or_else(|| {
+            TaskFenceError::Approval("gateway approval engine is not configured".into())
+        })?;
+        let requested = approval.request(task, action, decision)?;
+        self.audit.record(AuditEvent::ApprovalRequested {
+            record: requested.clone(),
+        })?;
+        let resolved = approval.wait(&requested.id)?;
+        self.audit.record(AuditEvent::ApprovalResolved {
+            record: resolved.clone(),
+        })?;
+
+        match resolved.decision {
+            Some(ApprovalDecision::Approved) => Ok(resolved),
+            Some(ApprovalDecision::Denied) | Some(ApprovalDecision::TimedOut) | None => Err(
+                TaskFenceError::Approval("gateway tool approval denied or timed out".into()),
+            ),
+        }
     }
 }
 
@@ -114,8 +161,8 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
     use taskfence_core::{
-        AgentConfig, AgentKind, ApprovalConfig, AuditConfig, LimitConfig, PermissionConfig,
-        SandboxConfig, SandboxKind, SecretConfig, TaskId, ToolPermissions,
+        AgentConfig, AgentKind, ApprovalConfig, ApprovalId, AuditConfig, LimitConfig,
+        PermissionConfig, SandboxConfig, SandboxKind, SecretConfig, TaskId, ToolPermissions,
     };
     use taskfence_policy::BuiltInPolicyEngine;
 
@@ -154,6 +201,52 @@ mod tests {
         fn record(&self, event: AuditEvent) -> taskfence_core::Result<()> {
             self.events.lock().unwrap().push(event);
             Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct StaticApproval {
+        decision: ApprovalDecision,
+        requested: Mutex<Vec<ApprovalRecord>>,
+    }
+
+    impl StaticApproval {
+        fn new(decision: ApprovalDecision) -> Self {
+            Self {
+                decision,
+                requested: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl ApprovalEngine for StaticApproval {
+        fn request(
+            &self,
+            task: &ResolvedTask,
+            action: Action,
+            policy_decision: ActionDecision,
+        ) -> taskfence_core::Result<ApprovalRecord> {
+            let record = ApprovalRecord {
+                id: ApprovalId("approval-tool-1".into()),
+                task_id: task.id.clone(),
+                actor: "gateway-test".into(),
+                source: Some("gateway".into()),
+                requested_at: OffsetDateTime::now_utc(),
+                resolved_at: None,
+                action,
+                policy_decision,
+                decision: None,
+            };
+            self.requested.lock().unwrap().push(record.clone());
+            Ok(record)
+        }
+
+        fn wait(&self, approval_id: &ApprovalId) -> taskfence_core::Result<ApprovalRecord> {
+            let mut record = self.requested.lock().unwrap()[0].clone();
+            record.id = approval_id.clone();
+            record.resolved_at = Some(OffsetDateTime::now_utc());
+            record.decision = Some(self.decision.clone());
+            Ok(record)
         }
     }
 
@@ -221,6 +314,7 @@ mod tests {
         assert_eq!(result.action.tool, "github");
         assert_eq!(result.action.operation, "create_pr");
         assert!(result.action.parameters.contains_key("title"));
+        assert!(result.approval.is_none());
 
         let seen = policy.seen_actions.lock().unwrap();
         assert_eq!(seen.len(), 1);
@@ -249,6 +343,7 @@ mod tests {
             .unwrap();
 
         assert!(matches!(result.decision, ActionDecision::Deny { .. }));
+        assert!(result.approval.is_none());
     }
 
     #[test]
@@ -274,6 +369,7 @@ mod tests {
                 ..
             } if approval_kind == "tool_call"
         ));
+        assert!(result.approval.is_none());
         let events = audit.events.lock().unwrap();
         assert_eq!(events.len(), 1);
         assert!(matches!(
@@ -283,6 +379,95 @@ mod tests {
                 decision: ActionDecision::RequireApproval { .. },
                 ..
             }) if action.tool == "github" && action.operation == "create_pr"
+        ));
+    }
+
+    #[test]
+    fn approved_tool_call_records_approval_events_without_execution() {
+        let policy = BuiltInPolicyEngine;
+        let approval = StaticApproval::new(ApprovalDecision::Approved);
+        let audit = RecordingAudit::default();
+        let mediator = GatewayMediator::new(&policy, &audit).with_approval(&approval);
+        let mut task = task();
+        task.permissions.tools.approval_required = vec!["github.create_pr".into()];
+
+        let result = mediator
+            .mediate_tool_action(&task, tool_action("mcp"))
+            .unwrap();
+
+        assert!(matches!(
+            result.decision,
+            ActionDecision::RequireApproval { .. }
+        ));
+        assert!(matches!(
+            result.approval,
+            Some(ApprovalRecord {
+                decision: Some(ApprovalDecision::Approved),
+                ..
+            })
+        ));
+        let events = audit.events.lock().unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(matches!(
+            events.as_slice(),
+            [
+                AuditEvent::PolicyDecision {
+                    action: Action::ToolCall(_),
+                    decision: ActionDecision::RequireApproval { .. },
+                    ..
+                },
+                AuditEvent::ApprovalRequested { record: requested },
+                AuditEvent::ApprovalResolved { record: resolved },
+            ] if requested.decision.is_none()
+                && resolved.decision == Some(ApprovalDecision::Approved)
+        ));
+    }
+
+    #[test]
+    fn denied_tool_approval_fails_closed_after_audit_resolution() {
+        let policy = BuiltInPolicyEngine;
+        let approval = StaticApproval::new(ApprovalDecision::Denied);
+        let audit = RecordingAudit::default();
+        let mediator = GatewayMediator::new(&policy, &audit).with_approval(&approval);
+        let mut task = task();
+        task.permissions.tools.approval_required = vec!["github.create_pr".into()];
+
+        let err = mediator
+            .mediate_tool_action(&task, tool_action("mcp"))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            TaskFenceError::Approval(message) if message.contains("denied or timed out")
+        ));
+        let events = audit.events.lock().unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(matches!(
+            events.last(),
+            Some(AuditEvent::ApprovalResolved { record })
+                if record.decision == Some(ApprovalDecision::Denied)
+        ));
+    }
+
+    #[test]
+    fn timed_out_tool_approval_fails_closed_after_audit_resolution() {
+        let policy = BuiltInPolicyEngine;
+        let approval = StaticApproval::new(ApprovalDecision::TimedOut);
+        let audit = RecordingAudit::default();
+        let mediator = GatewayMediator::new(&policy, &audit).with_approval(&approval);
+        let mut task = task();
+        task.permissions.tools.approval_required = vec!["github.create_pr".into()];
+
+        let err = mediator
+            .mediate_tool_action(&task, tool_action("mcp"))
+            .unwrap_err();
+
+        assert!(matches!(err, TaskFenceError::Approval(_)));
+        let events = audit.events.lock().unwrap();
+        assert!(matches!(
+            events.last(),
+            Some(AuditEvent::ApprovalResolved { record })
+                if record.decision == Some(ApprovalDecision::TimedOut)
         ));
     }
 

@@ -98,9 +98,10 @@ approval during `run` is implemented, as is an explicit workspace-local
 external approval mode through `taskfence approve` and `taskfence deny`.
 Denied command and approval denial evidence/reporting is implemented for local
 pre-run decisions; configured tool-call policy decisions are covered through
-typed gateway mediation and structured report evidence. Remaining Phase 2 work
-is observing or mediating real agent tool actions through an enforcing gateway
-or wrapper path.
+typed gateway mediation and structured report evidence, including optional
+approval request/resolution records for approval-required tool calls. Remaining
+Phase 2 work is observing or mediating real agent tool actions through an
+enforcing gateway or wrapper path.
 
 Minimum demo:
 
@@ -128,6 +129,9 @@ Current contract coverage before production gateway execution:
   `permissions.tools.approval_required`, and `permissions.tools.deny`
 - typed gateway mediation normalizes supported `mcp` tool actions, evaluates
   policy, and writes structured `PolicyDecision` audit events
+- when an approval engine is explicitly attached, approval-required tool calls
+  write `ApprovalRequested` / `ApprovalResolved` audit events and fail closed
+  on denial or timeout
 - reports render tool-call decisions, approvals, and denied tool actions from
   structured audit events without rendering raw parameter values
 
