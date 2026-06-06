@@ -16,6 +16,7 @@ const STDOUT_FILE: &str = "stdout.log";
 const STDERR_FILE: &str = "stderr.log";
 const DIFF_FILE: &str = "diff.patch";
 const REPORT_FILE: &str = "report.md";
+const ARTIFACTS_DIR: &str = "artifacts";
 
 #[derive(Debug, Default)]
 pub struct InMemoryStateStore {
@@ -90,6 +91,26 @@ pub struct TaskInputs {
     pub path: Utf8PathBuf,
     pub task: ResolvedTask,
     pub contents: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TaskArtifactKind {
+    Evidence,
+    Artifact,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskArtifactFile {
+    pub kind: TaskArtifactKind,
+    pub relative_path: Utf8PathBuf,
+    pub path: Utf8PathBuf,
+    pub size_bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskArtifacts {
+    pub task_dir: Utf8PathBuf,
+    pub files: Vec<TaskArtifactFile>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -216,6 +237,55 @@ impl LocalTaskEvidenceStore {
             task,
             contents,
         })
+    }
+
+    pub fn read_artifacts(&self, task_id: &TaskId) -> taskfence_core::Result<TaskArtifacts> {
+        let task_dir = self.task_dir(task_id)?;
+        ensure_task_dir(task_id, &task_dir)?;
+        let mut files = Vec::new();
+
+        for file_name in [
+            RESOLVED_TASK_FILE,
+            EVENTS_FILE,
+            STDOUT_FILE,
+            STDERR_FILE,
+            DIFF_FILE,
+            REPORT_FILE,
+        ] {
+            let relative_path = Utf8PathBuf::from(file_name);
+            push_regular_file(
+                &mut files,
+                TaskArtifactKind::Evidence,
+                &relative_path,
+                task_dir.join(file_name),
+            )?;
+        }
+
+        let artifacts_dir = task_dir.join(ARTIFACTS_DIR);
+        match fs::symlink_metadata(artifacts_dir.as_std_path()) {
+            Ok(metadata) if metadata.is_dir() => {
+                read_artifact_dir_files(&mut files, &artifacts_dir)?;
+            }
+            Ok(_) => {
+                return Err(TaskFenceError::State(format!(
+                    "task artifact path is not a directory: {artifacts_dir}"
+                )));
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(TaskFenceError::State(format!(
+                    "failed to access task artifact directory {artifacts_dir}: {err}"
+                )));
+            }
+        }
+
+        files.sort_by(|left, right| {
+            left.relative_path
+                .cmp(&right.relative_path)
+                .then_with(|| kind_label(&left.kind).cmp(kind_label(&right.kind)))
+        });
+
+        Ok(TaskArtifacts { task_dir, files })
     }
 
     pub fn read_logs(&self, task_id: &TaskId) -> taskfence_core::Result<TaskLogs> {
@@ -433,6 +503,81 @@ fn audit_event_task_id(event: &AuditEvent) -> &TaskId {
         AuditEvent::ApprovalRequested { record } | AuditEvent::ApprovalResolved { record } => {
             &record.task_id
         }
+    }
+}
+
+fn read_artifact_dir_files(
+    files: &mut Vec<TaskArtifactFile>,
+    artifacts_dir: &Utf8Path,
+) -> taskfence_core::Result<()> {
+    for entry in fs::read_dir(artifacts_dir.as_std_path()).map_err(|err| {
+        TaskFenceError::State(format!(
+            "failed to read task artifact directory {artifacts_dir}: {err}"
+        ))
+    })? {
+        let entry = entry.map_err(|err| {
+            TaskFenceError::State(format!(
+                "failed to read task artifact entry under {artifacts_dir}: {err}"
+            ))
+        })?;
+        let file_name = entry.file_name().into_string().map_err(|name| {
+            TaskFenceError::State(format!(
+                "task artifact file name is not valid UTF-8: {name:?}"
+            ))
+        })?;
+        validate_artifact_file_name(&file_name)?;
+        let relative_path = Utf8PathBuf::from(ARTIFACTS_DIR).join(&file_name);
+        let path = Utf8PathBuf::from_path_buf(entry.path()).map_err(|path| {
+            TaskFenceError::State(format!("task artifact path is not valid UTF-8: {path:?}"))
+        })?;
+        push_regular_file(files, TaskArtifactKind::Artifact, &relative_path, path)?;
+    }
+    Ok(())
+}
+
+fn push_regular_file(
+    files: &mut Vec<TaskArtifactFile>,
+    kind: TaskArtifactKind,
+    relative_path: &Utf8Path,
+    path: Utf8PathBuf,
+) -> taskfence_core::Result<()> {
+    match fs::symlink_metadata(path.as_std_path()) {
+        Ok(metadata) if metadata.is_file() => {
+            files.push(TaskArtifactFile {
+                kind,
+                relative_path: relative_path.to_path_buf(),
+                path,
+                size_bytes: metadata.len(),
+            });
+            Ok(())
+        }
+        Ok(_) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(TaskFenceError::State(format!(
+            "failed to inspect task artifact {path}: {err}"
+        ))),
+    }
+}
+
+fn validate_artifact_file_name(value: &str) -> taskfence_core::Result<()> {
+    if value.is_empty()
+        || value == "."
+        || value == ".."
+        || value.contains('/')
+        || value.contains('\\')
+        || value.chars().any(char::is_control)
+    {
+        return Err(TaskFenceError::State(format!(
+            "artifact file name is not a safe path component: {value:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn kind_label(kind: &TaskArtifactKind) -> &'static str {
+    match kind {
+        TaskArtifactKind::Evidence => "evidence",
+        TaskArtifactKind::Artifact => "artifact",
     }
 }
 
@@ -836,6 +981,146 @@ mod tests {
         assert!(inputs.task_dir.ends_with(".taskfence/tasks/task-inputs"));
         assert!(inputs.contents.contains("\"id\""));
         assert!(inputs.contents.contains("task-inputs"));
+    }
+
+    #[test]
+    fn reads_task_artifact_manifest_from_workspace_task_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        write_task_evidence(
+            &workspace,
+            "task-artifacts",
+            "inspect artifacts",
+            &[TaskStatus::Succeeded],
+            &["report.md", "diff.patch", "stdout.log"],
+        );
+        let task_dir = workspace.join(".taskfence/tasks/task-artifacts");
+        let artifacts_dir = task_dir.join("artifacts");
+        fs::create_dir_all(&artifacts_dir).unwrap();
+        fs::write(artifacts_dir.join("metadata.json"), "{}\n").unwrap();
+        fs::create_dir(artifacts_dir.join("nested")).unwrap();
+        fs::write(task_dir.join("notes.tmp"), "ignored\n").unwrap();
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let artifacts = store
+            .read_artifacts(&TaskId("task-artifacts".into()))
+            .unwrap();
+        let paths = artifacts
+            .files
+            .iter()
+            .map(|file| file.relative_path.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(artifacts
+            .task_dir
+            .ends_with(".taskfence/tasks/task-artifacts"));
+        assert_eq!(
+            paths,
+            vec![
+                "artifacts/metadata.json",
+                "diff.patch",
+                "events.jsonl",
+                "report.md",
+                "stdout.log",
+                "task.resolved.json",
+            ]
+        );
+        let custom = artifacts
+            .files
+            .iter()
+            .find(|file| file.relative_path == "artifacts/metadata.json")
+            .unwrap();
+        assert_eq!(custom.kind, TaskArtifactKind::Artifact);
+        assert_eq!(custom.size_bytes, 3);
+        let evidence = artifacts
+            .files
+            .iter()
+            .find(|file| file.relative_path == "task.resolved.json")
+            .unwrap();
+        assert_eq!(evidence.kind, TaskArtifactKind::Evidence);
+        assert!(evidence.size_bytes > 0);
+        assert!(!paths.contains(&"notes.tmp"));
+        assert!(!paths.contains(&"artifacts/nested"));
+    }
+
+    #[test]
+    fn read_artifacts_rejects_missing_task_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let err = store.read_artifacts(&TaskId("missing".into())).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("directory not found"))
+        );
+    }
+
+    #[test]
+    fn read_artifacts_rejects_unsafe_task_ids_before_reading() {
+        let store = LocalTaskEvidenceStore::new("/tmp/taskfence-state-test");
+
+        let err = store
+            .read_artifacts(&TaskId("../escape".into()))
+            .unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("safe artifact path component"))
+        );
+    }
+
+    #[test]
+    fn read_artifacts_rejects_unsafe_custom_artifact_names() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let artifacts_dir = workspace.join(".taskfence/tasks/task-1/artifacts");
+        fs::create_dir_all(&artifacts_dir).unwrap();
+        fs::write(artifacts_dir.join("bad\nname"), "bad\n").unwrap();
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let err = store.read_artifacts(&TaskId("task-1".into())).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("safe path component"))
+        );
+    }
+
+    #[test]
+    fn read_artifacts_rejects_non_directory_artifacts_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let task_dir = workspace.join(".taskfence/tasks/task-1");
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(task_dir.join("artifacts"), "not a directory\n").unwrap();
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let err = store.read_artifacts(&TaskId("task-1".into())).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("not a directory"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_artifacts_does_not_follow_symlinked_custom_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let artifacts_dir = workspace.join(".taskfence/tasks/task-1/artifacts");
+        fs::create_dir_all(&artifacts_dir).unwrap();
+        fs::write(artifacts_dir.join("actual.txt"), "ok\n").unwrap();
+        std::os::unix::fs::symlink("actual.txt", artifacts_dir.join("linked.txt")).unwrap();
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let artifacts = store.read_artifacts(&TaskId("task-1".into())).unwrap();
+        let paths = artifacts
+            .files
+            .iter()
+            .map(|file| file.relative_path.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(paths.contains(&"artifacts/actual.txt"));
+        assert!(!paths.contains(&"artifacts/linked.txt"));
     }
 
     #[test]

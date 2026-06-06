@@ -17,7 +17,8 @@ use taskfence_policy::BuiltInPolicyEngine;
 use taskfence_report::MarkdownReportGenerator;
 use taskfence_runner::DockerRunner;
 use taskfence_state::{
-    InMemoryStateStore, LocalTaskEvidenceStore, TaskEvents, TaskLogs, TaskSummary,
+    InMemoryStateStore, LocalTaskEvidenceStore, TaskArtifactKind, TaskArtifacts, TaskEvents,
+    TaskLogs, TaskSummary,
 };
 
 #[derive(Debug, Parser)]
@@ -85,6 +86,14 @@ enum Command {
     },
     /// Show the resolved task input saved for a local run.
     Inputs {
+        /// Task ID to query.
+        task_id: String,
+        /// Workspace that owns the .taskfence task evidence directory.
+        #[arg(long, default_value = ".")]
+        workspace: Utf8PathBuf,
+    },
+    /// List saved evidence and artifact files for a task.
+    Artifacts {
         /// Task ID to query.
         task_id: String,
         /// Workspace that owns the .taskfence task evidence directory.
@@ -186,6 +195,7 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
         Command::Tasks { workspace } => show_tasks(workspace),
         Command::Task { task_id, workspace } => show_task(workspace, task_id),
         Command::Inputs { task_id, workspace } => show_inputs(workspace, task_id),
+        Command::Artifacts { task_id, workspace } => show_artifacts(workspace, task_id),
         Command::Status { task_id, workspace } => show_status(workspace, task_id),
         Command::Events { task_id, workspace } => show_events(workspace, task_id),
         Command::Approvals { workspace } => show_approvals(workspace),
@@ -376,6 +386,12 @@ fn show_inputs(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Resul
     Ok(())
 }
 
+fn show_artifacts(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<()> {
+    let text = artifacts_text(workspace, &TaskId(task_id))?;
+    print!("{text}");
+    Ok(())
+}
+
 fn show_status(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<()> {
     let text = status_text(workspace, &TaskId(task_id))?;
     print!("{text}");
@@ -454,6 +470,14 @@ fn task_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Result
 fn inputs_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Result<String> {
     let store = LocalTaskEvidenceStore::new(workspace);
     Ok(render_task_inputs(&store.read_inputs(task_id)?.contents))
+}
+
+fn artifacts_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Result<String> {
+    let store = LocalTaskEvidenceStore::new(workspace);
+    Ok(render_task_artifacts(
+        task_id,
+        &store.read_artifacts(task_id)?,
+    ))
 }
 
 fn status_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Result<String> {
@@ -837,6 +861,26 @@ fn render_task_inputs(contents: &str) -> String {
     }
 }
 
+fn render_task_artifacts(task_id: &TaskId, artifacts: &TaskArtifacts) -> String {
+    let mut rendered = String::new();
+    rendered.push_str("Task artifacts\n");
+    rendered.push_str(&format!("  task: {}\n", task_id.0));
+    rendered.push_str(&format!("  evidence: {}\n", artifacts.task_dir));
+    rendered.push_str("KIND\tBYTES\tPATH\n");
+    for file in &artifacts.files {
+        rendered.push_str(match file.kind {
+            TaskArtifactKind::Evidence => "evidence",
+            TaskArtifactKind::Artifact => "artifact",
+        });
+        rendered.push('\t');
+        rendered.push_str(&file.size_bytes.to_string());
+        rendered.push('\t');
+        rendered.push_str(file.relative_path.as_str());
+        rendered.push('\n');
+    }
+    rendered
+}
+
 fn artifact_flags(task: &TaskSummary) -> String {
     let mut flags = Vec::new();
     if task.has_report {
@@ -1173,6 +1217,34 @@ mod tests {
                 assert_eq!(workspace, Utf8PathBuf::from("repo"));
             }
             other => panic!("expected inputs command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_artifacts_task_id() {
+        let cli = Cli::try_parse_from(["taskfence", "artifacts", "task-123"]).unwrap();
+
+        match cli.command {
+            Command::Artifacts { task_id, workspace } => {
+                assert_eq!(task_id, "task-123");
+                assert_eq!(workspace, Utf8PathBuf::from("."));
+            }
+            other => panic!("expected artifacts command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_artifacts_workspace() {
+        let cli =
+            Cli::try_parse_from(["taskfence", "artifacts", "task-123", "--workspace", "repo"])
+                .unwrap();
+
+        match cli.command {
+            Command::Artifacts { task_id, workspace } => {
+                assert_eq!(task_id, "task-123");
+                assert_eq!(workspace, Utf8PathBuf::from("repo"));
+            }
+            other => panic!("expected artifacts command, got {other:?}"),
         }
     }
 
@@ -1643,6 +1715,44 @@ mod tests {
     }
 
     #[test]
+    fn artifacts_command_reads_local_task_artifact_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(
+            &task_file,
+            task_yaml("cli-artifacts", &workspace, "echo ok"),
+        )
+        .unwrap();
+
+        run_task_with_runner(
+            task_file,
+            &FakeRunner::succeeding(),
+            RunApprovalMode::FailClosed,
+        )
+        .unwrap();
+        let artifacts_dir = workspace.join(".taskfence/tasks/cli-artifacts/artifacts");
+        fs::write(artifacts_dir.join("manifest.json"), "{}\n").unwrap();
+        fs::create_dir(artifacts_dir.join("nested")).unwrap();
+
+        let text = artifacts_text(workspace, &TaskId("cli-artifacts".into())).unwrap();
+
+        assert!(text.contains("Task artifacts\n"));
+        assert!(text.contains("  task: cli-artifacts\n"));
+        assert!(text.contains(".taskfence/tasks/cli-artifacts"));
+        assert!(text.contains("KIND\tBYTES\tPATH\n"));
+        assert!(text.contains("artifact\t3\tartifacts/manifest.json\n"));
+        assert!(text.contains("evidence\t"));
+        assert!(text.contains("\ttask.resolved.json\n"));
+        assert!(text.contains("\tevents.jsonl\n"));
+        assert!(text.contains("\tdiff.patch\n"));
+        assert!(text.contains("\treport.md\n"));
+        assert!(!text.contains("nested"));
+        assert!(!text.contains("\"id\": \"cli-artifacts\""));
+    }
+
+    #[test]
     fn status_command_reads_local_task_status() {
         let temp = tempfile::tempdir().unwrap();
         let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
@@ -1837,6 +1947,18 @@ mod tests {
         let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
 
         let err = inputs_text(workspace, &TaskId("missing".into())).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("directory not found"))
+        );
+    }
+
+    #[test]
+    fn artifacts_command_surfaces_missing_task_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+
+        let err = artifacts_text(workspace, &TaskId("missing".into())).unwrap_err();
 
         assert!(
             matches!(err, TaskFenceError::State(message) if message.contains("directory not found"))
