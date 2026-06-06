@@ -1,5 +1,7 @@
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
+use std::fs::{self, OpenOptions};
+use std::io::{ErrorKind, Write};
 use std::process::ExitCode;
 use taskfence_agent::GenericAgentAdapter;
 use taskfence_approval::{LocalApprovalEngine, LocalApprovalStore, LocalExternalApprovalEngine};
@@ -136,9 +138,7 @@ fn main() -> ExitCode {
 
 fn execute(cli: Cli) -> taskfence_core::Result<()> {
     match cli.command {
-        Command::Init { path } => unsupported(format!(
-            "init command is parsed but task-file scaffolding is not implemented yet for {path}"
-        )),
+        Command::Init { path } => init_task_file(path),
         Command::Run {
             task_file,
             interactive_approval,
@@ -181,11 +181,84 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
     }
 }
 
+const STARTER_TASK_FILE: &str = r#"id: "local-demo"
+goal: "Describe the task goal here"
+workspace: "."
+
+agent:
+  type: "generic"
+  command: "echo"
+  args:
+    - "hello from TaskFence"
+
+sandbox:
+  type: "docker"
+  image: "debian:bookworm-slim"
+  limits:
+    timeout_minutes: 5
+
+permissions:
+  paths:
+    read:
+      - "."
+    write:
+      - "."
+  commands:
+    allow:
+      - "echo"
+  network:
+    default: "disabled"
+
+audit:
+  report:
+    format: "markdown"
+  capture:
+    stdout: true
+    stderr: true
+    file_diff: true
+    network_destinations: true
+    approvals: true
+"#;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RunApprovalMode {
     FailClosed,
     Interactive,
     External,
+}
+
+fn init_task_file(path: Utf8PathBuf) -> taskfence_core::Result<()> {
+    write_starter_task_file(&path)?;
+    println!("Task file created");
+    println!("  path: {path}");
+    Ok(())
+}
+
+fn write_starter_task_file(path: &Utf8PathBuf) -> taskfence_core::Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_str().is_empty() && parent.as_str() != ".")
+    {
+        fs::create_dir_all(parent).map_err(|err| {
+            TaskFenceError::Config(format!("failed to create parent directory {parent}: {err}"))
+        })?;
+    }
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|err| init_write_error(path, err))?;
+    file.write_all(STARTER_TASK_FILE.as_bytes())
+        .map_err(|err| TaskFenceError::Config(format!("failed to write task file {path}: {err}")))
+}
+
+fn init_write_error(path: &Utf8PathBuf, err: std::io::Error) -> TaskFenceError {
+    if err.kind() == ErrorKind::AlreadyExists {
+        TaskFenceError::Config(format!("task file already exists: {path}"))
+    } else {
+        TaskFenceError::Config(format!("failed to create task file {path}: {err}"))
+    }
 }
 
 fn show_logs(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<()> {
@@ -676,10 +749,6 @@ fn run_task_with_runner(
     }
 }
 
-fn unsupported(message: String) -> taskfence_core::Result<()> {
-    Err(TaskFenceError::Unsupported(message))
-}
-
 #[cfg(test)]
 fn run_task_with_runner_and_approval(
     task_file: Utf8PathBuf,
@@ -1100,17 +1169,65 @@ mod tests {
     }
 
     #[test]
-    fn init_remains_explicitly_unsupported() {
+    fn init_writes_starter_task_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("taskfence.yaml")).unwrap();
+
+        execute(Cli {
+            command: Command::Init { path: path.clone() },
+        })
+        .unwrap();
+
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("id: \"local-demo\""));
+        assert!(contents.contains("command: \"echo\""));
+        assert!(contents.contains("default: \"disabled\""));
+
+        let task = taskfence_config::parse_task_file(&path, &contents).unwrap();
+        assert_eq!(task.id.0, "local-demo");
+        assert_eq!(task.goal, "Describe the task goal here");
+        assert_eq!(
+            task.workspace_host_path,
+            canonical_utf8(path.parent().unwrap())
+        );
+        assert_eq!(task.agent.command, "echo");
+        assert_eq!(task.agent.args, vec!["hello from TaskFence"]);
+    }
+
+    #[test]
+    fn init_creates_parent_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("tasks/fix.yaml")).unwrap();
+
+        execute(Cli {
+            command: Command::Init { path: path.clone() },
+        })
+        .unwrap();
+
+        assert!(path.is_file());
+        let contents = fs::read_to_string(&path).unwrap();
+        let task = taskfence_config::parse_task_file(&path, &contents).unwrap();
+        assert_eq!(
+            task.workspace_host_path,
+            canonical_utf8(path.parent().unwrap())
+        );
+    }
+
+    #[test]
+    fn init_refuses_to_overwrite_existing_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("taskfence.yaml")).unwrap();
+        fs::write(&path, "existing task file\n").unwrap();
+
         let err = execute(Cli {
-            command: Command::Init {
-                path: Utf8PathBuf::from("taskfence.yaml"),
-            },
+            command: Command::Init { path: path.clone() },
         })
         .unwrap_err();
 
         assert!(
-            matches!(err, TaskFenceError::Unsupported(message) if message.contains("init command"))
+            matches!(err, TaskFenceError::Config(message) if message.contains("already exists"))
         );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "existing task file\n");
     }
 
     #[test]
@@ -1705,6 +1822,10 @@ permissions:
             .write_pending(&record)
             .unwrap();
         record.id
+    }
+
+    fn canonical_utf8(path: &camino::Utf8Path) -> Utf8PathBuf {
+        Utf8PathBuf::from_path_buf(fs::canonicalize(path.as_std_path()).unwrap()).unwrap()
     }
 
     fn wait_for_pending_approval(workspace: &Utf8PathBuf) -> ApprovalId {

@@ -126,7 +126,7 @@ Owns user-facing commands and terminal UX.
 
 Initial commands:
 
-- `taskfence init`
+- `taskfence init [path]`
 - `taskfence run <task-file>`
 - `taskfence tasks --workspace <workspace>`
 - `taskfence task <task-id> --workspace <workspace>`
@@ -143,6 +143,8 @@ Responsibilities:
 
 - Parse arguments.
 - Resolve user paths.
+- Write a starter task file for `taskfence init [path]` without overwriting an
+  existing target.
 - Start the orchestrator.
 - Render human-readable progress.
 - Collect interactive approval input.
@@ -907,6 +909,9 @@ Security-specific checks:
 
 The first usable version is complete when:
 
+- `taskfence init [path]` writes a valid starter task YAML file and refuses to
+  overwrite existing files. This is implemented as local task-file scaffolding,
+  not as a project generator or task execution path.
 - `taskfence run examples/task.yaml` executes through the orchestrator, not a
   one-off demo path. This is implemented for the local Docker runner demo.
 - The task file is parsed, validated, and resolved with documented defaults.

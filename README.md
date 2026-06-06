@@ -147,6 +147,15 @@ See [examples/task.yaml](examples/task.yaml) for the runnable demo.
 
 ## Local Demo
 
+Create a starter task file in the current directory with:
+
+```bash
+cargo run -p taskfence-cli -- init taskfence.yaml
+```
+
+The init command writes one local task YAML file and refuses to overwrite an
+existing target.
+
 The demo requires Docker and the configured image to be available locally. The
 runner uses `docker run --pull=never`, so it does not silently acquire images at
 task runtime.
@@ -229,7 +238,7 @@ python3 scripts/governance/check_codex_governance.py
 
 The first implementation currently includes:
 
-1. A local `taskfence` CLI.
+1. A local `taskfence` CLI with starter task-file scaffolding.
 2. Docker-based sandbox execution.
 3. One black-box CLI agent adapter.
 4. File, command, network, and secret restrictions.

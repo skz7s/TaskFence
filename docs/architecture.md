@@ -51,6 +51,8 @@ The CLI is the first user interface.
 
 Initial commands:
 
+- `taskfence init [path]` writes one starter task file, creating parent
+  directories for nested paths and refusing to overwrite an existing target.
 - `taskfence run <task-file>` executes the current local Docker runner path,
   failing closed for approval-required actions by default.
 - `taskfence run --interactive-approval <task-file>` prompts in the local
@@ -76,8 +78,6 @@ Initial commands:
   `diff.patch` artifact from local task evidence when present.
 - `taskfence report <task-id> --workspace <workspace>` reads the generated
   Markdown report from local task evidence.
-- `taskfence init` is parsed but remains explicitly unsupported until task-file
-  scaffolding is implemented.
 
 ### Task Orchestrator
 
