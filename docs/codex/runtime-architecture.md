@@ -21,8 +21,10 @@
 ## TaskFence Local Runner
 
 - 当前已实现的运行面是 `cargo run -p taskfence-cli -- run examples/task.yaml`，它通过 CLI 加载任务文件，构造本地 policy / approval / audit / artifact / agent / Docker runner / report / state 组件，并进入 `taskfence-core` orchestrator。
+- 默认 `run` 对 approval-required action 仍然 fail closed；显式使用 `taskfence run --interactive-approval <task-file>` 时，当前 CLI 进程会在终端中提示 approve/deny，并将 approval request/resolution 写入结构化审计事件。
 - Docker runner 使用 `docker run --pull=never`，不会在任务运行时静默拉取镜像；演示任务依赖本机已有 `debian:bookworm-slim`。
 - 本地 Docker runner 仅声明已实现的网络模式：`disabled` / default deny 使用 `--network none`，default allow 使用 Docker bridge。域名级 allowlist 目前无法由本地 Docker 直接强制执行，配置 `allow_domains` 时必须 fail closed，直到实现 enforcing proxy。
 - 运行成功后，本地 artifact store 在任务 workspace 下写入 `.taskfence/tasks/<task-id>/task.resolved.json`、`events.jsonl`、stdout/stderr 日志（有输出时）、`diff.patch` 和 `report.md`。
 - 当前 CLI 可以通过 `taskfence report <task-id> --workspace <workspace>` 读取本地 Markdown report，通过 `taskfence logs <task-id> --workspace <workspace>` 读取已捕获的 stdout/stderr 日志；这些命令只查询指定 workspace 下的本地 artifact 目录，不是跨 workspace 的持久索引。
+- `taskfence approve` / `taskfence deny` 的持久审批队列尚未实现；当前交互审批只发生在运行中的本地 CLI 会话内。
 - Gateway、Web UI、replay、team-server、enterprise control plane 仍是未实现面；当前 gateway crate 只提供规范化和显式 unsupported protocol 合同。

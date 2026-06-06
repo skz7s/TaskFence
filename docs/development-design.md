@@ -898,8 +898,8 @@ The first usable version is complete when:
 - Policy decisions are recorded for planned command/tool actions. Observation
   of arbitrary in-container shell commands remains future gateway or wrapper
   work.
-- Approval-required actions fail closed in the current non-interactive local
-  mode. Interactive approval UX remains a later Phase 2 slice.
+- Approval-required actions fail closed by default in local mode. Operators can
+  opt into in-process terminal approval with `taskfence run --interactive-approval`.
 - Artifacts are written under `.taskfence/tasks/<task-id>/`.
 - A Markdown report is generated from structured evidence.
 - Tests cover the main success path and the important failure branches.

@@ -43,8 +43,8 @@ Implemented boundaries:
   host environment, no host home or socket passthrough by default, captured
   stdout/stderr, timeout handling, and structured exit status.
 - Local Docker domain allowlists fail closed until an enforcing proxy exists.
-- Local approval is non-interactive and fail-closed by default; interactive
-  approval UX remains Phase 2 work.
+- Local approval is fail-closed by default; `taskfence run --interactive-approval`
+  enables in-process terminal approval for approval-required actions.
 - `taskfence report <task-id> --workspace <workspace>` and
   `taskfence logs <task-id> --workspace <workspace>` read generated local task
   evidence from `.taskfence/tasks/<task-id>/` when those artifacts exist.
@@ -85,8 +85,9 @@ Deliverables:
 Partially implemented: built-in command/file/network/env/secret/tool policy
 decisions, deny precedence, approval-required command patterns,
 non-interactive fail-closed approval records, timeout modeling, and audit/report
-redaction. Remaining Phase 2 work is interactive approval UX and durable
-approval lookup commands.
+redaction. Opt-in local interactive approval during `run` is implemented.
+Remaining Phase 2 work is durable approval lookup commands and broader denied
+action records.
 
 Minimum demo:
 

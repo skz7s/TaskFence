@@ -47,7 +47,10 @@ The CLI is the first user interface.
 
 Initial commands:
 
-- `taskfence run <task-file>` executes the current local Docker runner path.
+- `taskfence run <task-file>` executes the current local Docker runner path,
+  failing closed for approval-required actions by default.
+- `taskfence run --interactive-approval <task-file>` prompts in the local
+  terminal for approval-required actions during that run.
 - `taskfence logs <task-id> --workspace <workspace>` reads captured stdout and
   stderr logs from local task evidence when present.
 - `taskfence report <task-id> --workspace <workspace>` reads the generated
@@ -190,9 +193,11 @@ Approval records should include:
 - approver identity
 - timestamp
 
-Current local approval behavior is non-interactive: preconfigured decisions can
-model approved, denied, or timed-out outcomes in tests, and default local CLI
-behavior fails closed for approval-required actions.
+Current local approval behavior is fail-closed by default. The CLI can opt into
+in-process interactive approval with `taskfence run --interactive-approval`,
+and preconfigured decisions can model approved, denied, or timed-out outcomes in
+tests. Durable approval lookup through `taskfence approve` and `taskfence deny`
+is not implemented yet.
 
 ### Audit Logger
 

@@ -143,6 +143,14 @@ task runtime.
 cargo run -p taskfence-cli -- run examples/task.yaml
 ```
 
+Approval-required actions still fail closed by default for non-interactive
+runs. To approve or deny those actions in the running terminal session, opt in
+explicitly:
+
+```bash
+cargo run -p taskfence-cli -- run --interactive-approval examples/task.yaml
+```
+
 On success, TaskFence writes artifacts under
 `examples/repo/.taskfence/tasks/local-demo/`, including:
 
@@ -197,7 +205,8 @@ The first implementation currently includes:
 2. Docker-based sandbox execution.
 3. One black-box CLI agent adapter.
 4. File, command, network, and secret restrictions.
-5. Non-interactive fail-closed local approval records.
+5. Non-interactive fail-closed local approval records, plus opt-in local
+   interactive approval during `run`.
 6. Audit logs, stdout/stderr capture, and file diff artifacts.
 7. Markdown task reports generated from structured evidence.
 8. Local CLI lookup for generated reports and captured stdout/stderr logs.

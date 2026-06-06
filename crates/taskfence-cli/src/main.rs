@@ -6,7 +6,9 @@ use taskfence_approval::LocalApprovalEngine;
 use taskfence_artifacts::LocalArtifactStore;
 use taskfence_audit::LocalJsonlAuditLogger;
 use taskfence_config::load_task_file;
-use taskfence_core::{LogStream, Orchestrator, Runner, TaskFenceError, TaskId, TaskStatus};
+use taskfence_core::{
+    ApprovalEngine, LogStream, Orchestrator, Runner, TaskFenceError, TaskId, TaskStatus,
+};
 use taskfence_policy::BuiltInPolicyEngine;
 use taskfence_report::MarkdownReportGenerator;
 use taskfence_runner::DockerRunner;
@@ -31,6 +33,9 @@ enum Command {
     },
     /// Load a task file and start the task orchestration boundary.
     Run {
+        /// Prompt locally for approval-required actions during this run.
+        #[arg(long)]
+        interactive_approval: bool,
         /// TaskFence YAML task file.
         task_file: Utf8PathBuf,
     },
@@ -77,9 +82,12 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
         Command::Init { path } => unsupported(format!(
             "init command is parsed but task-file scaffolding is not implemented yet for {path}"
         )),
-        Command::Run { task_file } => {
+        Command::Run {
+            task_file,
+            interactive_approval,
+        } => {
             let runner = DockerRunner::new();
-            run_task_with_runner(task_file, &runner)
+            run_task_with_runner(task_file, &runner, interactive_approval)
         }
         Command::Logs { task_id, workspace } => show_logs(workspace, task_id),
         Command::Approve { approval_id } => unsupported(format!(
@@ -135,19 +143,35 @@ fn render_logs(logs: &TaskLogs) -> String {
     rendered
 }
 
-fn run_task_with_runner(task_file: Utf8PathBuf, runner: &dyn Runner) -> taskfence_core::Result<()> {
+fn run_task_with_runner(
+    task_file: Utf8PathBuf,
+    runner: &dyn Runner,
+    interactive_approval: bool,
+) -> taskfence_core::Result<()> {
+    let approval = if interactive_approval {
+        LocalApprovalEngine::interactive()
+    } else {
+        LocalApprovalEngine::fail_closed()
+    };
+    run_task_with_runner_and_approval(task_file, runner, &approval)
+}
+
+fn run_task_with_runner_and_approval(
+    task_file: Utf8PathBuf,
+    runner: &dyn Runner,
+    approval: &dyn ApprovalEngine,
+) -> taskfence_core::Result<()> {
     let task = load_task_file(&task_file)?;
     let artifacts = LocalArtifactStore::in_workspace();
     let events_path = artifacts.task_dir(&task)?.join("events.jsonl");
     let audit = LocalJsonlAuditLogger::new(events_path)?;
     let policy = BuiltInPolicyEngine;
-    let approval = LocalApprovalEngine::fail_closed();
     let adapter = GenericAgentAdapter;
     let report = MarkdownReportGenerator::new();
     let state = InMemoryStateStore::new();
     let orchestrator = Orchestrator {
         policy: &policy,
-        approval: &approval,
+        approval,
         audit: &audit,
         artifacts: &artifacts,
         adapter: &adapter,
@@ -195,6 +219,7 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
     use std::fs;
+    use taskfence_core::ApprovalDecision;
     use taskfence_runner::FakeRunner;
 
     #[test]
@@ -222,7 +247,30 @@ mod tests {
         let cli = Cli::try_parse_from(["taskfence", "run", "task.yaml"]).unwrap();
 
         match cli.command {
-            Command::Run { task_file } => assert_eq!(task_file, Utf8PathBuf::from("task.yaml")),
+            Command::Run {
+                task_file,
+                interactive_approval,
+            } => {
+                assert_eq!(task_file, Utf8PathBuf::from("task.yaml"));
+                assert!(!interactive_approval);
+            }
+            other => panic!("expected run command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_interactive_approval_flag() {
+        let cli = Cli::try_parse_from(["taskfence", "run", "--interactive-approval", "task.yaml"])
+            .unwrap();
+
+        match cli.command {
+            Command::Run {
+                task_file,
+                interactive_approval,
+            } => {
+                assert_eq!(task_file, Utf8PathBuf::from("task.yaml"));
+                assert!(interactive_approval);
+            }
             other => panic!("expected run command, got {other:?}"),
         }
     }
@@ -363,7 +411,7 @@ mod tests {
         let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
         fs::write(&task_file, task_yaml("cli-success", &workspace, "echo ok")).unwrap();
 
-        run_task_with_runner(task_file, &FakeRunner::succeeding()).unwrap();
+        run_task_with_runner(task_file, &FakeRunner::succeeding(), false).unwrap();
 
         assert!(workspace
             .join(".taskfence/tasks/cli-success/task.resolved.json")
@@ -378,6 +426,7 @@ mod tests {
         let err = run_task_with_runner(
             Utf8PathBuf::from("/tmp/taskfence-missing-task.yaml"),
             &FakeRunner::succeeding(),
+            false,
         )
         .unwrap_err();
 
@@ -397,12 +446,52 @@ mod tests {
         let err = run_task_with_runner(
             task_file,
             &FakeRunner::succeeding().with_start_error("boom"),
+            false,
         )
         .unwrap_err();
 
         assert!(
             matches!(err, TaskFenceError::Runner(message) if message.contains("status Failed") && message.contains("boom"))
         );
+    }
+
+    #[test]
+    fn default_run_fails_closed_for_approval_required_commands() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(
+            &task_file,
+            task_yaml_with_command_policy("approval-default", &workspace, &[], &["echo"], &[]),
+        )
+        .unwrap();
+
+        let err = run_task_with_runner(task_file, &FakeRunner::succeeding(), false).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Approval(message) if message.contains("denied or timed out"))
+        );
+    }
+
+    #[test]
+    fn approved_run_continues_after_approval_required_command() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(
+            &task_file,
+            task_yaml_with_command_policy("approval-ok", &workspace, &[], &["echo"], &[]),
+        )
+        .unwrap();
+        let approval = LocalApprovalEngine::preconfigured(ApprovalDecision::Approved);
+
+        run_task_with_runner_and_approval(task_file, &FakeRunner::succeeding(), &approval).unwrap();
+
+        assert!(workspace
+            .join(".taskfence/tasks/approval-ok/report.md")
+            .is_file());
     }
 
     fn task_yaml(id: &str, workspace: &Utf8PathBuf, allowed_command: &str) -> String {
@@ -431,5 +520,57 @@ permissions:
     default: "disabled"
 "#
         )
+    }
+
+    fn task_yaml_with_command_policy(
+        id: &str,
+        workspace: &Utf8PathBuf,
+        allow: &[&str],
+        approval_required: &[&str],
+        deny: &[&str],
+    ) -> String {
+        let mut command_rules = String::new();
+        append_command_rules(&mut command_rules, "allow", allow);
+        append_command_rules(&mut command_rules, "approval_required", approval_required);
+        append_command_rules(&mut command_rules, "deny", deny);
+
+        format!(
+            r#"id: "{id}"
+goal: "CLI test"
+workspace: "{workspace}"
+agent:
+  type: "generic"
+  command: "echo"
+  args:
+    - "ok"
+sandbox:
+  type: "docker"
+  image: "taskfence/runner:latest"
+permissions:
+  paths:
+    read:
+      - "{workspace}"
+    write:
+      - "{workspace}"
+  commands:
+{command_rules}  network:
+    default: "disabled"
+"#
+        )
+    }
+
+    fn append_command_rules(output: &mut String, key: &str, values: &[&str]) {
+        if values.is_empty() {
+            return;
+        }
+
+        output.push_str("    ");
+        output.push_str(key);
+        output.push_str(":\n");
+        for value in values {
+            output.push_str("      - \"");
+            output.push_str(value);
+            output.push_str("\"\n");
+        }
     }
 }
