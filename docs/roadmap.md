@@ -56,6 +56,7 @@ Implemented boundaries:
   but still write resolved task evidence, structured audit events, and a
   Markdown report when artifact creation succeeds.
 - `taskfence task <task-id> --workspace <workspace>`,
+  `taskfence events <task-id> --workspace <workspace>`,
   `taskfence report <task-id> --workspace <workspace>`, `taskfence diff
   <task-id> --workspace <workspace>`, and `taskfence logs <task-id> --workspace
   <workspace>` read structured summaries and generated local task evidence from
@@ -167,6 +168,9 @@ Current local coverage before Web UI and SQLite:
 - `taskfence task <task-id> --workspace <workspace>` reads a single
   workspace-local task summary and artifact availability without a report text
   scrape, Web UI, API server, or SQLite index
+- `taskfence events <task-id> --workspace <workspace>` reads a structured
+  workspace-local event timeline from `events.jsonl` without replay execution,
+  Web UI, API server, SQLite index, or raw tool parameter rendering
 - `taskfence diff <task-id> --workspace <workspace>` reads the workspace-local
   `diff.patch` artifact without a browser diff viewer or SQLite index
 - `taskfence approvals --workspace <workspace>` lists workspace-local approval

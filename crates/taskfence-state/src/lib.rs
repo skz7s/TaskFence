@@ -78,6 +78,13 @@ pub struct TaskDiff {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskEvents {
+    pub task_dir: Utf8PathBuf,
+    pub path: Utf8PathBuf,
+    pub events: Vec<AuditEvent>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskSummary {
     pub task_id: TaskId,
     pub task_dir: Utf8PathBuf,
@@ -217,6 +224,24 @@ impl LocalTaskEvidenceStore {
         Ok(TaskDiff { path, contents })
     }
 
+    pub fn read_events(&self, task_id: &TaskId) -> taskfence_core::Result<TaskEvents> {
+        let task_dir = self.task_dir(task_id)?;
+        ensure_task_dir(task_id, &task_dir)?;
+        let path = task_dir.join(EVENTS_FILE);
+        let file = File::open(path.as_std_path()).map_err(|err| {
+            TaskFenceError::State(format!(
+                "events artifact not found for task {} at {path}: {err}",
+                task_id.0
+            ))
+        })?;
+        let events = read_events_file(task_id, &path, file)?;
+        Ok(TaskEvents {
+            task_dir,
+            path,
+            events,
+        })
+    }
+
     fn tasks_dir(&self) -> Utf8PathBuf {
         self.workspace.join(TASKFENCE_DIR).join(TASKS_DIR)
     }
@@ -326,6 +351,51 @@ fn read_latest_task_status(
     }
 
     latest
+}
+
+fn read_events_file(
+    task_id: &TaskId,
+    path: &Utf8Path,
+    file: File,
+) -> taskfence_core::Result<Vec<AuditEvent>> {
+    let mut events = Vec::new();
+    for (index, line) in BufReader::new(file).lines().enumerate() {
+        let line_number = index + 1;
+        let line = line.map_err(|err| {
+            TaskFenceError::State(format!("failed to read {path} line {line_number}: {err}"))
+        })?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let event = serde_json::from_str::<AuditEvent>(&line).map_err(|err| {
+            TaskFenceError::State(format!("failed to parse {path} line {line_number}: {err}"))
+        })?;
+        let event_task_id = audit_event_task_id(&event);
+        if event_task_id != task_id {
+            return Err(TaskFenceError::State(format!(
+                "{path} line {line_number} belongs to task {} instead of {}",
+                event_task_id.0, task_id.0
+            )));
+        }
+        events.push(event);
+    }
+    Ok(events)
+}
+
+fn audit_event_task_id(event: &AuditEvent) -> &TaskId {
+    match event {
+        AuditEvent::TaskCreated { task_id, .. }
+        | AuditEvent::TaskStatusChanged { task_id, .. }
+        | AuditEvent::PolicyDecision { task_id, .. }
+        | AuditEvent::Log { task_id, .. }
+        | AuditEvent::RunnerExit { task_id, .. }
+        | AuditEvent::Artifact { task_id, .. }
+        | AuditEvent::Error { task_id, .. } => task_id,
+        AuditEvent::ApprovalRequested { record } | AuditEvent::ApprovalResolved { record } => {
+            &record.task_id
+        }
+    }
 }
 
 fn read_optional_log(
@@ -484,6 +554,98 @@ mod tests {
 
         assert_eq!(diff.contents, "TaskFence diff metadata\n");
         assert!(diff.path.ends_with("diff.patch"));
+    }
+
+    #[test]
+    fn reads_events_from_workspace_task_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        write_events(
+            &workspace,
+            "task-1",
+            &[
+                AuditEvent::TaskCreated {
+                    task_id: TaskId("task-1".into()),
+                    at: datetime!(2024-01-01 00:00 UTC),
+                    goal: "inspect events".into(),
+                },
+                AuditEvent::TaskStatusChanged {
+                    task_id: TaskId("task-1".into()),
+                    at: datetime!(2024-01-01 00:01 UTC),
+                    status: TaskStatus::Succeeded,
+                },
+            ],
+        );
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let events = store.read_events(&TaskId("task-1".into())).unwrap();
+
+        assert_eq!(events.events.len(), 2);
+        assert!(events.path.ends_with("events.jsonl"));
+        assert!(events.task_dir.ends_with(".taskfence/tasks/task-1"));
+        assert!(matches!(
+            &events.events[0],
+            AuditEvent::TaskCreated { goal, .. } if goal == "inspect events"
+        ));
+        assert!(matches!(
+            &events.events[1],
+            AuditEvent::TaskStatusChanged {
+                status: TaskStatus::Succeeded,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn read_events_rejects_missing_event_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir_all(workspace.join(".taskfence/tasks/task-1")).unwrap();
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let err = store.read_events(&TaskId("task-1".into())).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("events artifact not found"))
+        );
+    }
+
+    #[test]
+    fn read_events_rejects_malformed_jsonl() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let task_dir = workspace.join(".taskfence/tasks/task-1");
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(task_dir.join("events.jsonl"), "{not-json\n").unwrap();
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let err = store.read_events(&TaskId("task-1".into())).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("failed to parse") && message.contains("line 1"))
+        );
+    }
+
+    #[test]
+    fn read_events_rejects_mismatched_task_ids() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        write_events(
+            &workspace,
+            "task-1",
+            &[AuditEvent::TaskStatusChanged {
+                task_id: TaskId("other-task".into()),
+                at: datetime!(2024-01-01 00:00 UTC),
+                status: TaskStatus::Succeeded,
+            }],
+        );
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let err = store.read_events(&TaskId("task-1".into())).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("belongs to task other-task instead of task-1"))
+        );
     }
 
     #[test]
@@ -726,6 +888,17 @@ mod tests {
         for file in files {
             fs::write(task_dir.join(file), "artifact\n").unwrap();
         }
+    }
+
+    fn write_events(workspace: &Utf8PathBuf, task_id: &str, events: &[AuditEvent]) {
+        let task_dir = workspace.join(".taskfence/tasks").join(task_id);
+        fs::create_dir_all(&task_dir).unwrap();
+        let mut contents = String::new();
+        for event in events {
+            contents.push_str(&serde_json::to_string(event).unwrap());
+            contents.push('\n');
+        }
+        fs::write(task_dir.join("events.jsonl"), contents).unwrap();
     }
 
     fn test_task(task_id: &str, workspace: &Utf8PathBuf, goal: &str) -> ResolvedTask {

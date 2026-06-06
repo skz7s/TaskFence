@@ -8,12 +8,15 @@ use taskfence_audit::LocalJsonlAuditLogger;
 use taskfence_config::load_task_file;
 use taskfence_core::{
     Action, ActionDecision, ApprovalDecision, ApprovalEngine, ApprovalId, ApprovalRecord,
-    LogStream, Orchestrator, ResolvedTask, RiskLevel, Runner, TaskFenceError, TaskId, TaskStatus,
+    AuditEvent, ExitStatus, LogStream, Orchestrator, ResolvedTask, RiskLevel, Runner,
+    TaskFenceError, TaskId, TaskStatus,
 };
 use taskfence_policy::BuiltInPolicyEngine;
 use taskfence_report::MarkdownReportGenerator;
 use taskfence_runner::DockerRunner;
-use taskfence_state::{InMemoryStateStore, LocalTaskEvidenceStore, TaskLogs, TaskSummary};
+use taskfence_state::{
+    InMemoryStateStore, LocalTaskEvidenceStore, TaskEvents, TaskLogs, TaskSummary,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "taskfence")]
@@ -67,6 +70,14 @@ enum Command {
     },
     /// Show a locally recorded task summary.
     Task {
+        /// Task ID to query.
+        task_id: String,
+        /// Workspace that owns the .taskfence task evidence directory.
+        #[arg(long, default_value = ".")]
+        workspace: Utf8PathBuf,
+    },
+    /// Show the structured event timeline for a task.
+    Events {
         /// Task ID to query.
         task_id: String,
         /// Workspace that owns the .taskfence task evidence directory.
@@ -152,6 +163,7 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
         Command::Diff { task_id, workspace } => show_diff(workspace, task_id),
         Command::Tasks { workspace } => show_tasks(workspace),
         Command::Task { task_id, workspace } => show_task(workspace, task_id),
+        Command::Events { task_id, workspace } => show_events(workspace, task_id),
         Command::Approvals { workspace } => show_approvals(workspace),
         Command::Approval {
             approval_id,
@@ -202,6 +214,13 @@ fn show_tasks(workspace: Utf8PathBuf) -> taskfence_core::Result<()> {
 
 fn show_task(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<()> {
     let text = task_text(workspace, &TaskId(task_id))?;
+    print!("{text}");
+    Ok(())
+}
+
+fn show_events(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<()> {
+    let task_id = TaskId(task_id);
+    let text = events_text(workspace, &task_id)?;
     print!("{text}");
     Ok(())
 }
@@ -268,6 +287,12 @@ fn task_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Result
     Ok(render_task_summary(&task))
 }
 
+fn events_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Result<String> {
+    let store = LocalTaskEvidenceStore::new(workspace);
+    let events = store.read_events(task_id)?;
+    Ok(render_task_events(task_id, &events))
+}
+
 fn approvals_text(workspace: Utf8PathBuf) -> taskfence_core::Result<String> {
     let store = LocalApprovalStore::new(workspace);
     let approvals = store.list()?;
@@ -301,6 +326,109 @@ fn render_logs(logs: &TaskLogs) -> String {
         }
     }
     rendered
+}
+
+fn render_task_events(task_id: &TaskId, events: &TaskEvents) -> String {
+    let mut rendered = String::new();
+    rendered.push_str("Task events\n");
+    rendered.push_str(&format!("  task: {}\n", task_id.0));
+    rendered.push_str(&format!("  evidence: {}\n", events.path));
+    rendered.push_str("KIND\tAT\tSUMMARY\n");
+    for event in &events.events {
+        rendered.push_str(event_kind(event));
+        rendered.push('\t');
+        rendered.push_str(&event_time(event));
+        rendered.push('\t');
+        rendered.push_str(&compact_cell(&event_summary(event)));
+        rendered.push('\n');
+    }
+    rendered
+}
+
+fn event_kind(event: &AuditEvent) -> &'static str {
+    match event {
+        AuditEvent::TaskCreated { .. } => "task-created",
+        AuditEvent::TaskStatusChanged { .. } => "status",
+        AuditEvent::PolicyDecision { .. } => "policy",
+        AuditEvent::ApprovalRequested { .. } => "approval-requested",
+        AuditEvent::ApprovalResolved { .. } => "approval-resolved",
+        AuditEvent::Log { .. } => "log",
+        AuditEvent::RunnerExit { .. } => "runner-exit",
+        AuditEvent::Artifact { .. } => "artifact",
+        AuditEvent::Error { .. } => "error",
+    }
+}
+
+fn event_time(event: &AuditEvent) -> String {
+    match event {
+        AuditEvent::TaskCreated { at, .. }
+        | AuditEvent::TaskStatusChanged { at, .. }
+        | AuditEvent::PolicyDecision { at, .. }
+        | AuditEvent::RunnerExit { at, .. }
+        | AuditEvent::Artifact { at, .. }
+        | AuditEvent::Error { at, .. } => at.to_string(),
+        AuditEvent::Log { chunk, .. } => chunk.timestamp.to_string(),
+        AuditEvent::ApprovalRequested { record } => record.requested_at.to_string(),
+        AuditEvent::ApprovalResolved { record } => record
+            .resolved_at
+            .as_ref()
+            .unwrap_or(&record.requested_at)
+            .to_string(),
+    }
+}
+
+fn event_summary(event: &AuditEvent) -> String {
+    match event {
+        AuditEvent::TaskCreated { goal, .. } => format!("goal: {}", compact_cell(goal)),
+        AuditEvent::TaskStatusChanged { status, .. } => format!("status {status:?}"),
+        AuditEvent::PolicyDecision {
+            action, decision, ..
+        } => format!(
+            "{} => {}",
+            approval_action_summary(action),
+            approval_policy_summary(decision)
+        ),
+        AuditEvent::ApprovalRequested { record } => format!(
+            "approval {} requested for {}; {}",
+            record.id.0,
+            approval_action_summary(&record.action),
+            approval_policy_summary(&record.policy_decision)
+        ),
+        AuditEvent::ApprovalResolved { record } => format!(
+            "approval {} {}; {}",
+            record.id.0,
+            approval_status(record),
+            approval_action_summary(&record.action)
+        ),
+        AuditEvent::Log { chunk, .. } => {
+            let stream = match chunk.stream {
+                LogStream::Stdout => "stdout",
+                LogStream::Stderr => "stderr",
+            };
+            format!("{stream} log {} byte(s)", chunk.text.len())
+        }
+        AuditEvent::RunnerExit { exit_status, .. } => exit_status_summary(exit_status),
+        AuditEvent::Artifact { kind, path, .. } => {
+            format!(
+                "{} artifact {}",
+                compact_cell(kind),
+                compact_cell(path.as_str())
+            )
+        }
+        AuditEvent::Error { message, .. } => format!("error: {}", compact_cell(message)),
+    }
+}
+
+fn exit_status_summary(exit_status: &ExitStatus) -> String {
+    let code = exit_status
+        .code
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "-".into());
+    let signal = exit_status.signal.as_deref().unwrap_or("-");
+    format!(
+        "exit code {code}; timed_out {}; signal {signal}",
+        exit_status.timed_out
+    )
 }
 
 fn render_approval_records(records: &[ApprovalRecord]) -> String {
@@ -806,6 +934,33 @@ mod tests {
     }
 
     #[test]
+    fn parses_events_task_id() {
+        let cli = Cli::try_parse_from(["taskfence", "events", "task-123"]).unwrap();
+
+        match cli.command {
+            Command::Events { task_id, workspace } => {
+                assert_eq!(task_id, "task-123");
+                assert_eq!(workspace, Utf8PathBuf::from("."));
+            }
+            other => panic!("expected events command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_events_workspace() {
+        let cli = Cli::try_parse_from(["taskfence", "events", "task-123", "--workspace", "repo"])
+            .unwrap();
+
+        match cli.command {
+            Command::Events { task_id, workspace } => {
+                assert_eq!(task_id, "task-123");
+                assert_eq!(workspace, Utf8PathBuf::from("repo"));
+            }
+            other => panic!("expected events command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_approvals_default_workspace() {
         let cli = Cli::try_parse_from(["taskfence", "approvals"]).unwrap();
 
@@ -1062,6 +1217,70 @@ mod tests {
         assert!(text.contains("  artifacts: report,diff\n"));
         assert!(text.contains(".taskfence/tasks/cli-detail"));
         assert!(text.contains("  warnings: -\n"));
+    }
+
+    #[test]
+    fn events_command_reads_local_task_events() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(&task_file, task_yaml("cli-events", &workspace, "echo ok")).unwrap();
+
+        run_task_with_runner(
+            task_file,
+            &FakeRunner::succeeding(),
+            RunApprovalMode::FailClosed,
+        )
+        .unwrap();
+
+        let text = events_text(workspace, &TaskId("cli-events".into())).unwrap();
+
+        assert!(text.contains("Task events\n"));
+        assert!(text.contains("  task: cli-events\n"));
+        assert!(text.contains("events.jsonl"));
+        assert!(text.contains("KIND\tAT\tSUMMARY\n"));
+        assert!(text.contains("task-created\t"));
+        assert!(text.contains("goal: CLI test"));
+        assert!(text.contains("status\t"));
+        assert!(text.contains("status Succeeded"));
+        assert!(text.contains("runner-exit\t"));
+        assert!(text.contains("exit code 0; timed_out false; signal -"));
+    }
+
+    #[test]
+    fn events_summary_redacts_tool_parameter_values() {
+        let events = TaskEvents {
+            task_dir: Utf8PathBuf::from("/tmp/taskfence-events/task-1"),
+            path: Utf8PathBuf::from("/tmp/taskfence-events/task-1/events.jsonl"),
+            events: vec![AuditEvent::PolicyDecision {
+                task_id: TaskId("task-1".into()),
+                at: time::OffsetDateTime::now_utc(),
+                action: Action::ToolCall(ToolAction {
+                    protocol: "mcp".into(),
+                    tool: "github".into(),
+                    operation: "create_pr".into(),
+                    parameters: BTreeMap::from([(
+                        "token".into(),
+                        RedactedValue::Plain("secret-value".into()),
+                    )]),
+                }),
+                decision: ActionDecision::RequireApproval {
+                    approval_kind: "tool_call".into(),
+                    rule_id: Some("tool-test".into()),
+                    reason: "needs review".into(),
+                    risk: RiskLevel::Critical,
+                },
+            }],
+        };
+
+        let text = render_task_events(&TaskId("task-1".into()), &events);
+
+        assert!(text.contains("tool call mcp github.create_pr with 1 parameter(s)"));
+        assert!(text.contains(
+            "requires tool_call approval by rule tool-test: needs review; risk critical"
+        ));
+        assert!(!text.contains("secret-value"));
     }
 
     #[test]
