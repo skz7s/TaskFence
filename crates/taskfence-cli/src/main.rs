@@ -467,11 +467,15 @@ mod tests {
         )
         .unwrap();
 
-        let err = run_task_with_runner(task_file, &FakeRunner::succeeding(), false).unwrap_err();
+        let err =
+            run_task_with_runner(task_file.clone(), &FakeRunner::succeeding(), false).unwrap_err();
 
         assert!(
-            matches!(err, TaskFenceError::Approval(message) if message.contains("denied or timed out"))
+            matches!(err, TaskFenceError::Runner(message) if message.contains("status Denied") && message.contains("denied or timed out"))
         );
+        assert!(workspace
+            .join(".taskfence/tasks/approval-default/report.md")
+            .is_file());
     }
 
     #[test]

@@ -668,6 +668,75 @@ mod tests {
     }
 
     #[test]
+    fn writes_approval_denial_report_from_structured_events() {
+        let temp = tempfile::tempdir().unwrap();
+        let task_dir = Utf8PathBuf::from_path_buf(temp.path().join("task")).unwrap();
+        fs::create_dir_all(&task_dir).unwrap();
+        let report_path = task_dir.join("report.md");
+        let task = sample_task();
+        let action = Action::Command(CommandAction::parse("git push origin main"));
+        let decision = ActionDecision::RequireApproval {
+            rule_id: Some("approval-push".into()),
+            approval_kind: "command".into(),
+            reason: "push requires review".into(),
+            risk: taskfence_core::RiskLevel::High,
+        };
+        let record = taskfence_core::ApprovalRecord {
+            id: taskfence_core::ApprovalId("approval-1".into()),
+            task_id: task.id.clone(),
+            actor: "local".into(),
+            source: Some("interactive".into()),
+            requested_at: datetime!(2024-01-01 00:01 UTC),
+            resolved_at: Some(datetime!(2024-01-01 00:02 UTC)),
+            action: action.clone(),
+            policy_decision: decision.clone(),
+            decision: Some(ApprovalDecision::Denied),
+        };
+        let artifacts = ArtifactRefs {
+            task_dir: task_dir.clone(),
+            resolved_task: Some(task_dir.join("task.resolved.json")),
+            events: Some(task_dir.join("events.jsonl")),
+            stdout: Some(task_dir.join("stdout.log")),
+            stderr: Some(task_dir.join("stderr.log")),
+            diff: None,
+            report: Some(report_path.clone()),
+        };
+        let events = vec![
+            AuditEvent::TaskCreated {
+                task_id: task.id.clone(),
+                at: datetime!(2024-01-01 00:00 UTC),
+                goal: task.goal.clone(),
+            },
+            AuditEvent::PolicyDecision {
+                task_id: task.id.clone(),
+                at: datetime!(2024-01-01 00:01 UTC),
+                action,
+                decision,
+            },
+            AuditEvent::ApprovalRequested {
+                record: record.clone(),
+            },
+            AuditEvent::ApprovalResolved { record },
+            AuditEvent::TaskStatusChanged {
+                task_id: task.id.clone(),
+                at: datetime!(2024-01-01 00:03 UTC),
+                status: TaskStatus::Denied,
+            },
+        ];
+
+        let path = MarkdownReportGenerator::new()
+            .generate(&task, &artifacts, &events)
+            .unwrap();
+        let contents = fs::read_to_string(path).unwrap();
+
+        assert!(contents.contains("Final status: Denied"));
+        assert!(contents.contains("Approval-required decisions: 1"));
+        assert!(contents.contains("| approval-1 | local | denied |"));
+        assert!(contents.contains("No diff artifact was supplied."));
+        assert!(contents.contains("No diff artifact was available"));
+    }
+
+    #[test]
     fn golden_report_stays_stable() {
         let temp = tempfile::tempdir().unwrap();
         let task_dir = Utf8PathBuf::from_path_buf(temp.path().join("task")).unwrap();

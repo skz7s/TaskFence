@@ -65,12 +65,13 @@ The orchestrator owns the task lifecycle:
 
 1. Load and validate the task file.
 2. Resolve workspace and policy.
-3. Prepare sandbox inputs.
-4. Start the runner.
-5. Stream logs.
-6. Handle approvals.
-7. Collect artifacts.
-8. Generate the report.
+3. Create the local task evidence directory.
+4. Evaluate command policy and handle approvals.
+5. Prepare sandbox inputs.
+6. Start the runner.
+7. Stream logs.
+8. Collect artifacts.
+9. Generate the report.
 
 ### Policy Engine
 
@@ -198,6 +199,10 @@ in-process interactive approval with `taskfence run --interactive-approval`,
 and preconfigured decisions can model approved, denied, or timed-out outcomes in
 tests. Durable approval lookup through `taskfence approve` and `taskfence deny`
 is not implemented yet.
+
+Policy-denied and approval-denied local runs stop before the runner starts, but
+still write resolved task evidence, structured audit events, and a Markdown
+report when the artifact directory can be created.
 
 ### Audit Logger
 

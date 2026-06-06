@@ -45,6 +45,9 @@ Implemented boundaries:
 - Local Docker domain allowlists fail closed until an enforcing proxy exists.
 - Local approval is fail-closed by default; `taskfence run --interactive-approval`
   enables in-process terminal approval for approval-required actions.
+- Policy-denied and approval-denied local runs stop before the runner starts,
+  but still write resolved task evidence, structured audit events, and a
+  Markdown report when artifact creation succeeds.
 - `taskfence report <task-id> --workspace <workspace>` and
   `taskfence logs <task-id> --workspace <workspace>` read generated local task
   evidence from `.taskfence/tasks/<task-id>/` when those artifacts exist.
@@ -86,8 +89,9 @@ Partially implemented: built-in command/file/network/env/secret/tool policy
 decisions, deny precedence, approval-required command patterns,
 non-interactive fail-closed approval records, timeout modeling, and audit/report
 redaction. Opt-in local interactive approval during `run` is implemented.
-Remaining Phase 2 work is durable approval lookup commands and broader denied
-action records.
+Denied command and approval denial evidence/reporting is implemented for local
+pre-run decisions. Remaining Phase 2 work is durable approval lookup commands
+and broader denied action records for future gateway/tool actions.
 
 Minimum demo:
 

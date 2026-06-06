@@ -657,7 +657,11 @@ impl<'a> Orchestrator<'a> {
 
         self.transition(&mut events, &task.id, TaskStatus::Validating)?;
         let invocation = self.adapter.build_invocation(&task)?;
-        self.evaluate_or_request_approval(
+        self.transition(&mut events, &task.id, TaskStatus::Preparing)?;
+        let artifacts = self.artifacts.create_task_dir(&task)?;
+        self.artifacts.write_resolved_task(&task)?;
+
+        if let Err(err) = self.evaluate_or_request_approval(
             &mut events,
             &task,
             Action::Command(CommandAction {
@@ -675,12 +679,11 @@ impl<'a> Orchestrator<'a> {
                 )
                 .shell_wrapped,
             }),
-        )?;
+        ) {
+            return self.finish_pre_run_failure(events, task, artifacts, err);
+        }
 
-        self.transition(&mut events, &task.id, TaskStatus::Preparing)?;
         let baseline = self.artifacts.capture_baseline(&task)?;
-        let artifacts = self.artifacts.create_task_dir(&task)?;
-        self.artifacts.write_resolved_task(&task)?;
         let prepared = self.runner.prepare(&task)?;
 
         self.transition(&mut events, &task.id, TaskStatus::Running)?;
@@ -785,6 +788,43 @@ impl<'a> Orchestrator<'a> {
             exit_status: Some(run_output.exit_status),
             artifacts,
             message: failure_message,
+        })
+    }
+
+    fn finish_pre_run_failure(
+        &self,
+        mut events: Vec<AuditEvent>,
+        task: ResolvedTask,
+        artifacts: ArtifactRefs,
+        err: TaskFenceError,
+    ) -> Result<TaskResult> {
+        let status = if has_status(&events, &TaskStatus::Denied) {
+            TaskStatus::Denied
+        } else {
+            self.transition(&mut events, &task.id, TaskStatus::Failed)?;
+            TaskStatus::Failed
+        };
+        let message = err.to_string();
+        self.record_error(&mut events, &task.id, &message)?;
+
+        if let Err(report_err) = self.generate_report(&mut events, &task, &artifacts) {
+            self.record_error(&mut events, &task.id, &report_err.to_string())?;
+            self.transition(&mut events, &task.id, TaskStatus::Failed)?;
+            return Ok(TaskResult {
+                task_id: task.id,
+                status: TaskStatus::Failed,
+                exit_status: None,
+                artifacts,
+                message: Some(report_err.to_string()),
+            });
+        }
+
+        Ok(TaskResult {
+            task_id: task.id,
+            status,
+            exit_status: None,
+            artifacts,
+            message: Some(message),
         })
     }
 
@@ -959,6 +999,15 @@ impl<'a> Orchestrator<'a> {
     }
 }
 
+fn has_status(events: &[AuditEvent], expected: &TaskStatus) -> bool {
+    events.iter().any(|event| {
+        matches!(
+            event,
+            AuditEvent::TaskStatusChanged { status, .. } if status == expected
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1085,6 +1134,100 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn policy_denial_returns_denied_result_and_reports_without_starting_runner() {
+        let audit = MemoryAudit::default();
+        let artifacts = MemoryArtifacts::default();
+        let report = CapturingReport::default();
+        let runner = StaticRunner::succeeding();
+        let state = MemoryState::default();
+        let adapter = StaticAdapter;
+        let approval = DenyingApproval;
+        let policy = DenyPolicy;
+        let orchestrator = Orchestrator {
+            policy: &policy,
+            approval: &approval,
+            audit: &audit,
+            artifacts: &artifacts,
+            adapter: &adapter,
+            runner: &runner,
+            report: &report,
+            state: &state,
+        };
+
+        let result = orchestrator.run(sample_task()).unwrap();
+
+        assert_eq!(result.status, TaskStatus::Denied);
+        assert!(result.exit_status.is_none());
+        assert_eq!(*runner.prepared.borrow(), 0);
+        assert_eq!(*runner.started.borrow(), 0);
+        let report_events = report.events.borrow();
+        assert!(report_events.iter().any(|event| matches!(
+            event,
+            AuditEvent::PolicyDecision {
+                decision: ActionDecision::Deny { reason, .. },
+                ..
+            } if reason == "test deny"
+        )));
+        assert!(report_events.iter().any(|event| matches!(
+            event,
+            AuditEvent::TaskStatusChanged {
+                status: TaskStatus::Denied,
+                ..
+            }
+        )));
+        assert!(!report_events
+            .iter()
+            .any(|event| matches!(event, AuditEvent::RunnerExit { .. })));
+    }
+
+    #[test]
+    fn approval_denial_returns_denied_result_and_reports_without_starting_runner() {
+        let audit = MemoryAudit::default();
+        let artifacts = MemoryArtifacts::default();
+        let report = CapturingReport::default();
+        let runner = StaticRunner::succeeding();
+        let state = MemoryState::default();
+        let adapter = StaticAdapter;
+        let approval = DenyingApproval;
+        let policy = ApprovalPolicy;
+        let orchestrator = Orchestrator {
+            policy: &policy,
+            approval: &approval,
+            audit: &audit,
+            artifacts: &artifacts,
+            adapter: &adapter,
+            runner: &runner,
+            report: &report,
+            state: &state,
+        };
+
+        let result = orchestrator.run(sample_task()).unwrap();
+
+        assert_eq!(result.status, TaskStatus::Denied);
+        assert!(result.exit_status.is_none());
+        assert_eq!(*runner.prepared.borrow(), 0);
+        assert_eq!(*runner.started.borrow(), 0);
+        let report_events = report.events.borrow();
+        assert!(report_events
+            .iter()
+            .any(|event| matches!(event, AuditEvent::ApprovalRequested { .. })));
+        assert!(report_events.iter().any(|event| matches!(
+            event,
+            AuditEvent::ApprovalResolved { record } if record.decision == Some(ApprovalDecision::Denied)
+        )));
+        assert!(report_events.iter().any(|event| matches!(
+            event,
+            AuditEvent::TaskStatusChanged {
+                status: TaskStatus::Denied,
+                ..
+            }
+        )));
+        assert!(!report_events
+            .iter()
+            .any(|event| matches!(event, AuditEvent::RunnerExit { .. })));
+    }
+
     fn sample_task() -> ResolvedTask {
         ResolvedTask {
             id: TaskId("task-1".into()),
@@ -1124,6 +1267,32 @@ mod tests {
             Ok(ActionDecision::Allow {
                 rule_id: Some("allow-test".into()),
                 reason: "test allow".into(),
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct DenyPolicy;
+
+    impl PolicyEngine for DenyPolicy {
+        fn evaluate(&self, _task: &ResolvedTask, _action: &Action) -> Result<ActionDecision> {
+            Ok(ActionDecision::Deny {
+                rule_id: Some("deny-test".into()),
+                reason: "test deny".into(),
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct ApprovalPolicy;
+
+    impl PolicyEngine for ApprovalPolicy {
+        fn evaluate(&self, _task: &ResolvedTask, _action: &Action) -> Result<ActionDecision> {
+            Ok(ActionDecision::RequireApproval {
+                approval_kind: "command".into(),
+                rule_id: Some("approval-test".into()),
+                reason: "test approval".into(),
+                risk: RiskLevel::High,
             })
         }
     }
@@ -1260,6 +1429,8 @@ mod tests {
     #[derive(Debug)]
     struct StaticRunner {
         output: RunOutput,
+        prepared: RefCell<usize>,
+        started: RefCell<usize>,
     }
 
     impl StaticRunner {
@@ -1282,6 +1453,8 @@ mod tests {
                     stdout: String::new(),
                     stderr: String::new(),
                 },
+                prepared: RefCell::new(0),
+                started: RefCell::new(0),
             }
         }
 
@@ -1298,6 +1471,7 @@ mod tests {
 
     impl Runner for StaticRunner {
         fn prepare(&self, task: &ResolvedTask) -> Result<PreparedRun> {
+            *self.prepared.borrow_mut() += 1;
             Ok(PreparedRun {
                 task_id: task.id.clone(),
                 image: task.sandbox.image.clone(),
@@ -1313,6 +1487,7 @@ mod tests {
             prepared: PreparedRun,
             _invocation: AgentInvocation,
         ) -> Result<RunningTask> {
+            *self.started.borrow_mut() += 1;
             Ok(RunningTask {
                 task_id: prepared.task_id.clone(),
                 runner_ref: format!("runner:{}", prepared.task_id.0),

@@ -900,7 +900,9 @@ The first usable version is complete when:
   work.
 - Approval-required actions fail closed by default in local mode. Operators can
   opt into in-process terminal approval with `taskfence run --interactive-approval`.
-- Artifacts are written under `.taskfence/tasks/<task-id>/`.
+- Artifacts are written under `.taskfence/tasks/<task-id>/`; policy-denied and
+  approval-denied pre-run decisions also write local evidence and a report when
+  artifact creation succeeds.
 - A Markdown report is generated from structured evidence.
 - Tests cover the main success path and the important failure branches.
 
