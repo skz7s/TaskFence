@@ -161,8 +161,9 @@ Current implementation is limited to typed normalization and mediation
 contracts, configured `permissions.tools` policy decisions, structured
 `PolicyDecision` audit events, optional `ApprovalRequested` /
 `ApprovalResolved` events for approval-required tool calls, report evidence,
-redacted secret references, and explicit unsupported-protocol errors. It does
-not execute MCP, HTTP, CLI wrapper, SDK, webhook, or secret-broker actions yet.
+redacted secret references, MCP/HTTP request normalization stubs, and explicit
+unsupported-protocol errors. It does not execute MCP, HTTP, CLI wrapper, SDK,
+webhook, or secret-broker actions yet.
 
 Supported gateway surfaces can include:
 

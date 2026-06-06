@@ -135,6 +135,8 @@ Current contract coverage before production gateway execution:
 - gateway secret broker contracts can authorize configured
   `secrets.available_to_gateway` grants and attach redacted secret references
   to tool parameters without reading or using raw credentials
+- MCP and HTTP adapter stubs normalize protocol-shaped requests into
+  `ToolAction` values and return explicit unsupported execution errors
 - reports render tool-call decisions, approvals, and denied tool actions from
   structured audit events without rendering raw parameter values
 

@@ -30,6 +30,75 @@ pub trait SecretBroker {
     ) -> taskfence_core::Result<SecretReference>;
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct McpToolRequest {
+    pub server: String,
+    pub tool: String,
+    pub arguments: BTreeMap<String, RedactedValue>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HttpToolRequest {
+    pub connector: String,
+    pub operation: String,
+    pub parameters: BTreeMap<String, RedactedValue>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnsupportedToolExecution {
+    pub action: ToolAction,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct McpGatewayAdapter;
+
+impl McpGatewayAdapter {
+    pub fn to_tool_action(&self, request: McpToolRequest) -> taskfence_core::Result<ToolAction> {
+        normalize_tool_action(ToolAction {
+            protocol: "mcp".into(),
+            tool: request.server,
+            operation: request.tool,
+            parameters: request.arguments,
+        })
+    }
+
+    pub fn execute(
+        &self,
+        request: McpToolRequest,
+    ) -> taskfence_core::Result<UnsupportedToolExecution> {
+        let action = self.to_tool_action(request)?;
+        Err(TaskFenceError::Unsupported(format!(
+            "mcp gateway execution is not implemented for {}.{}",
+            action.tool, action.operation
+        )))
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct HttpGatewayAdapter;
+
+impl HttpGatewayAdapter {
+    pub fn to_tool_action(&self, request: HttpToolRequest) -> taskfence_core::Result<ToolAction> {
+        normalize_tool_action(ToolAction {
+            protocol: "http".into(),
+            tool: request.connector,
+            operation: request.operation,
+            parameters: request.parameters,
+        })
+    }
+
+    pub fn execute(
+        &self,
+        request: HttpToolRequest,
+    ) -> taskfence_core::Result<UnsupportedToolExecution> {
+        let action = self.to_tool_action(request)?;
+        Err(TaskFenceError::Unsupported(format!(
+            "http gateway execution is not implemented for {}.{}",
+            action.tool, action.operation
+        )))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GatewayMediation {
     pub action: ToolAction,
@@ -398,6 +467,96 @@ mod tests {
                 RedactedValue::Plain("ship bounded slice".into()),
             )]),
         }
+    }
+
+    #[test]
+    fn mcp_adapter_normalizes_request_to_tool_action() {
+        let adapter = McpGatewayAdapter;
+
+        let action = adapter
+            .to_tool_action(McpToolRequest {
+                server: " GitHub ".into(),
+                tool: " Create_PR ".into(),
+                arguments: BTreeMap::from([(
+                    " token ".into(),
+                    RedactedValue::Redacted {
+                        reason: "test secret reference".into(),
+                    },
+                )]),
+            })
+            .unwrap();
+
+        assert_eq!(action.protocol, "mcp");
+        assert_eq!(action.tool, "github");
+        assert_eq!(action.operation, "create_pr");
+        assert!(matches!(
+            action.parameters.get("token"),
+            Some(RedactedValue::Redacted { reason }) if reason == "test secret reference"
+        ));
+    }
+
+    #[test]
+    fn mcp_adapter_execution_is_explicitly_unsupported() {
+        let adapter = McpGatewayAdapter;
+
+        let err = adapter
+            .execute(McpToolRequest {
+                server: "github".into(),
+                tool: "read_issue".into(),
+                arguments: BTreeMap::new(),
+            })
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            TaskFenceError::Unsupported(message)
+                if message.contains("mcp gateway execution is not implemented")
+                    && message.contains("github.read_issue")
+        ));
+    }
+
+    #[test]
+    fn http_adapter_normalizes_request_to_tool_action() {
+        let adapter = HttpGatewayAdapter;
+
+        let action = adapter
+            .to_tool_action(HttpToolRequest {
+                connector: " Linear ".into(),
+                operation: " Create_Issue ".into(),
+                parameters: BTreeMap::from([(
+                    "title".into(),
+                    RedactedValue::Plain("Create launch task".into()),
+                )]),
+            })
+            .unwrap();
+
+        assert_eq!(action.protocol, "http");
+        assert_eq!(action.tool, "linear");
+        assert_eq!(action.operation, "create_issue");
+        assert!(matches!(
+            action.parameters.get("title"),
+            Some(RedactedValue::Plain(title)) if title == "Create launch task"
+        ));
+    }
+
+    #[test]
+    fn http_adapter_execution_is_explicitly_unsupported() {
+        let adapter = HttpGatewayAdapter;
+
+        let err = adapter
+            .execute(HttpToolRequest {
+                connector: "github".into(),
+                operation: "create_pr".into(),
+                parameters: BTreeMap::new(),
+            })
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            TaskFenceError::Unsupported(message)
+                if message.contains("http gateway execution is not implemented")
+                    && message.contains("github.create_pr")
+        ));
     }
 
     fn task_with_gateway_secret() -> ResolvedTask {

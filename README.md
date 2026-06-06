@@ -58,7 +58,8 @@ execution isolation.
 TaskFence is designed around two complementary modes. The local Docker runner is
 implemented first; gateway-enhanced execution is intentionally still limited to
 typed contracts, configured tool policy decisions, optional approval mediation,
-redacted secret references, structured evidence, and unsupported-action errors.
+redacted secret references, MCP/HTTP request normalization stubs, structured
+evidence, and unsupported-action errors.
 
 ### 1. Generic Sandbox Mode
 
@@ -235,8 +236,8 @@ The first implementation currently includes:
 8. Local CLI lookup for generated reports and captured stdout/stderr logs.
 9. Task-file `permissions.tools` parsing and policy/audit/report evidence for
    future gateway-mediated tool actions, including optional approval evidence,
-   and redacted gateway secret references without real tool execution or
-   credential use.
+   redacted gateway secret references, and MCP/HTTP request normalization
+   stubs without real tool execution or credential use.
 
 ## Non-Goals
 

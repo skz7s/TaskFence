@@ -406,6 +406,8 @@ Responsibilities:
 - Request approval for high-risk tool actions when an approval engine is
   explicitly attached.
 - Define secret broker references without exposing raw secrets to the agent.
+- Normalize MCP/HTTP-shaped adapter stub requests into tool actions and return
+  explicit unsupported execution errors until real protocol transports exist.
 - Emit structured audit events.
 
 This crate can start mostly as contracts and a local stub, but the contracts
@@ -709,7 +711,8 @@ Tasks:
 - Define normalized tool action model.
 - Carry configured task-file tool permissions through policy decisions.
 - Define secret broker trait and redacted secret references.
-- Add MCP/HTTP adapter stubs returning explicit unsupported errors.
+- Keep MCP/HTTP adapter stubs returning explicit unsupported errors aligned with
+  the normalized tool action model.
 - Add tests proving gateway actions route through policy and audit traits.
 
 Acceptance:
