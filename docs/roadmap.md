@@ -132,6 +132,9 @@ Current contract coverage before production gateway execution:
 - when an approval engine is explicitly attached, approval-required tool calls
   write `ApprovalRequested` / `ApprovalResolved` audit events and fail closed
   on denial or timeout
+- gateway secret broker contracts can authorize configured
+  `secrets.available_to_gateway` grants and attach redacted secret references
+  to tool parameters without reading or using raw credentials
 - reports render tool-call decisions, approvals, and denied tool actions from
   structured audit events without rendering raw parameter values
 

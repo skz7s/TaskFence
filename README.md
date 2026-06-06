@@ -15,8 +15,9 @@ records what happened, and creates evidence that can be reviewed later.
 > Docker sandbox, with structured audit events, local artifacts, and Markdown
 > reports. Task files can configure tool allow/approval/deny policy for typed
 > gateway mediation evidence, including optional approval request/resolution
-> records for approval-required tool calls, but real gateway/tool execution,
-> Web UI, replay, team-server, and enterprise surfaces remain future work.
+> records for approval-required tool calls and redacted gateway secret
+> references, but real gateway/tool execution, credential use, Web UI, replay,
+> team-server, and enterprise surfaces remain future work.
 
 ## Why TaskFence
 
@@ -57,7 +58,7 @@ execution isolation.
 TaskFence is designed around two complementary modes. The local Docker runner is
 implemented first; gateway-enhanced execution is intentionally still limited to
 typed contracts, configured tool policy decisions, optional approval mediation,
-structured evidence, and unsupported-action errors.
+redacted secret references, structured evidence, and unsupported-action errors.
 
 ### 1. Generic Sandbox Mode
 
@@ -234,7 +235,8 @@ The first implementation currently includes:
 8. Local CLI lookup for generated reports and captured stdout/stderr logs.
 9. Task-file `permissions.tools` parsing and policy/audit/report evidence for
    future gateway-mediated tool actions, including optional approval evidence,
-   without real tool execution.
+   and redacted gateway secret references without real tool execution or
+   credential use.
 
 ## Non-Goals
 

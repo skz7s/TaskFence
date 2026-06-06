@@ -41,8 +41,9 @@ commands in Docker, and generated local reports/logs can be read back from the
 task workspace. Task files can configure tool allow/approval/deny rules that
 feed typed gateway mediation, policy decisions, audit events, and report
 evidence, including optional approval request/resolution records for
-approval-required tool calls. Gateway execution, Web UI, replay, team-server,
-and enterprise control-plane behavior are not implemented yet.
+approval-required tool calls and redacted gateway secret references. Gateway
+execution, credential use, Web UI, replay, team-server, and enterprise
+control-plane behavior are not implemented yet.
 
 ### CLI
 
@@ -160,8 +161,8 @@ Current implementation is limited to typed normalization and mediation
 contracts, configured `permissions.tools` policy decisions, structured
 `PolicyDecision` audit events, optional `ApprovalRequested` /
 `ApprovalResolved` events for approval-required tool calls, report evidence,
-and explicit unsupported-protocol errors. It does not execute MCP, HTTP, CLI
-wrapper, SDK, webhook, or secret-broker actions yet.
+redacted secret references, and explicit unsupported-protocol errors. It does
+not execute MCP, HTTP, CLI wrapper, SDK, webhook, or secret-broker actions yet.
 
 Supported gateway surfaces can include:
 
@@ -187,6 +188,11 @@ possible.
 The agent should request an action through a tool. The gateway performs the
 action with a scoped credential. Logs contain references and redacted values, not
 raw secrets.
+
+Current implementation only defines the gateway-side broker trait and
+`SecretReference` contract. It can authorize a requested secret against
+`secrets.available_to_gateway` and attach a redacted parameter reference, but it
+does not read, store, or use a raw credential.
 
 ### Approval Engine
 

@@ -7,6 +7,30 @@ use taskfence_core::{
 use time::OffsetDateTime;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecretReference {
+    pub name: String,
+    pub scope: String,
+    pub handle: String,
+}
+
+impl SecretReference {
+    pub fn as_redacted_value(&self) -> RedactedValue {
+        RedactedValue::Redacted {
+            reason: format!("gateway secret reference for {}", self.name),
+        }
+    }
+}
+
+pub trait SecretBroker {
+    fn issue_reference(
+        &self,
+        task: &ResolvedTask,
+        name: &str,
+        scope: &str,
+    ) -> taskfence_core::Result<SecretReference>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GatewayMediation {
     pub action: ToolAction,
     pub decision: ActionDecision,
@@ -130,6 +154,57 @@ pub fn normalize_tool_action(action: ToolAction) -> taskfence_core::Result<ToolA
     })
 }
 
+pub fn gateway_secret_reference(
+    task: &ResolvedTask,
+    broker: &dyn SecretBroker,
+    name: impl Into<String>,
+    scope: impl Into<String>,
+) -> taskfence_core::Result<SecretReference> {
+    let name = normalize_required_segment("secret name", name.into())?;
+    let scope = normalize_required_segment("secret scope", scope.into())?;
+    ensure_secret_grant(task, &name, &scope)?;
+    broker.issue_reference(task, &name, &scope)
+}
+
+pub fn attach_secret_reference(
+    action: ToolAction,
+    parameter_name: impl Into<String>,
+    reference: &SecretReference,
+) -> taskfence_core::Result<ToolAction> {
+    let mut action = normalize_tool_action(action)?;
+    let parameter_name = parameter_name.into().trim().to_owned();
+    if parameter_name.is_empty() {
+        return Err(TaskFenceError::Gateway(
+            "secret reference parameter name must not be empty".into(),
+        ));
+    }
+    action
+        .parameters
+        .insert(parameter_name, reference.as_redacted_value());
+    Ok(action)
+}
+
+fn ensure_secret_grant(task: &ResolvedTask, name: &str, scope: &str) -> taskfence_core::Result<()> {
+    if task.secrets.expose_to_agent {
+        return Err(TaskFenceError::Gateway(
+            "gateway secret references require secrets to stay out of the agent".into(),
+        ));
+    }
+
+    if task
+        .secrets
+        .available_to_gateway
+        .iter()
+        .any(|grant| grant.name == name && grant.use_for.iter().any(|allowed| allowed == scope))
+    {
+        Ok(())
+    } else {
+        Err(TaskFenceError::Gateway(format!(
+            "secret {name} is not available to gateway scope {scope}"
+        )))
+    }
+}
+
 fn normalize_required_segment(name: &str, value: String) -> taskfence_core::Result<String> {
     let normalized = value.trim().to_ascii_lowercase();
     if normalized.is_empty() {
@@ -162,7 +237,8 @@ mod tests {
     use std::sync::Mutex;
     use taskfence_core::{
         AgentConfig, AgentKind, ApprovalConfig, ApprovalId, AuditConfig, LimitConfig,
-        PermissionConfig, SandboxConfig, SandboxKind, SecretConfig, TaskId, ToolPermissions,
+        PermissionConfig, SandboxConfig, SandboxKind, SecretConfig, SecretGrant, TaskId,
+        ToolPermissions,
     };
     use taskfence_policy::BuiltInPolicyEngine;
 
@@ -250,6 +326,30 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Default)]
+    struct StaticSecretBroker {
+        issued: Mutex<Vec<(String, String)>>,
+    }
+
+    impl SecretBroker for StaticSecretBroker {
+        fn issue_reference(
+            &self,
+            task: &ResolvedTask,
+            name: &str,
+            scope: &str,
+        ) -> taskfence_core::Result<SecretReference> {
+            self.issued
+                .lock()
+                .unwrap()
+                .push((name.into(), scope.into()));
+            Ok(SecretReference {
+                name: name.into(),
+                scope: scope.into(),
+                handle: format!("taskfence://{}/{name}/{scope}", task.id.0),
+            })
+        }
+    }
+
     fn allow() -> ActionDecision {
         ActionDecision::Allow {
             rule_id: Some("tools.allow".into()),
@@ -298,6 +398,15 @@ mod tests {
                 RedactedValue::Plain("ship bounded slice".into()),
             )]),
         }
+    }
+
+    fn task_with_gateway_secret() -> ResolvedTask {
+        let mut task = task();
+        task.secrets.available_to_gateway = vec![SecretGrant {
+            name: "github_token".into(),
+            use_for: vec!["github.create_pr".into()],
+        }];
+        task
     }
 
     #[test]
@@ -469,6 +578,82 @@ mod tests {
             Some(AuditEvent::ApprovalResolved { record })
                 if record.decision == Some(ApprovalDecision::TimedOut)
         ));
+    }
+
+    #[test]
+    fn issues_redacted_gateway_secret_reference_for_allowed_scope() {
+        let task = task_with_gateway_secret();
+        let broker = StaticSecretBroker::default();
+
+        let reference =
+            gateway_secret_reference(&task, &broker, " GitHub_Token ", " GitHub.Create_Pr ")
+                .unwrap();
+
+        assert_eq!(reference.name, "github_token");
+        assert_eq!(reference.scope, "github.create_pr");
+        assert_eq!(
+            broker.issued.lock().unwrap().as_slice(),
+            &[("github_token".into(), "github.create_pr".into())]
+        );
+        assert!(matches!(
+            reference.as_redacted_value(),
+            RedactedValue::Redacted { reason } if reason.contains("github_token")
+        ));
+    }
+
+    #[test]
+    fn gateway_secret_reference_denies_unavailable_secret_or_scope() {
+        let task = task_with_gateway_secret();
+        let broker = StaticSecretBroker::default();
+
+        let missing = gateway_secret_reference(&task, &broker, "slack_token", "github.create_pr")
+            .unwrap_err();
+        let wrong_scope =
+            gateway_secret_reference(&task, &broker, "github_token", "github.delete_repo")
+                .unwrap_err();
+
+        assert!(
+            matches!(missing, TaskFenceError::Gateway(message) if message.contains("slack_token"))
+        );
+        assert!(
+            matches!(wrong_scope, TaskFenceError::Gateway(message) if message.contains("github.delete_repo"))
+        );
+        assert!(broker.issued.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn gateway_secret_reference_requires_secrets_to_stay_out_of_agent() {
+        let mut task = task_with_gateway_secret();
+        task.secrets.expose_to_agent = true;
+        let broker = StaticSecretBroker::default();
+
+        let err = gateway_secret_reference(&task, &broker, "github_token", "github.create_pr")
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            TaskFenceError::Gateway(message) if message.contains("stay out of the agent")
+        ));
+        assert!(broker.issued.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn attaches_secret_reference_without_raw_secret_parameter_value() {
+        let task = task_with_gateway_secret();
+        let broker = StaticSecretBroker::default();
+        let reference =
+            gateway_secret_reference(&task, &broker, "github_token", "github.create_pr").unwrap();
+
+        let action =
+            attach_secret_reference(tool_action("mcp"), " authorization ", &reference).unwrap();
+
+        assert!(matches!(
+            action.parameters.get("authorization"),
+            Some(RedactedValue::Redacted { reason })
+                if reason == "gateway secret reference for github_token"
+        ));
+        assert!(!format!("{:?}", action.parameters).contains(&reference.handle));
+        assert!(!format!("{:?}", action.parameters).contains("raw"));
     }
 
     #[test]
