@@ -899,7 +899,9 @@ The first usable version is complete when:
   of arbitrary in-container shell commands remains future gateway or wrapper
   work.
 - Approval-required actions fail closed by default in local mode. Operators can
-  opt into in-process terminal approval with `taskfence run --interactive-approval`.
+  opt into in-process terminal approval with `taskfence run --interactive-approval`
+  or explicitly wait for workspace-local external approval with
+  `taskfence run --external-approval` plus `taskfence approve` / `taskfence deny`.
 - Artifacts are written under `.taskfence/tasks/<task-id>/`; policy-denied and
   approval-denied pre-run decisions also write local evidence and a report when
   artifact creation succeeds.

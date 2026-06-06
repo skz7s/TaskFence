@@ -51,13 +51,17 @@ Initial commands:
   failing closed for approval-required actions by default.
 - `taskfence run --interactive-approval <task-file>` prompts in the local
   terminal for approval-required actions during that run.
+- `taskfence run --external-approval <task-file>` writes pending approval
+  records under the task workspace and waits for local `approve` / `deny`.
+- `taskfence approve <approval-id> --workspace <workspace>` and
+  `taskfence deny <approval-id> --workspace <workspace>` resolve pending local
+  approval records.
 - `taskfence logs <task-id> --workspace <workspace>` reads captured stdout and
   stderr logs from local task evidence when present.
 - `taskfence report <task-id> --workspace <workspace>` reads the generated
   Markdown report from local task evidence.
-- `taskfence init`, `taskfence approve`, and `taskfence deny` are parsed but
-  remain explicitly unsupported until task scaffolding and durable approval
-  storage are implemented.
+- `taskfence init` is parsed but remains explicitly unsupported until task-file
+  scaffolding is implemented.
 
 ### Task Orchestrator
 
@@ -195,10 +199,13 @@ Approval records should include:
 - timestamp
 
 Current local approval behavior is fail-closed by default. The CLI can opt into
-in-process interactive approval with `taskfence run --interactive-approval`,
-and preconfigured decisions can model approved, denied, or timed-out outcomes in
-tests. Durable approval lookup through `taskfence approve` and `taskfence deny`
-is not implemented yet.
+in-process interactive approval with `taskfence run --interactive-approval`, or
+explicitly wait for workspace-local file-backed approval records with
+`taskfence run --external-approval`. In external approval mode, pending records
+are written under `.taskfence/approvals/<approval-id>.json` in the task
+workspace and can be resolved by `taskfence approve` or `taskfence deny` from
+another terminal. Preconfigured decisions can model approved, denied, or
+timed-out outcomes in tests.
 
 Policy-denied and approval-denied local runs stop before the runner starts, but
 still write resolved task evidence, structured audit events, and a Markdown

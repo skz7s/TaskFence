@@ -26,3 +26,4 @@ taskfence-state.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+time.workspace = true

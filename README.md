@@ -152,6 +152,15 @@ approve or deny those actions in the running terminal session, opt in explicitly
 cargo run -p taskfence-cli -- run --interactive-approval examples/task.yaml
 ```
 
+To let another local terminal resolve approval-required actions, opt into the
+workspace-local file-backed approval queue:
+
+```bash
+cargo run -p taskfence-cli -- run --external-approval examples/task.yaml
+cargo run -p taskfence-cli -- approve <approval-id> --workspace examples/repo
+cargo run -p taskfence-cli -- deny <approval-id> --workspace examples/repo
+```
+
 On success, TaskFence writes artifacts under
 `examples/repo/.taskfence/tasks/local-demo/`, including:
 
@@ -206,8 +215,9 @@ The first implementation currently includes:
 2. Docker-based sandbox execution.
 3. One black-box CLI agent adapter.
 4. File, command, network, and secret restrictions.
-5. Non-interactive fail-closed local approval records, plus opt-in local
-   interactive approval during `run`.
+5. Non-interactive fail-closed local approval records, opt-in local interactive
+   approval during `run`, and explicit local external approval through
+   workspace-scoped `approve` / `deny` commands.
 6. Audit logs, denied-action records, stdout/stderr capture, and file diff
    artifacts.
 7. Markdown task reports generated from structured evidence.

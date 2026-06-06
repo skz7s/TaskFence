@@ -1,7 +1,11 @@
+use camino::{Utf8Path, Utf8PathBuf};
 use std::collections::BTreeMap;
+use std::fs;
 use std::io::{self, Write};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use taskfence_core::{
     Action, ActionDecision, ApprovalDecision, ApprovalEngine, ApprovalId, ApprovalRecord,
@@ -10,6 +14,10 @@ use taskfence_core::{
 use time::OffsetDateTime;
 
 const MAX_INTERACTIVE_ATTEMPTS: usize = 3;
+const DEFAULT_EXTERNAL_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const DEFAULT_EXTERNAL_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+const TASKFENCE_DIR: &str = ".taskfence";
+const APPROVALS_DIR: &str = "approvals";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum LocalApprovalMode {
@@ -107,6 +115,272 @@ impl LocalApprovalEngine {
                 None => Ok(ApprovalDecision::Denied),
             },
             LocalApprovalMode::FailClosed => Ok(ApprovalDecision::Denied),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct LocalApprovalStore {
+    workspace: Utf8PathBuf,
+}
+
+impl LocalApprovalStore {
+    pub fn new(workspace: impl Into<Utf8PathBuf>) -> Self {
+        Self {
+            workspace: workspace.into(),
+        }
+    }
+
+    pub fn approvals_dir(&self) -> Utf8PathBuf {
+        self.workspace.join(TASKFENCE_DIR).join(APPROVALS_DIR)
+    }
+
+    pub fn approval_path(&self, approval_id: &ApprovalId) -> taskfence_core::Result<Utf8PathBuf> {
+        validate_approval_id_component(&approval_id.0)?;
+        Ok(self.approvals_dir().join(format!("{}.json", approval_id.0)))
+    }
+
+    pub fn write_pending(&self, record: &ApprovalRecord) -> taskfence_core::Result<Utf8PathBuf> {
+        if record.decision.is_some() {
+            return Err(TaskFenceError::Approval(format!(
+                "approval {} is already resolved",
+                record.id.0
+            )));
+        }
+        self.write_record(record)
+    }
+
+    pub fn read(&self, approval_id: &ApprovalId) -> taskfence_core::Result<ApprovalRecord> {
+        let path = self.approval_path(approval_id)?;
+        let contents = fs::read_to_string(path.as_std_path()).map_err(|err| {
+            TaskFenceError::Approval(format!(
+                "approval record not found for {} at {path}: {err}",
+                approval_id.0
+            ))
+        })?;
+        serde_json::from_str(&contents).map_err(|err| {
+            TaskFenceError::Approval(format!(
+                "approval record is not valid JSON for {} at {path}: {err}",
+                approval_id.0
+            ))
+        })
+    }
+
+    pub fn resolve(
+        &self,
+        approval_id: &ApprovalId,
+        decision: ApprovalDecision,
+    ) -> taskfence_core::Result<ApprovalRecord> {
+        self.resolve_with_actor(approval_id, decision, "local-cli", Some("cli".into()))
+    }
+
+    pub fn resolve_with_actor(
+        &self,
+        approval_id: &ApprovalId,
+        decision: ApprovalDecision,
+        actor: impl Into<String>,
+        source: Option<String>,
+    ) -> taskfence_core::Result<ApprovalRecord> {
+        let mut record = self.read(approval_id)?;
+        if record.decision.is_some() {
+            return Err(TaskFenceError::Approval(format!(
+                "approval {} is already resolved",
+                approval_id.0
+            )));
+        }
+
+        record.actor = actor.into();
+        record.source = source;
+        record.decision = Some(decision);
+        record.resolved_at = Some(OffsetDateTime::now_utc());
+        self.write_record(&record)?;
+        Ok(record)
+    }
+
+    fn write_record(&self, record: &ApprovalRecord) -> taskfence_core::Result<Utf8PathBuf> {
+        let path = self.approval_path(&record.id)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent.as_std_path()).map_err(approval_store_io_error)?;
+        }
+        let bytes = serde_json::to_vec_pretty(record).map_err(|err| {
+            TaskFenceError::Approval(format!(
+                "failed to serialize approval record {}: {err}",
+                record.id.0
+            ))
+        })?;
+        atomic_write(&path, &bytes)?;
+        Ok(path)
+    }
+}
+
+pub struct LocalExternalApprovalEngine {
+    actor: String,
+    source: Option<String>,
+    store: LocalApprovalStore,
+    timeout_override: Option<Duration>,
+    poll_interval: Duration,
+    announce: bool,
+    timeouts: Mutex<BTreeMap<ApprovalId, Duration>>,
+}
+
+impl std::fmt::Debug for LocalExternalApprovalEngine {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LocalExternalApprovalEngine")
+            .field("actor", &self.actor)
+            .field("source", &self.source)
+            .field("store", &self.store)
+            .field("timeout_override", &self.timeout_override)
+            .field("poll_interval", &self.poll_interval)
+            .field("announce", &self.announce)
+            .finish_non_exhaustive()
+    }
+}
+
+impl LocalExternalApprovalEngine {
+    pub fn new(workspace: impl Into<Utf8PathBuf>) -> Self {
+        Self {
+            actor: "local".into(),
+            source: Some("external".into()),
+            store: LocalApprovalStore::new(workspace),
+            timeout_override: None,
+            poll_interval: DEFAULT_EXTERNAL_POLL_INTERVAL,
+            announce: true,
+            timeouts: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    pub fn with_actor(mut self, actor: impl Into<String>) -> Self {
+        self.actor = actor.into();
+        self
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout_override = Some(timeout);
+        self
+    }
+
+    pub fn with_poll_interval(mut self, poll_interval: Duration) -> Self {
+        self.poll_interval = poll_interval;
+        self
+    }
+
+    pub fn without_announcement(mut self) -> Self {
+        self.announce = false;
+        self
+    }
+
+    pub fn store(&self) -> &LocalApprovalStore {
+        &self.store
+    }
+
+    fn timeout_for(&self, task: &ResolvedTask) -> Duration {
+        self.timeout_override.unwrap_or_else(|| {
+            task.approval
+                .timeout_minutes
+                .map(|minutes| Duration::from_secs(minutes.saturating_mul(60)))
+                .unwrap_or(DEFAULT_EXTERNAL_TIMEOUT)
+        })
+    }
+
+    fn remember_timeout(
+        &self,
+        approval_id: ApprovalId,
+        timeout: Duration,
+    ) -> taskfence_core::Result<()> {
+        self.timeouts
+            .lock()
+            .map_err(|_| {
+                TaskFenceError::Approval("external approval timeout store is poisoned".into())
+            })?
+            .insert(approval_id, timeout);
+        Ok(())
+    }
+
+    fn timeout_for_approval(&self, approval_id: &ApprovalId) -> taskfence_core::Result<Duration> {
+        self.timeouts
+            .lock()
+            .map_err(|_| {
+                TaskFenceError::Approval("external approval timeout store is poisoned".into())
+            })
+            .map(|timeouts| {
+                timeouts
+                    .get(approval_id)
+                    .copied()
+                    .unwrap_or(DEFAULT_EXTERNAL_TIMEOUT)
+            })
+    }
+
+    fn announce_request(&self, record: &ApprovalRecord) -> taskfence_core::Result<()> {
+        if !self.announce {
+            return Ok(());
+        }
+
+        let mut stderr = io::stderr();
+        stderr
+            .write_all(render_approval_request(record).as_bytes())
+            .map_err(approval_io_error)?;
+        stderr
+            .write_all(render_external_approval_commands(record, &self.store.workspace).as_bytes())
+            .map_err(approval_io_error)?;
+        stderr.flush().map_err(approval_io_error)
+    }
+}
+
+impl ApprovalEngine for LocalExternalApprovalEngine {
+    fn request(
+        &self,
+        task: &ResolvedTask,
+        action: Action,
+        decision: ActionDecision,
+    ) -> taskfence_core::Result<ApprovalRecord> {
+        let record = ApprovalRecord {
+            id: ApprovalId::new(),
+            task_id: task.id.clone(),
+            actor: self.actor.clone(),
+            source: self.source.clone(),
+            requested_at: OffsetDateTime::now_utc(),
+            resolved_at: None,
+            action,
+            policy_decision: decision,
+            decision: None,
+        };
+
+        self.store.write_pending(&record)?;
+        self.remember_timeout(record.id.clone(), self.timeout_for(task))?;
+        self.announce_request(&record)?;
+        Ok(record)
+    }
+
+    fn wait(&self, approval_id: &ApprovalId) -> taskfence_core::Result<ApprovalRecord> {
+        let timeout = self.timeout_for_approval(approval_id)?;
+        let started = std::time::Instant::now();
+        loop {
+            let record = self.store.read(approval_id)?;
+            if record.decision.is_some() {
+                return Ok(record);
+            }
+
+            if started.elapsed() >= timeout {
+                return match self.store.resolve_with_actor(
+                    approval_id,
+                    ApprovalDecision::TimedOut,
+                    self.actor.clone(),
+                    Some("external-timeout".into()),
+                ) {
+                    Ok(record) => Ok(record),
+                    Err(err) => {
+                        let current = self.store.read(approval_id)?;
+                        if current.decision.is_some() {
+                            Ok(current)
+                        } else {
+                            Err(err)
+                        }
+                    }
+                };
+            }
+
+            thread::sleep(self.poll_interval);
         }
     }
 }
@@ -245,6 +519,14 @@ pub fn render_approval_request(record: &ApprovalRecord) -> String {
     rendered
 }
 
+pub fn render_external_approval_commands(record: &ApprovalRecord, workspace: &Utf8Path) -> String {
+    let workspace = workspace.as_str();
+    format!(
+        "Resolve from another terminal:\n  taskfence approve {} --workspace \"{}\"\n  taskfence deny {} --workspace \"{}\"\n\n",
+        record.id.0, workspace, record.id.0, workspace
+    )
+}
+
 pub fn parse_approval_response(input: &str) -> Option<ApprovalDecision> {
     match input.trim().to_ascii_lowercase().as_str() {
         "approve" | "approved" | "yes" | "y" => Some(ApprovalDecision::Approved),
@@ -323,6 +605,51 @@ fn risk_label(risk: &RiskLevel) -> &'static str {
 
 fn approval_io_error(err: std::io::Error) -> TaskFenceError {
     TaskFenceError::Approval(format!("approval prompt IO failed: {err}"))
+}
+
+fn approval_store_io_error(err: std::io::Error) -> TaskFenceError {
+    TaskFenceError::Approval(format!("approval store IO failed: {err}"))
+}
+
+fn atomic_write(path: &Utf8Path, bytes: &[u8]) -> taskfence_core::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        TaskFenceError::Approval(format!("approval path has no parent directory: {path}"))
+    })?;
+    fs::create_dir_all(parent.as_std_path()).map_err(approval_store_io_error)?;
+    let file_name = path.file_name().ok_or_else(|| {
+        TaskFenceError::Approval(format!("approval path has no file name: {path}"))
+    })?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| TaskFenceError::Approval(format!("system clock error: {err}")))?
+        .as_nanos();
+    let tmp_path = parent.join(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        timestamp
+    ));
+
+    fs::write(tmp_path.as_std_path(), bytes).map_err(approval_store_io_error)?;
+    if let Err(err) = fs::rename(tmp_path.as_std_path(), path.as_std_path()) {
+        let _ = fs::remove_file(tmp_path.as_std_path());
+        return Err(approval_store_io_error(err));
+    }
+    Ok(())
+}
+
+fn validate_approval_id_component(value: &str) -> taskfence_core::Result<()> {
+    if value.is_empty()
+        || value == "."
+        || value == ".."
+        || value.contains('/')
+        || value.contains('\\')
+        || value.chars().any(char::is_control)
+    {
+        return Err(TaskFenceError::Approval(format!(
+            "approval id is not a safe path component: {value:?}"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -533,5 +860,156 @@ mod tests {
         assert!(rendered.contains("1 parameter"));
         assert!(rendered.contains("needs review"));
         assert!(!rendered.contains("secret-value"));
+    }
+
+    #[test]
+    fn local_store_writes_and_resolves_pending_approval() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let store = LocalApprovalStore::new(workspace.clone());
+        let record = pending_record("approval-1");
+
+        let path = store.write_pending(&record).unwrap();
+
+        assert_eq!(path, workspace.join(".taskfence/approvals/approval-1.json"));
+        assert_eq!(store.read(&record.id).unwrap().decision, None);
+
+        let resolved = store
+            .resolve(&record.id, ApprovalDecision::Approved)
+            .unwrap();
+
+        assert_eq!(resolved.decision, Some(ApprovalDecision::Approved));
+        assert_eq!(resolved.actor, "local-cli");
+        assert_eq!(resolved.source.as_deref(), Some("cli"));
+        assert!(resolved.resolved_at.is_some());
+        assert_eq!(
+            store.read(&record.id).unwrap().decision,
+            Some(ApprovalDecision::Approved)
+        );
+    }
+
+    #[test]
+    fn local_store_rejects_unknown_and_unsafe_approval_ids() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let store = LocalApprovalStore::new(workspace);
+
+        let missing = store
+            .resolve(&ApprovalId("missing".into()), ApprovalDecision::Approved)
+            .unwrap_err();
+        assert!(
+            matches!(missing, TaskFenceError::Approval(message) if message.contains("not found"))
+        );
+
+        let unsafe_id = store
+            .approval_path(&ApprovalId("../escape".into()))
+            .unwrap_err();
+        assert!(
+            matches!(unsafe_id, TaskFenceError::Approval(message) if message.contains("safe path component"))
+        );
+    }
+
+    #[test]
+    fn local_store_rejects_double_resolution() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let store = LocalApprovalStore::new(workspace);
+        let record = pending_record("approval-double");
+        store.write_pending(&record).unwrap();
+
+        store.resolve(&record.id, ApprovalDecision::Denied).unwrap();
+        let err = store
+            .resolve(&record.id, ApprovalDecision::Approved)
+            .unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Approval(message) if message.contains("already resolved"))
+        );
+    }
+
+    #[test]
+    fn external_engine_wait_observes_file_resolution() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let engine = LocalExternalApprovalEngine::new(workspace)
+            .with_timeout(Duration::from_secs(1))
+            .with_poll_interval(Duration::from_millis(10))
+            .without_announcement();
+        let requested = engine
+            .request(
+                &task(),
+                Action::Budget {
+                    kind: "tokens".into(),
+                    amount: 10,
+                },
+                approval_decision(),
+            )
+            .unwrap();
+        let store = engine.store().clone();
+        let approval_id = requested.id.clone();
+
+        let resolver = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(30));
+            store
+                .resolve(&approval_id, ApprovalDecision::Approved)
+                .unwrap();
+        });
+        let resolved = engine.wait(&requested.id).unwrap();
+        resolver.join().unwrap();
+
+        assert_eq!(resolved.decision, Some(ApprovalDecision::Approved));
+        assert_eq!(resolved.source.as_deref(), Some("cli"));
+    }
+
+    #[test]
+    fn external_engine_timeout_resolves_fail_closed_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let engine = LocalExternalApprovalEngine::new(workspace)
+            .with_timeout(Duration::from_millis(1))
+            .with_poll_interval(Duration::from_millis(1))
+            .without_announcement();
+        let requested = engine
+            .request(
+                &task(),
+                Action::Budget {
+                    kind: "tokens".into(),
+                    amount: 10,
+                },
+                approval_decision(),
+            )
+            .unwrap();
+
+        let resolved = engine.wait(&requested.id).unwrap();
+
+        assert_eq!(resolved.decision, Some(ApprovalDecision::TimedOut));
+        assert_eq!(resolved.source.as_deref(), Some("external-timeout"));
+        assert_eq!(
+            engine.store().read(&requested.id).unwrap().decision,
+            Some(ApprovalDecision::TimedOut)
+        );
+    }
+
+    fn pending_record(id: &str) -> ApprovalRecord {
+        let task = task();
+        ApprovalRecord {
+            id: ApprovalId(id.into()),
+            task_id: task.id,
+            actor: "local".into(),
+            source: Some("external".into()),
+            requested_at: OffsetDateTime::now_utc(),
+            resolved_at: None,
+            action: Action::Budget {
+                kind: "tokens".into(),
+                amount: 10,
+            },
+            policy_decision: approval_decision(),
+            decision: None,
+        }
     }
 }

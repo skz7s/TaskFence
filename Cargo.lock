@@ -533,7 +533,10 @@ dependencies = [
 name = "taskfence-approval"
 version = "0.1.0"
 dependencies = [
+ "camino",
+ "serde_json",
  "taskfence-core",
+ "tempfile",
  "time",
 ]
 
@@ -577,6 +580,7 @@ dependencies = [
  "taskfence-runner",
  "taskfence-state",
  "tempfile",
+ "time",
 ]
 
 [[package]]
