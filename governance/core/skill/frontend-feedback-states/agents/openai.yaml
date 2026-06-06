@@ -1,0 +1,3 @@
+display_name: Frontend Feedback States
+short_description: Standardize skeleton loading, empty states, toasts, and recoverable UI feedback.
+default_prompt: Use frontend feedback states when changing loading, toast, empty, error, or form feedback behavior.

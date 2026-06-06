@@ -1,0 +1,3 @@
+display_name: Managed Project Dev Flow
+short_description: Choose lightweight or phased project workflow by task size while keeping governance, validation, and local environment facts aligned.
+default_prompt: Use the Managed Project Dev Flow workflow and stay inside the target project's documented operating boundary.

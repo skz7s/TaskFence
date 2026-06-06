@@ -1,0 +1,3 @@
+display_name: Commercial UI Constraints
+short_description: Keep product-facing web UI table-first, dialog-first, mobile-ready, metric-light, and business-worded by default.
+default_prompt: Apply the commercial UI constraints before designing, reviewing, or implementing product-facing web UI.

@@ -1,0 +1,3 @@
+display_name: Managed Project Lifecycle
+short_description: Guide onboarding, upgrades, migration, deployment readiness, archive, and detach flows for managed projects.
+default_prompt: Use managed project lifecycle guidance to keep repository state, baseline version, env facts, and ops readiness aligned.

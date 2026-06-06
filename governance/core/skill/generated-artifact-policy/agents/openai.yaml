@@ -1,0 +1,3 @@
+display_name: Generated Artifact Policy
+short_description: Keep generated governance artifacts committed, source-owned, and drift-checked.
+default_prompt: Use the generated artifact policy to trace runtime governance changes back to source and verify generated outputs.

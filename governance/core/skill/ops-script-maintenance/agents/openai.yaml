@@ -1,0 +1,3 @@
+display_name: Ops Script Maintenance
+short_description: Create and maintain portable setup, dev, deploy, and validation scripts from recorded environment facts.
+default_prompt: Maintain operational scripts using the repo-local environment baseline and reuse-first dependency policy.

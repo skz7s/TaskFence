@@ -1,0 +1,3 @@
+display_name: Dependency Source Policy
+short_description: Record and diagnose registries, mirrors, indexes, and proxies without saving secrets.
+default_prompt: Use the dependency source policy to keep package sources explicit, local, and secret-safe.

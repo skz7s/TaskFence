@@ -1,0 +1,7 @@
+[bundles.root]
+title = "Project Rules"
+output = "AGENTS.md"
+includes = [
+  "core/agent/governance-standard.md",
+  "private/agent/project-governance.md",
+]

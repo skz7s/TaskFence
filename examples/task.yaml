@@ -1,0 +1,55 @@
+# Example TaskFence task file for the local Docker runner demo.
+
+id: "local-demo"
+goal: "Create a demo file inside the allowed workspace path"
+workspace: "./repo"
+
+agent:
+  type: "generic"
+  command: "/usr/bin/touch"
+  args:
+    - "/workspace/src/taskfence-demo.txt"
+
+sandbox:
+  type: "docker"
+  image: "debian:bookworm-slim"
+  limits:
+    timeout_minutes: 5
+    cpu: 1
+    memory: "512m"
+
+permissions:
+  paths:
+    read:
+      - "./repo/README.md"
+    write:
+      - "./repo/src"
+  commands:
+    allow:
+      - "/usr/bin/touch"
+    approval_required:
+      - "git push"
+    deny:
+      - "rm -rf /"
+      - "sudo *"
+  network:
+    default: "disabled"
+
+secrets:
+  expose_to_agent: false
+  available_to_gateway: []
+
+approval:
+  require_for:
+    - "git_push"
+  timeout_minutes: 60
+
+audit:
+  report:
+    format: "markdown"
+  capture:
+    stdout: true
+    stderr: true
+    file_diff: true
+    network_destinations: true
+    approvals: true

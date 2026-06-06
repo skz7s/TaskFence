@@ -1,0 +1,7 @@
+/target/
+/.taskfence/
+**/.taskfence/
+examples/repo/src/taskfence-demo.txt
+
+# Repo-local helper runtime state
+.codex-helper/local-env.toml

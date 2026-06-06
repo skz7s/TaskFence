@@ -1,0 +1,214 @@
+schema_version = 1
+
+[[skills]]
+name = "managed-project-dev-flow"
+category = "workflow"
+routing_tags = [
+  "managed-project-dev-flow",
+  "managed-project-development",
+  "governance-refactor",
+  "repo-governance-workflow",
+  "doc-sync-validation-git",
+]
+narrower_than = []
+pairs_with = [
+  "project-env-baseline",
+  "ops-script-maintenance",
+  "generated-artifact-policy",
+  "secret-safety-policy",
+  "decision-log-policy",
+  "commercial-ui-constraints",
+  "frontend-feedback-states",
+]
+
+[[skills]]
+name = "dependency-source-policy"
+category = "workflow"
+routing_tags = [
+  "dependency-source-policy",
+  "package-mirrors",
+  "npm-registry",
+  "uv-index",
+  "pip-index",
+  "proxy-diagnostics",
+]
+narrower_than = []
+pairs_with = [
+  "project-env-baseline",
+  "ops-script-maintenance",
+  "secret-safety-policy",
+]
+
+[[skills]]
+name = "project-env-baseline"
+category = "workflow"
+routing_tags = [
+  "project-env-baseline",
+  "local-env",
+  "environment-baseline",
+  "toolchain-discovery",
+  "cross-platform-env",
+  "environment-drift",
+]
+narrower_than = []
+pairs_with = [
+  "managed-project-dev-flow",
+  "ops-script-maintenance",
+  "dependency-source-policy",
+  "managed-project-lifecycle",
+]
+
+[[skills]]
+name = "decision-log-policy"
+category = "workflow"
+routing_tags = [
+  "decision-log-policy",
+  "adr",
+  "decision-record",
+  "governance-decision",
+  "deployment-policy",
+]
+narrower_than = []
+pairs_with = [
+  "managed-project-dev-flow",
+  "managed-project-lifecycle",
+  "secret-safety-policy",
+]
+
+[[skills]]
+name = "generated-artifact-policy"
+category = "workflow"
+routing_tags = [
+  "generated-artifact-policy",
+  "generated-artifacts",
+  "generated-but-committed",
+  "governance-drift",
+  "build-output-policy",
+]
+narrower_than = []
+pairs_with = [
+  "managed-project-dev-flow",
+]
+
+[[skills]]
+name = "managed-project-lifecycle"
+category = "workflow"
+routing_tags = [
+  "managed-project-lifecycle",
+  "baseline-upgrade",
+  "preflight",
+  "project-migration",
+  "project-archive",
+]
+narrower_than = []
+pairs_with = [
+  "project-env-baseline",
+  "ops-script-maintenance",
+  "decision-log-policy",
+]
+
+[[skills]]
+name = "i18n-localization-policy"
+category = "workflow"
+routing_tags = [
+  "i18n-localization-policy",
+  "localization",
+  "locale-routing",
+  "language-switching",
+  "hreflang",
+]
+narrower_than = []
+pairs_with = [
+  "seo-visibility-policy",
+  "commercial-ui-constraints",
+]
+
+[[skills]]
+name = "ops-script-maintenance"
+category = "workflow"
+routing_tags = [
+  "ops-script-maintenance",
+  "deploy-scripts",
+  "setup-scripts",
+  "systemd-deploy",
+  "macos-dev",
+]
+narrower_than = []
+pairs_with = [
+  "managed-project-dev-flow",
+  "project-env-baseline",
+  "dependency-source-policy",
+  "managed-project-lifecycle",
+]
+
+[[skills]]
+name = "secret-safety-policy"
+category = "workflow"
+routing_tags = [
+  "secret-safety-policy",
+  "secret-scan",
+  "token-redaction",
+  "provider-token",
+  "registry-credentials",
+]
+narrower_than = []
+pairs_with = [
+  "dependency-source-policy",
+  "managed-project-dev-flow",
+  "decision-log-policy",
+]
+
+[[skills]]
+name = "seo-visibility-policy"
+category = "workflow"
+routing_tags = [
+  "seo-visibility-policy",
+  "seo",
+  "metadata",
+  "canonical-url",
+  "sitemap",
+  "structured-data",
+]
+narrower_than = []
+pairs_with = [
+  "i18n-localization-policy",
+  "commercial-ui-constraints",
+]
+
+[[skills]]
+name = "commercial-ui-constraints"
+category = "workflow"
+routing_tags = [
+  "commercial-ui-constraints",
+  "ui-constraints",
+  "table-first-ui",
+  "dialog-first-ui",
+  "mobile-first-web",
+  "business-copy-ui",
+]
+narrower_than = []
+pairs_with = [
+  "managed-project-dev-flow",
+  "frontend-feedback-states",
+  "i18n-localization-policy",
+  "seo-visibility-policy",
+]
+
+[[skills]]
+name = "frontend-feedback-states"
+category = "workflow"
+routing_tags = [
+  "frontend-feedback-states",
+  "loading-state",
+  "empty-state",
+  "toast-feedback",
+  "recoverable-ui",
+  "accessibility-feedback",
+]
+narrower_than = [
+  "commercial-ui-constraints",
+]
+pairs_with = [
+  "commercial-ui-constraints",
+  "managed-project-dev-flow",
+]

@@ -1,0 +1,28 @@
+[package]
+name = "taskfence-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "taskfence"
+path = "src/main.rs"
+
+[dependencies]
+camino.workspace = true
+clap.workspace = true
+taskfence-agent.workspace = true
+taskfence-approval.workspace = true
+taskfence-artifacts.workspace = true
+taskfence-audit.workspace = true
+taskfence-config.workspace = true
+taskfence-core.workspace = true
+taskfence-policy.workspace = true
+taskfence-report.workspace = true
+taskfence-runner.workspace = true
+taskfence-state.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

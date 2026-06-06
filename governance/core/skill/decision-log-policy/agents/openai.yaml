@@ -1,0 +1,3 @@
+display_name: Decision Log Policy
+short_description: Record durable governance, deployment, provider, dependency source, and security decisions as lightweight ADRs.
+default_prompt: Use decision log policy when a change needs a durable reason in docs/decisions.

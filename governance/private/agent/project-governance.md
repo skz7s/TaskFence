@@ -1,0 +1,112 @@
+## Project Context
+
+- This repository is currently managed by the helper governance baseline for `TaskFence`.
+- Keep repository-specific constraints in this private fragment instead of broadening the shared core rules.
+- Treat the core feature boundary below as the non-expansion line for review, optimization, and governance enhancement work.
+- Governance sync and build are deterministic local file operations; do not require Codex, provider switching, helper Plan, Worker, Goals, dispatch, or auto-execution workflows.
+- Keep design drafts and generated prototypes under `.codex-helper/design/`; promote stable decisions into `design.md` and `docs/codex/*.md`.
+- Confirmed project facts belong in `docs/codex/*.md` or `docs/config/*.md`; confirmed runtime or collaboration constraints belong here; repeatable workflows belong under `governance/private/skill/<name>/SKILL.md` before generation and generate into `.codex/skills/*`.
+- Machine-local command, OS, package-manager, dependency source, mirror, proxy, and service-manager facts belong in ignored `.codex-helper/local-env.toml`, not in generated governance or stable docs.
+- Default helper-managed skills are limited to `managed-project-dev-flow`, `project-env-baseline`, `ops-script-maintenance`, `generated-artifact-policy`, `dependency-source-policy`, `secret-safety-policy`, `managed-project-lifecycle`, `decision-log-policy`, `commercial-ui-constraints`, `frontend-feedback-states`, `i18n-localization-policy`, `seo-visibility-policy`; select additional templates from the governance library only when needed.
+- Selected public helper skills for this repository: `managed-project-dev-flow`, `dependency-source-policy`, `project-env-baseline`, `decision-log-policy`, `generated-artifact-policy`, `managed-project-lifecycle`, `i18n-localization-policy`, `ops-script-maintenance`, `secret-safety-policy`, `seo-visibility-policy`, `commercial-ui-constraints`, `frontend-feedback-states`
+- Current project-private skills listed in routing inventory: -
+- Project-specific agents and skills must be authored under `governance/private/*` before build; generated `AGENTS.md`, `.codex/skills/*`, and `governance/core/*` are generated-but-committed build outputs.
+- Register private agents and skills in `governance/modules.toml`; add private agent fragments to `governance/bundles.toml` when they should affect generated runtime rules.
+
+## Core Feature Boundary
+
+- core_feature_description: TaskFence is an open-source secure runtime and gateway for AI agent tasks.
+  Core scope:
+  1. Build a Rust task-level control layer around agents, not a new general-purpose agent framework.
+  2. The long-term runtime layout owns CLI, task orchestration, config parsing and validation, policy decisions, approvals, audit logging, artifact storage, sandbox runners, agent adapters, gateway mediation, report generation, queryable state, and testkit fakes.
+  3. Phase 1 may activate only a narrow local Docker runner path, but code must live inside the long-term module boundaries so gateway, Web UI, replay, and team-server work do not require a rewrite.
+  4. Use Rust for the core runtime and CLI unless a later architecture decision changes it. Do not split the core implementation across Rust and Go. TypeScript is reserved for later Web UI and browser-facing tooling.
+  5. Preserve the recommended workspace crate boundaries: taskfence-cli, taskfence-core, taskfence-config, taskfence-policy, taskfence-approval, taskfence-audit, taskfence-artifacts, taskfence-runner, taskfence-agent, taskfence-gateway, taskfence-report, taskfence-state, and taskfence-testkit.
+  6. Keep module ownership strict: CLI owns terminal UX only; core owns orchestration behind ports/traits; config owns task-file parsing and path resolution; policy owns allow/deny/approval decisions; approval owns records, waits, timeouts, and local interactive behavior; audit owns append-only evidence and redaction; artifacts own task artifact layout and writes; runner owns sandbox and Docker integration; agent owns invocation construction; gateway owns MCP/HTTP/CLI wrapper/SDK/webhook/secret-broker mediation; report owns structured Markdown/HTML output; state owns queryable task state; testkit owns fakes and fixtures.
+  7. Use typed structs, enums, traits, and domain errors. Avoid stringly typed control flow, unstructured maps, and duplicated shared contracts at module boundaries.
+  8. Enforce secure defaults: fail closed, unknown or unclassifiable actions are denied, explicit deny wins over approval and allow, approval-required wins over allow, default deny applies when no rule matches, and host environment variables are not passed unless allowlisted.
+  9. Do not mount the host home directory, expose host secrets, pass Docker socket or SSH agent sockets, cloud credentials, package-manager tokens, or host home paths into the sandbox by default. Gateway credentials should remain gateway-side whenever possible.
+  10. Path validation must prevent `..`, symlink escapes, and writes outside allowed roots. Command policy must parse executable, arguments, shell-wrapper usage, and raw command text; plain string equality is not sufficient.
+  11. Docker network domain allowlists must not be overclaimed. If domain-level enforcement is unavailable, implementation must fail closed or route through an enforcing proxy.
+  12. Every implementation slice must cover success and failure behavior for branches it owns, including valid and invalid task files, unknown fields, path escapes, ambiguous mount overlaps, denied commands, deny-overrides-allow, shell-wrapper attempts, approval approved/denied/timeout/non-interactive fail-closed, Docker unavailable or image unavailable, runner timeout, cancellation, non-zero agent exit, dirty workspace baseline, artifact write failure, partial-failure report generation, secret redaction, large or binary-looking logs, network default deny, unsupported Docker domain allowlist, and unsupported gateway protocol actions.
+  13. Follow `docs/development-design.md` for staged implementation. Before parallel workers start, the lead agent must create the Rust workspace and shared public contracts, ensure `cargo test --workspace` compiles with skeletal crates, then assign disjoint write scopes.
+  14. Parallel implementation ownership should split by config/schema, policy engine, audit/artifacts/report, runner/agent adapter, CLI/approval UX, and gateway contracts. Workers must not revert unrelated edits and must report contract gaps instead of inventing competing abstractions.
+  15. After each parallel wave, the lead agent reconciles public types, removes duplicated abstractions, runs formatting/lint/tests, verifies security defaults, and updates docs to match implemented behavior.
+  16. Quality gate for Rust work is `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace`. Docker behavior changes also require Docker integration tests on a machine with Docker, or an explicit unavailable-Docker note.
+  17. Do not overclaim unsupported gateway, Web UI, replay, team-server, or enterprise behavior. Reports and docs must be based on structured task evidence rather than scraped terminal output.
+
+## Runtime Fact Policy
+
+- Machine facts are not preset by the helper baseline; detect facts from the current checkout before relying on local commands.
+- New projects start without preset machine facts. Detect local commands with `bash deploy/manage.sh detect-env` or the `project-env-baseline` skill before choosing validation, build, install, or deployment commands.
+- Do not copy helper checkout runtime facts into this repository. Only facts detected in this checkout may be recorded in `.codex-helper/local-env.toml`.
+- Detected project runtime surfaces: a Rust workspace is present at `Cargo.toml`; repository crates live under `crates/taskfence-*`; the supported repo-local operations entrypoint is `deploy/manage.sh`; governance build and validation scripts live under `scripts/governance/`.
+- helper_managed_default_skills: `managed-project-dev-flow`, `project-env-baseline`, `ops-script-maintenance`, `generated-artifact-policy`, `dependency-source-policy`, `secret-safety-policy`, `managed-project-lifecycle`, `decision-log-policy`, `commercial-ui-constraints`, `frontend-feedback-states`, `i18n-localization-policy`, `seo-visibility-policy`
+
+## Environment Rules
+
+- Read `.codex-helper/local-env.toml` before choosing Python, uv, Node, npm, deployment, or validation commands; refresh it with `bash deploy/manage.sh detect-env` when switching hosts.
+- Prefer the recorded local sandbox commands and bin directories before probing the system PATH.
+- Keep language runtimes and developer tooling inside repository-managed sandboxes when possible; treat shell, git, and curl as system-level exceptions.
+- If a task adds or discovers a host-specific local toolchain bin directory, command path, package manager, dependency source, OS, or shell fact, record it in `.codex-helper/local-env.toml`; do not hard-code it into reusable agents, reusable skills, generated governance, or stable docs.
+- Stable deployment requirements, service names, ports, dependency source policy, and operator runbooks belong in `docs/config/*`; local interpreter paths and package-manager state stay in `.codex-helper/local-env.toml`.
+
+## Collaboration Rules
+
+- Choose lightweight or phased workflow by task size and user intent. For small edits, direct bug fixes, and narrow docs/rule updates, inspect the touched surface, edit, run the smallest validation, and summarize without creating a durable plan.
+- Use Codex plan mode and `docs/codex/plans/*.md` only for larger changes that need phase-by-phase execution, cross-file coordination, branch integration, or multi-turn resumability.
+- In an existing conversation, create a new durable plan file for each plan-sized request. Continue an existing active plan only when the user explicitly continues that same requirement; generating a revised plan or handling a different goal, acceptance criteria, or scope needs a new file.
+- If the user is reporting a bug, reproduce or inspect the failing path first; if the user asks for a review, prioritize review findings and do not modify code unless asked.
+- For phased work, detect the default branch from `origin/HEAD`, then local `main`, then local `master`; if the current branch is that default branch, create a `codex/<topic-slug>` branch before implementation.
+- Durable plan files should record the goal, approved plan content or plan-source summary, default branch, working branch, overall status, ordered phases, phase status, phase verification evidence, and a numbered commit plan whose messages are listed as `1.`, `2.`, `3.` by coherent change scope.
+- Durable plan files must preserve the initial approved plan in an `Approved Plan` or `Plan Source` section, including actionable requirements, constraints, acceptance criteria, edge cases, and tradeoffs when present; do not collapse it into only a phase list or generic summary.
+- Update phase status when work starts and finishes: mark active work `in_progress`, finished work `done` with verification evidence, and blocked work `blocked` with the blocker and next needed input.
+- When all phases are terminal and the requested work is complete, update final evidence and move the plan file from `docs/codex/plans/` to `docs/codex/plan_archived/` with the same filename.
+- Commit after a suitable verified change scope is complete; do not force one commit per phase unless that phase is independently reviewable and maps cleanly to one change scope.
+- After all phases are complete, confirm before attempting `git merge --ff-only` into the detected default branch and `git push`.
+
+## Deployment And Development Contract
+
+- When this repository provides local deployment automation, split it into three operator surfaces: privileged bootstrap, reentrant deployment update, and foreground hot-reload development.
+- Keep privileged machine setup limited to the bootstrap surface; deployment-update and development surfaces should run as the target operator unless the repository documents a different requirement.
+- Keep deployment-update current-checkout aware, idempotent, and responsible for long-lived service refresh only.
+- Keep hot-reload development separate from deployment-update; it must reuse repo-local runtimes, avoid silently rewriting long-lived deploy service files, and avoid starting a second persistent backend against the same shared state root.
+- Treat `docs/config/cross-platform-ops.md` as this repository's stable operations fact document and preserve its project-specific deployment target, entrypoint, and legacy-wrapper contract during governance sync.
+- Do not generalize documented Ubuntu-only or other OS-specific deployment facts into generic Linux systemd support.
+- Do not downgrade a documented single supported entrypoint such as `deploy/manage.sh` into a preferred entrypoint.
+
+## Local Structure Snapshot
+
+- `crates/` contains the Rust workspace implementation crates: `taskfence-cli`, `taskfence-core`, `taskfence-config`, `taskfence-policy`, `taskfence-approval`, `taskfence-audit`, `taskfence-artifacts`, `taskfence-runner`, `taskfence-agent`, `taskfence-gateway`, `taskfence-report`, `taskfence-state`, and `taskfence-testkit`.
+- `docs/` contains product, architecture, roadmap, implementation design, Codex governance facts, configuration facts, and decision records.
+- `examples/` contains task-file examples that should track the implemented schema.
+- `governance/` contains source-owned runtime agent rules, skill routing, baseline metadata, generated core sources, and project-private governance.
+- `deploy/manage.sh` is the current repo-local operations entrypoint for environment detection, setup, dev, build, and doctor flows.
+- `scripts/governance/` contains generated-governance build and check scripts; `scripts/system/` and `scripts/test/` contain IO-limited command wrappers.
+
+## Local Quality And Documentation Rules
+
+- Maintain `README.md`, `docs/codex/*.md`, `docs/config/*.md`, `governance/*`, and affected `.codex/skills/*` when interfaces, runtime flows, commands, or repository conventions change.
+- Keep implementation scope in governance enhancement conversations, stable docs, and governance source files; do not create hidden dispatch or auto-worker state.
+- Do not recreate provider switching, project Codex workspace flows, or helper-hosted app-server orchestration.
+- Default validation to the smallest lint/build-focused checks for the touched surface; do not run full test suites unless the operator explicitly asks or the risk clearly requires them.
+- When a new project-specific rule is confirmed during Codex discussions, add it here or to `docs/codex/*.md` in the same task instead of leaving it only in chat context.
+- When a workflow becomes repeatable across tasks, search the governance library before creating or selecting a skill; keep routing and skill maintenance docs aligned for installed default skills.
+- When adding project-private governance, create the source, register it, run `python3 scripts/governance/build_agents.py`, then run `python3 scripts/governance/check_codex_governance.py`.
+
+## Initial Commands
+
+- Detect or refresh local environment facts: `bash deploy/manage.sh detect-env`
+- Read-only environment diagnostics: `bash deploy/manage.sh doctor`
+- Build generated governance outputs: `python3 scripts/governance/build_agents.py`
+- Check generated governance drift: `python3 scripts/governance/build_agents.py --check`
+- Check governance assets: `python3 scripts/governance/check_codex_governance.py`
+- Rust formatting gate: `cargo fmt --all`
+- Rust lint gate: `cargo clippy --workspace --all-targets -- -D warnings`
+- Rust test gate: `cargo test --workspace`
+- CLI smoke path once Rust is installed: `cargo run -p taskfence-cli -- run examples/task.yaml`
+
+## Adaptation Note
+
+- operator_note: -
+- Review this file after the first few real tasks and replace any generic placeholder rule with repository-specific truth.

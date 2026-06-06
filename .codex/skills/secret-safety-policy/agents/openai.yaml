@@ -1,0 +1,3 @@
+display_name: Secret Safety Policy
+short_description: Keep provider tokens, registry credentials, and secret-bearing config out of governance and docs.
+default_prompt: Use the secret safety policy to diagnose sensitive values without printing or preserving the secret itself.

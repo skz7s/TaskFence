@@ -1,0 +1,3 @@
+display_name: SEO Visibility Policy
+short_description: Keep public pages crawlable, canonical, localized, and index-safe.
+default_prompt: Use SEO visibility policy when changing public pages, metadata, canonical URLs, sitemap, robots rules, or social previews.

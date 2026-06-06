@@ -1,0 +1,3 @@
+display_name: I18n Localization Policy
+short_description: Design multilingual routing, metadata, copy, and layout with consistent locale boundaries.
+default_prompt: Use i18n localization policy when a project needs multilingual routes, UI copy, SEO alternates, or language-boundary decisions.

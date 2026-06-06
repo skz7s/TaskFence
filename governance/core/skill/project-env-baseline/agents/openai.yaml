@@ -1,0 +1,3 @@
+display_name: Project Env Baseline
+short_description: Detect and reuse repo-local environment facts across macOS, Linux, WSL, and deployment hosts.
+default_prompt: Read or refresh the repo-local environment baseline before choosing commands or dependency paths.
