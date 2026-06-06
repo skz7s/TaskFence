@@ -645,7 +645,9 @@ dependencies = [
 name = "taskfence-state"
 version = "0.1.0"
 dependencies = [
+ "camino",
  "taskfence-core",
+ "tempfile",
 ]
 
 [[package]]

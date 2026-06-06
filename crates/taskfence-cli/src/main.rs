@@ -6,11 +6,11 @@ use taskfence_approval::LocalApprovalEngine;
 use taskfence_artifacts::LocalArtifactStore;
 use taskfence_audit::LocalJsonlAuditLogger;
 use taskfence_config::load_task_file;
-use taskfence_core::{Orchestrator, Runner, TaskFenceError, TaskStatus};
+use taskfence_core::{LogStream, Orchestrator, Runner, TaskFenceError, TaskId, TaskStatus};
 use taskfence_policy::BuiltInPolicyEngine;
 use taskfence_report::MarkdownReportGenerator;
 use taskfence_runner::DockerRunner;
-use taskfence_state::InMemoryStateStore;
+use taskfence_state::{InMemoryStateStore, LocalTaskEvidenceStore, TaskLogs};
 
 #[derive(Debug, Parser)]
 #[command(name = "taskfence")]
@@ -38,6 +38,9 @@ enum Command {
     Logs {
         /// Task ID to query.
         task_id: String,
+        /// Workspace that owns the .taskfence task evidence directory.
+        #[arg(long, default_value = ".")]
+        workspace: Utf8PathBuf,
     },
     /// Approve a pending approval request.
     Approve {
@@ -53,6 +56,9 @@ enum Command {
     Report {
         /// Task ID to report on.
         task_id: String,
+        /// Workspace that owns the .taskfence task evidence directory.
+        #[arg(long, default_value = ".")]
+        workspace: Utf8PathBuf,
     },
 }
 
@@ -75,19 +81,58 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
             let runner = DockerRunner::new();
             run_task_with_runner(task_file, &runner)
         }
-        Command::Logs { task_id } => unsupported(format!(
-            "logs command is parsed but state-backed log queries are not implemented yet for {task_id}"
-        )),
+        Command::Logs { task_id, workspace } => show_logs(workspace, task_id),
         Command::Approve { approval_id } => unsupported(format!(
             "approve command is parsed but approval storage is not implemented yet for {approval_id}"
         )),
         Command::Deny { approval_id } => unsupported(format!(
             "deny command is parsed but approval storage is not implemented yet for {approval_id}"
         )),
-        Command::Report { task_id } => unsupported(format!(
-            "report command is parsed but report generation is not implemented yet for {task_id}"
-        )),
+        Command::Report { task_id, workspace } => show_report(workspace, task_id),
     }
+}
+
+fn show_logs(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<()> {
+    let text = logs_text(workspace, &TaskId(task_id))?;
+    print!("{text}");
+    Ok(())
+}
+
+fn show_report(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<()> {
+    let text = report_text(workspace, &TaskId(task_id))?;
+    print!("{text}");
+    Ok(())
+}
+
+fn logs_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Result<String> {
+    let store = LocalTaskEvidenceStore::new(workspace);
+    let logs = store.read_logs(task_id)?;
+    Ok(render_logs(&logs))
+}
+
+fn report_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Result<String> {
+    let store = LocalTaskEvidenceStore::new(workspace);
+    Ok(store.read_report(task_id)?.contents)
+}
+
+fn render_logs(logs: &TaskLogs) -> String {
+    let mut rendered = String::new();
+    for entry in &logs.entries {
+        let stream = match entry.stream {
+            LogStream::Stdout => "stdout",
+            LogStream::Stderr => "stderr",
+        };
+        rendered.push_str("== ");
+        rendered.push_str(stream);
+        rendered.push_str(": ");
+        rendered.push_str(entry.path.as_str());
+        rendered.push_str(" ==\n");
+        rendered.push_str(&entry.contents);
+        if !entry.contents.ends_with('\n') {
+            rendered.push('\n');
+        }
+    }
+    rendered
 }
 
 fn run_task_with_runner(task_file: Utf8PathBuf, runner: &dyn Runner) -> taskfence_core::Result<()> {
@@ -187,7 +232,24 @@ mod tests {
         let cli = Cli::try_parse_from(["taskfence", "logs", "task-123"]).unwrap();
 
         match cli.command {
-            Command::Logs { task_id } => assert_eq!(task_id, "task-123"),
+            Command::Logs { task_id, workspace } => {
+                assert_eq!(task_id, "task-123");
+                assert_eq!(workspace, Utf8PathBuf::from("."));
+            }
+            other => panic!("expected logs command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_logs_workspace() {
+        let cli =
+            Cli::try_parse_from(["taskfence", "logs", "task-123", "--workspace", "repo"]).unwrap();
+
+        match cli.command {
+            Command::Logs { task_id, workspace } => {
+                assert_eq!(task_id, "task-123");
+                assert_eq!(workspace, Utf8PathBuf::from("repo"));
+            }
             other => panic!("expected logs command, got {other:?}"),
         }
     }
@@ -217,7 +279,10 @@ mod tests {
         let cli = Cli::try_parse_from(["taskfence", "report", "task-123"]).unwrap();
 
         match cli.command {
-            Command::Report { task_id } => assert_eq!(task_id, "task-123"),
+            Command::Report { task_id, workspace } => {
+                assert_eq!(task_id, "task-123");
+                assert_eq!(workspace, Utf8PathBuf::from("."));
+            }
             other => panic!("expected report command, got {other:?}"),
         }
     }
@@ -237,14 +302,56 @@ mod tests {
     #[test]
     fn unsupported_non_run_commands_remain_explicit() {
         let err = execute(Cli {
-            command: Command::Logs {
-                task_id: "task-123".into(),
+            command: Command::Approve {
+                approval_id: "approval-123".into(),
             },
         })
         .unwrap_err();
 
         assert!(
-            matches!(err, TaskFenceError::Unsupported(message) if message.contains("logs command"))
+            matches!(err, TaskFenceError::Unsupported(message) if message.contains("approve command"))
+        );
+    }
+
+    #[test]
+    fn logs_command_reads_local_task_logs() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let task_dir = workspace.join(".taskfence/tasks/task-123");
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(task_dir.join("stdout.log"), "hello\n").unwrap();
+        fs::write(task_dir.join("stderr.log"), "warning\n").unwrap();
+
+        let text = logs_text(workspace, &TaskId("task-123".into())).unwrap();
+
+        assert!(text.contains("== stdout:"));
+        assert!(text.contains("hello\n"));
+        assert!(text.contains("== stderr:"));
+        assert!(text.contains("warning\n"));
+    }
+
+    #[test]
+    fn report_command_reads_local_task_report() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let task_dir = workspace.join(".taskfence/tasks/task-123");
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(task_dir.join("report.md"), "# Task Report\n").unwrap();
+
+        let text = report_text(workspace, &TaskId("task-123".into())).unwrap();
+
+        assert_eq!(text, "# Task Report\n");
+    }
+
+    #[test]
+    fn logs_command_surfaces_missing_artifact_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+
+        let err = logs_text(workspace, &TaskId("missing".into())).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("directory not found"))
         );
     }
 

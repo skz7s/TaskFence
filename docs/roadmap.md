@@ -33,6 +33,7 @@ Deliverables:
 - stdout and stderr capture
 - file diff capture
 - Markdown report generation
+- local report and captured-log lookup commands
 
 Implemented boundaries:
 
@@ -44,6 +45,9 @@ Implemented boundaries:
 - Local Docker domain allowlists fail closed until an enforcing proxy exists.
 - Local approval is non-interactive and fail-closed by default; interactive
   approval UX remains Phase 2 work.
+- `taskfence report <task-id> --workspace <workspace>` and
+  `taskfence logs <task-id> --workspace <workspace>` read generated local task
+  evidence from `.taskfence/tasks/<task-id>/` when those artifacts exist.
 
 Minimum demo:
 
@@ -56,6 +60,12 @@ paths, and producing a report.
 
 The current demo writes `examples/repo/src/taskfence-demo.txt` and artifacts
 under `examples/repo/.taskfence/tasks/local-demo/`.
+
+The generated Markdown report can be viewed with:
+
+```bash
+taskfence report local-demo --workspace examples/repo
+```
 
 ## Phase 2: Policy and Approval
 

@@ -37,8 +37,9 @@ External Systems
 ## Components
 
 Current implementation note: the local CLI path is implemented for generic
-commands in Docker. Gateway execution, Web UI, replay, team-server, and
-enterprise control-plane behavior are not implemented yet.
+commands in Docker, and generated local reports/logs can be read back from the
+task workspace. Gateway execution, Web UI, replay, team-server, and enterprise
+control-plane behavior are not implemented yet.
 
 ### CLI
 
@@ -46,12 +47,14 @@ The CLI is the first user interface.
 
 Initial commands:
 
-- `taskfence init`
-- `taskfence run <task-file>`
-- `taskfence logs <task-id>`
-- `taskfence approve <approval-id>`
-- `taskfence deny <approval-id>`
-- `taskfence report <task-id>`
+- `taskfence run <task-file>` executes the current local Docker runner path.
+- `taskfence logs <task-id> --workspace <workspace>` reads captured stdout and
+  stderr logs from local task evidence when present.
+- `taskfence report <task-id> --workspace <workspace>` reads the generated
+  Markdown report from local task evidence.
+- `taskfence init`, `taskfence approve`, and `taskfence deny` are parsed but
+  remain explicitly unsupported until task scaffolding and durable approval
+  storage are implemented.
 
 ### Task Orchestrator
 
@@ -224,7 +227,10 @@ deployments can use object storage.
 
 Current local artifacts are written under `.taskfence/tasks/<task-id>/` in the
 task workspace and include the resolved task JSON, JSONL audit events,
-stdout/stderr logs when present, a diff artifact, and a Markdown report.
+stdout/stderr logs when present, a diff artifact, and a Markdown report. The
+local CLI can read generated reports and captured logs from that workspace-local
+artifact directory, but it does not yet provide cross-workspace indexing or a
+SQLite-backed task list.
 
 ## Security Boundary
 

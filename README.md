@@ -148,8 +148,17 @@ On success, TaskFence writes artifacts under
 
 - `task.resolved.json`
 - `events.jsonl`
+- `stdout.log` and `stderr.log` when the agent emits captured output
 - `diff.patch`
 - `report.md`
+
+You can read local task evidence from the workspace that owns the `.taskfence`
+directory:
+
+```bash
+cargo run -p taskfence-cli -- report local-demo --workspace examples/repo
+cargo run -p taskfence-cli -- logs <task-id> --workspace <workspace>
+```
 
 ## Documentation
 
@@ -191,6 +200,7 @@ The first implementation currently includes:
 5. Non-interactive fail-closed local approval records.
 6. Audit logs, stdout/stderr capture, and file diff artifacts.
 7. Markdown task reports generated from structured evidence.
+8. Local CLI lookup for generated reports and captured stdout/stderr logs.
 
 ## Non-Goals
 
