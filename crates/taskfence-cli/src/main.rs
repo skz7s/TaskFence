@@ -83,6 +83,14 @@ enum Command {
         #[arg(long, default_value = ".")]
         workspace: Utf8PathBuf,
     },
+    /// Show the resolved task input saved for a local run.
+    Inputs {
+        /// Task ID to query.
+        task_id: String,
+        /// Workspace that owns the .taskfence task evidence directory.
+        #[arg(long, default_value = ".")]
+        workspace: Utf8PathBuf,
+    },
     /// Show the latest locally recorded task status.
     Status {
         /// Task ID to query.
@@ -177,6 +185,7 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
         Command::Diff { task_id, workspace } => show_diff(workspace, task_id),
         Command::Tasks { workspace } => show_tasks(workspace),
         Command::Task { task_id, workspace } => show_task(workspace, task_id),
+        Command::Inputs { task_id, workspace } => show_inputs(workspace, task_id),
         Command::Status { task_id, workspace } => show_status(workspace, task_id),
         Command::Events { task_id, workspace } => show_events(workspace, task_id),
         Command::Approvals { workspace } => show_approvals(workspace),
@@ -361,6 +370,12 @@ fn show_task(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<
     Ok(())
 }
 
+fn show_inputs(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<()> {
+    let text = inputs_text(workspace, &TaskId(task_id))?;
+    print!("{text}");
+    Ok(())
+}
+
 fn show_status(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<()> {
     let text = status_text(workspace, &TaskId(task_id))?;
     print!("{text}");
@@ -434,6 +449,11 @@ fn task_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Result
     let store = LocalTaskEvidenceStore::new(workspace);
     let task = store.read_task_summary(task_id)?;
     Ok(render_task_summary(&task))
+}
+
+fn inputs_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Result<String> {
+    let store = LocalTaskEvidenceStore::new(workspace);
+    Ok(render_task_inputs(&store.read_inputs(task_id)?.contents))
 }
 
 fn status_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Result<String> {
@@ -809,6 +829,14 @@ fn render_task_status(task: &TaskSummary) -> String {
     rendered
 }
 
+fn render_task_inputs(contents: &str) -> String {
+    if contents.ends_with('\n') {
+        contents.to_owned()
+    } else {
+        format!("{contents}\n")
+    }
+}
+
 fn artifact_flags(task: &TaskSummary) -> String {
     let mut flags = Vec::new();
     if task.has_report {
@@ -1118,6 +1146,33 @@ mod tests {
                 assert_eq!(workspace, Utf8PathBuf::from("repo"));
             }
             other => panic!("expected task command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_inputs_task_id() {
+        let cli = Cli::try_parse_from(["taskfence", "inputs", "task-123"]).unwrap();
+
+        match cli.command {
+            Command::Inputs { task_id, workspace } => {
+                assert_eq!(task_id, "task-123");
+                assert_eq!(workspace, Utf8PathBuf::from("."));
+            }
+            other => panic!("expected inputs command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_inputs_workspace() {
+        let cli = Cli::try_parse_from(["taskfence", "inputs", "task-123", "--workspace", "repo"])
+            .unwrap();
+
+        match cli.command {
+            Command::Inputs { task_id, workspace } => {
+                assert_eq!(task_id, "task-123");
+                assert_eq!(workspace, Utf8PathBuf::from("repo"));
+            }
+            other => panic!("expected inputs command, got {other:?}"),
         }
     }
 
@@ -1563,6 +1618,31 @@ mod tests {
     }
 
     #[test]
+    fn inputs_command_reads_local_resolved_task_input() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(&task_file, task_yaml("cli-inputs", &workspace, "echo ok")).unwrap();
+
+        run_task_with_runner(
+            task_file,
+            &FakeRunner::succeeding(),
+            RunApprovalMode::FailClosed,
+        )
+        .unwrap();
+
+        let text = inputs_text(workspace, &TaskId("cli-inputs".into())).unwrap();
+
+        assert!(text.ends_with('\n'));
+        assert!(text.contains("\"id\": \"cli-inputs\""));
+        assert!(text.contains("\"goal\": \"CLI test\""));
+        assert!(text.contains("\"workspace_host_path\""));
+        assert!(text.contains("\"permissions\""));
+        assert!(!text.contains("Task summary"));
+    }
+
+    #[test]
     fn status_command_reads_local_task_status() {
         let temp = tempfile::tempdir().unwrap();
         let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
@@ -1745,6 +1825,18 @@ mod tests {
         let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
 
         let err = status_text(workspace, &TaskId("missing".into())).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("directory not found"))
+        );
+    }
+
+    #[test]
+    fn inputs_command_surfaces_missing_task_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+
+        let err = inputs_text(workspace, &TaskId("missing".into())).unwrap_err();
 
         assert!(
             matches!(err, TaskFenceError::State(message) if message.contains("directory not found"))

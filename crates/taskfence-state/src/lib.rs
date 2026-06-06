@@ -85,6 +85,14 @@ pub struct TaskEvents {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskInputs {
+    pub task_dir: Utf8PathBuf,
+    pub path: Utf8PathBuf,
+    pub task: ResolvedTask,
+    pub contents: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskSummary {
     pub task_id: TaskId,
     pub task_dir: Utf8PathBuf,
@@ -178,6 +186,36 @@ impl LocalTaskEvidenceStore {
         let task_dir = self.task_dir(task_id)?;
         ensure_task_dir(task_id, &task_dir)?;
         Ok(read_task_summary(task_id.clone(), task_dir))
+    }
+
+    pub fn read_inputs(&self, task_id: &TaskId) -> taskfence_core::Result<TaskInputs> {
+        let task_dir = self.task_dir(task_id)?;
+        ensure_task_dir(task_id, &task_dir)?;
+        let path = task_dir.join(RESOLVED_TASK_FILE);
+        let contents = fs::read_to_string(path.as_std_path()).map_err(|err| {
+            TaskFenceError::State(format!(
+                "resolved task input not found for task {} at {path}: {err}",
+                task_id.0
+            ))
+        })?;
+        let task = serde_json::from_str::<ResolvedTask>(&contents).map_err(|err| {
+            TaskFenceError::State(format!(
+                "failed to parse resolved task input for task {} at {path}: {err}",
+                task_id.0
+            ))
+        })?;
+        if task.id != *task_id {
+            return Err(TaskFenceError::State(format!(
+                "{RESOLVED_TASK_FILE} task id {} does not match requested {}",
+                task.id.0, task_id.0
+            )));
+        }
+        Ok(TaskInputs {
+            task_dir,
+            path,
+            task,
+            contents,
+        })
     }
 
     pub fn read_logs(&self, task_id: &TaskId) -> taskfence_core::Result<TaskLogs> {
@@ -775,6 +813,91 @@ mod tests {
         assert!(!task.has_stderr);
         assert!(task.task_dir.ends_with(".taskfence/tasks/task-detail"));
         assert!(task.warnings.is_empty());
+    }
+
+    #[test]
+    fn reads_resolved_task_inputs_from_workspace_task_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        write_task_evidence(
+            &workspace,
+            "task-inputs",
+            "inspect inputs",
+            &[TaskStatus::Succeeded],
+            &[],
+        );
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let inputs = store.read_inputs(&TaskId("task-inputs".into())).unwrap();
+
+        assert_eq!(inputs.task.id, TaskId("task-inputs".into()));
+        assert_eq!(inputs.task.goal, "inspect inputs");
+        assert!(inputs.path.ends_with("task.resolved.json"));
+        assert!(inputs.task_dir.ends_with(".taskfence/tasks/task-inputs"));
+        assert!(inputs.contents.contains("\"id\""));
+        assert!(inputs.contents.contains("task-inputs"));
+    }
+
+    #[test]
+    fn read_inputs_rejects_missing_resolved_task_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir_all(workspace.join(".taskfence/tasks/task-1")).unwrap();
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let err = store.read_inputs(&TaskId("task-1".into())).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("resolved task input not found"))
+        );
+    }
+
+    #[test]
+    fn read_inputs_rejects_malformed_resolved_task_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let task_dir = workspace.join(".taskfence/tasks/task-1");
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(task_dir.join("task.resolved.json"), "{not-json").unwrap();
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let err = store.read_inputs(&TaskId("task-1".into())).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("failed to parse resolved task input"))
+        );
+    }
+
+    #[test]
+    fn read_inputs_rejects_mismatched_task_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let task_dir = workspace.join(".taskfence/tasks/task-1");
+        fs::create_dir_all(&task_dir).unwrap();
+        let task = test_task("other-task", &workspace, "wrong inputs");
+        fs::write(
+            task_dir.join("task.resolved.json"),
+            serde_json::to_string_pretty(&task).unwrap(),
+        )
+        .unwrap();
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let err = store.read_inputs(&TaskId("task-1".into())).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("other-task") && message.contains("requested task-1"))
+        );
+    }
+
+    #[test]
+    fn read_inputs_rejects_unsafe_task_ids_before_reading() {
+        let store = LocalTaskEvidenceStore::new("/tmp/taskfence-state-test");
+
+        let err = store.read_inputs(&TaskId("../escape".into())).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("safe artifact path component"))
+        );
     }
 
     #[test]

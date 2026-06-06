@@ -131,6 +131,7 @@ Initial commands:
 - `taskfence run <task-file>`
 - `taskfence tasks --workspace <workspace>`
 - `taskfence task <task-id> --workspace <workspace>`
+- `taskfence inputs <task-id> --workspace <workspace>`
 - `taskfence status <task-id> --workspace <workspace>`
 - `taskfence events <task-id> --workspace <workspace>`
 - `taskfence logs <task-id>`
@@ -459,9 +460,10 @@ Phase 1 can be filesystem-backed. Introduce SQLite when logs, approvals, replay,
 or Web UI queries require structured persistence.
 
 Current filesystem-backed state can read reports, structured event summaries,
-captured diffs, captured logs, and workspace-local task summaries from
-`.taskfence/tasks`. Task summaries use structured `task.resolved.json` and
-`events.jsonl` evidence and do not infer status from rendered report text.
+captured diffs, captured logs, resolved task inputs, and workspace-local task
+summaries from `.taskfence/tasks`. Task summaries use structured
+`task.resolved.json` and `events.jsonl` evidence and do not infer status from
+rendered report text.
 
 Responsibilities:
 
