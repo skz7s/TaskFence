@@ -14,6 +14,7 @@ const RESOLVED_TASK_FILE: &str = "task.resolved.json";
 const EVENTS_FILE: &str = "events.jsonl";
 const STDOUT_FILE: &str = "stdout.log";
 const STDERR_FILE: &str = "stderr.log";
+const DIFF_FILE: &str = "diff.patch";
 const REPORT_FILE: &str = "report.md";
 
 #[derive(Debug, Default)]
@@ -71,12 +72,19 @@ pub struct TaskReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskDiff {
+    pub path: Utf8PathBuf,
+    pub contents: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskSummary {
     pub task_id: TaskId,
     pub task_dir: Utf8PathBuf,
     pub status: Option<TaskStatus>,
     pub goal: Option<String>,
     pub has_report: bool,
+    pub has_diff: bool,
     pub has_stdout: bool,
     pub has_stderr: bool,
     pub warnings: Vec<String>,
@@ -190,6 +198,19 @@ impl LocalTaskEvidenceStore {
         Ok(TaskReport { path, contents })
     }
 
+    pub fn read_diff(&self, task_id: &TaskId) -> taskfence_core::Result<TaskDiff> {
+        let task_dir = self.task_dir(task_id)?;
+        ensure_task_dir(task_id, &task_dir)?;
+        let path = task_dir.join(DIFF_FILE);
+        let contents = fs::read_to_string(path.as_std_path()).map_err(|err| {
+            TaskFenceError::State(format!(
+                "diff artifact not found for task {} at {path}: {err}",
+                task_id.0
+            ))
+        })?;
+        Ok(TaskDiff { path, contents })
+    }
+
     fn tasks_dir(&self) -> Utf8PathBuf {
         self.workspace.join(TASKFENCE_DIR).join(TASKS_DIR)
     }
@@ -203,6 +224,7 @@ fn read_task_summary(task_id: TaskId, task_dir: Utf8PathBuf) -> TaskSummary {
     TaskSummary {
         task_id,
         has_report: task_dir.join(REPORT_FILE).is_file(),
+        has_diff: task_dir.join(DIFF_FILE).is_file(),
         has_stdout: task_dir.join(STDOUT_FILE).is_file(),
         has_stderr: task_dir.join(STDERR_FILE).is_file(),
         task_dir,
@@ -444,6 +466,21 @@ mod tests {
     }
 
     #[test]
+    fn reads_diff_from_workspace_task_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let task_dir = workspace.join(".taskfence/tasks/task-1");
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(task_dir.join("diff.patch"), "TaskFence diff metadata\n").unwrap();
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let diff = store.read_diff(&TaskId("task-1".into())).unwrap();
+
+        assert_eq!(diff.contents, "TaskFence diff metadata\n");
+        assert!(diff.path.ends_with("diff.patch"));
+    }
+
+    #[test]
     fn missing_task_directory_returns_state_error() {
         let temp = tempfile::tempdir().unwrap();
         let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
@@ -467,6 +504,20 @@ mod tests {
 
         assert!(
             matches!(err, TaskFenceError::State(message) if message.contains("no captured stdout or stderr logs"))
+        );
+    }
+
+    #[test]
+    fn missing_diff_returns_state_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir_all(workspace.join(".taskfence/tasks/task-1")).unwrap();
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let err = store.read_diff(&TaskId("task-1".into())).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("diff artifact not found"))
         );
     }
 
@@ -501,7 +552,7 @@ mod tests {
             "task-b",
             "second task",
             &[TaskStatus::Running, TaskStatus::Succeeded],
-            &["report.md"],
+            &["report.md", "diff.patch"],
         );
         write_task_evidence(
             &workspace,
@@ -526,6 +577,7 @@ mod tests {
         assert_eq!(tasks[1].goal.as_deref(), Some("second task"));
         assert_eq!(tasks[1].status, Some(TaskStatus::Succeeded));
         assert!(tasks[1].has_report);
+        assert!(tasks[1].has_diff);
         assert!(tasks[1].warnings.is_empty());
     }
 

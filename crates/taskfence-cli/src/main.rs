@@ -51,6 +51,14 @@ enum Command {
         #[arg(long, default_value = ".")]
         workspace: Utf8PathBuf,
     },
+    /// Show the captured diff artifact for a task.
+    Diff {
+        /// Task ID to query.
+        task_id: String,
+        /// Workspace that owns the .taskfence task evidence directory.
+        #[arg(long, default_value = ".")]
+        workspace: Utf8PathBuf,
+    },
     /// List locally recorded tasks in a workspace.
     Tasks {
         /// Workspace that owns the .taskfence task evidence directory.
@@ -119,6 +127,7 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
             run_task_with_runner(task_file, &runner, approval_mode)
         }
         Command::Logs { task_id, workspace } => show_logs(workspace, task_id),
+        Command::Diff { task_id, workspace } => show_diff(workspace, task_id),
         Command::Tasks { workspace } => show_tasks(workspace),
         Command::Approve {
             approval_id,
@@ -147,6 +156,12 @@ fn show_logs(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<
 
 fn show_report(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<()> {
     let text = report_text(workspace, &TaskId(task_id))?;
+    print!("{text}");
+    Ok(())
+}
+
+fn show_diff(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<()> {
+    let text = diff_text(workspace, &TaskId(task_id))?;
     print!("{text}");
     Ok(())
 }
@@ -188,6 +203,11 @@ fn logs_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Result
 fn report_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Result<String> {
     let store = LocalTaskEvidenceStore::new(workspace);
     Ok(store.read_report(task_id)?.contents)
+}
+
+fn diff_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Result<String> {
+    let store = LocalTaskEvidenceStore::new(workspace);
+    Ok(store.read_diff(task_id)?.contents)
 }
 
 fn tasks_text(workspace: Utf8PathBuf) -> taskfence_core::Result<String> {
@@ -254,6 +274,9 @@ fn artifact_flags(task: &TaskSummary) -> String {
     let mut flags = Vec::new();
     if task.has_report {
         flags.push("report");
+    }
+    if task.has_diff {
+        flags.push("diff");
     }
     if task.has_stdout {
         flags.push("stdout");
@@ -475,6 +498,33 @@ mod tests {
     }
 
     #[test]
+    fn parses_diff_task_id() {
+        let cli = Cli::try_parse_from(["taskfence", "diff", "task-123"]).unwrap();
+
+        match cli.command {
+            Command::Diff { task_id, workspace } => {
+                assert_eq!(task_id, "task-123");
+                assert_eq!(workspace, Utf8PathBuf::from("."));
+            }
+            other => panic!("expected diff command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_diff_workspace() {
+        let cli =
+            Cli::try_parse_from(["taskfence", "diff", "task-123", "--workspace", "repo"]).unwrap();
+
+        match cli.command {
+            Command::Diff { task_id, workspace } => {
+                assert_eq!(task_id, "task-123");
+                assert_eq!(workspace, Utf8PathBuf::from("repo"));
+            }
+            other => panic!("expected diff command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_tasks_default_workspace() {
         let cli = Cli::try_parse_from(["taskfence", "tasks"]).unwrap();
 
@@ -635,6 +685,19 @@ mod tests {
     }
 
     #[test]
+    fn diff_command_reads_local_task_diff() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let task_dir = workspace.join(".taskfence/tasks/task-123");
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(task_dir.join("diff.patch"), "TaskFence diff metadata\n").unwrap();
+
+        let text = diff_text(workspace, &TaskId("task-123".into())).unwrap();
+
+        assert_eq!(text, "TaskFence diff metadata\n");
+    }
+
+    #[test]
     fn tasks_command_reads_local_task_list() {
         let temp = tempfile::tempdir().unwrap();
         let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
@@ -652,7 +715,7 @@ mod tests {
         let text = tasks_text(workspace).unwrap();
 
         assert!(text.contains("TASK ID\tSTATUS\tARTIFACTS\tWARNINGS\tGOAL\n"));
-        assert!(text.contains("cli-list\tSucceeded\treport\t-\tCLI test\n"));
+        assert!(text.contains("cli-list\tSucceeded\treport,diff\t-\tCLI test\n"));
     }
 
     #[test]

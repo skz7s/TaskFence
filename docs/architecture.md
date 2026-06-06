@@ -62,6 +62,8 @@ Initial commands:
   approval records.
 - `taskfence logs <task-id> --workspace <workspace>` reads captured stdout and
   stderr logs from local task evidence when present.
+- `taskfence diff <task-id> --workspace <workspace>` reads the captured
+  `diff.patch` artifact from local task evidence when present.
 - `taskfence report <task-id> --workspace <workspace>` reads the generated
   Markdown report from local task evidence.
 - `taskfence init` is parsed but remains explicitly unsupported until task-file
@@ -258,9 +260,10 @@ deployments can use object storage.
 Current local artifacts are written under `.taskfence/tasks/<task-id>/` in the
 task workspace and include the resolved task JSON, JSONL audit events,
 stdout/stderr logs when present, a diff artifact, and a Markdown report. The
-local CLI can list workspace-local task summaries and read generated reports or
-captured logs from that workspace-local artifact directory, but it does not yet
-provide cross-workspace indexing, Web UI queries, or SQLite-backed state.
+local CLI can list workspace-local task summaries and read captured diffs,
+generated reports, or captured logs from that workspace-local artifact
+directory, but it does not yet provide cross-workspace indexing, Web UI
+queries, or SQLite-backed state.
 
 ## Security Boundary
 

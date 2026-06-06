@@ -446,9 +446,9 @@ Owns queryable task state.
 Phase 1 can be filesystem-backed. Introduce SQLite when logs, approvals, replay,
 or Web UI queries require structured persistence.
 
-Current filesystem-backed state can read reports, captured logs, and
-workspace-local task summaries from `.taskfence/tasks`. Task summaries use
-structured `task.resolved.json` and `events.jsonl` evidence and do not infer
+Current filesystem-backed state can read reports, captured diffs, captured
+logs, and workspace-local task summaries from `.taskfence/tasks`. Task summaries
+use structured `task.resolved.json` and `events.jsonl` evidence and do not infer
 status from rendered report text.
 
 Responsibilities:
