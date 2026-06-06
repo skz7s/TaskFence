@@ -49,6 +49,9 @@ Implemented boundaries:
   `taskfence approve` / `taskfence deny` resolution from another terminal.
 - `taskfence approvals --workspace <workspace>` lists workspace-local approval
   records from `.taskfence/approvals` without a service-side approval system.
+- `taskfence approval <approval-id> --workspace <workspace>` reads one
+  workspace-local approval record from `.taskfence/approvals` without a
+  service-side approval system or raw tool parameter rendering.
 - Policy-denied and approval-denied local runs stop before the runner starts,
   but still write resolved task evidence, structured audit events, and a
   Markdown report when artifact creation succeeds.
@@ -99,8 +102,8 @@ decisions, task-file `permissions.tools` parsing, deny precedence,
 approval-required command/tool patterns, non-interactive fail-closed approval
 records, timeout modeling, and audit/report redaction. Opt-in local interactive
 approval during `run` is implemented, as is an explicit workspace-local
-external approval mode through `taskfence approvals`, `taskfence approve`, and
-`taskfence deny`.
+external approval mode through `taskfence approvals`, `taskfence approval`,
+`taskfence approve`, and `taskfence deny`.
 Denied command and approval denial evidence/reporting is implemented for local
 pre-run decisions; configured tool-call policy decisions are covered through
 typed gateway mediation and structured report evidence, including optional
@@ -169,6 +172,9 @@ Current local coverage before Web UI and SQLite:
 - `taskfence approvals --workspace <workspace>` lists workspace-local approval
   records from `.taskfence/approvals` without an approval UI, API server, or
   SQLite index
+- `taskfence approval <approval-id> --workspace <workspace>` reads one
+  workspace-local approval record from `.taskfence/approvals` without an
+  approval UI, API server, SQLite index, or raw tool parameter rendering
 
 Deliverables:
 

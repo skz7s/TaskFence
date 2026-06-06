@@ -133,6 +133,7 @@ Initial commands:
 - `taskfence logs <task-id>`
 - `taskfence diff <task-id>`
 - `taskfence approvals --workspace <workspace>`
+- `taskfence approval <approval-id> --workspace <workspace>`
 - `taskfence approve <approval-id>`
 - `taskfence deny <approval-id>`
 - `taskfence report <task-id>`
@@ -919,7 +920,7 @@ The first usable version is complete when:
   opt into in-process terminal approval with `taskfence run --interactive-approval`
   or explicitly wait for workspace-local external approval with
   `taskfence run --external-approval` plus `taskfence approvals`,
-  `taskfence approve`, and `taskfence deny`.
+  `taskfence approval`, `taskfence approve`, and `taskfence deny`.
 - Artifacts are written under `.taskfence/tasks/<task-id>/`; policy-denied and
   approval-denied pre-run decisions also write local evidence and a report when
   artifact creation succeeds.

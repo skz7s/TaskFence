@@ -7,8 +7,8 @@ use taskfence_artifacts::LocalArtifactStore;
 use taskfence_audit::LocalJsonlAuditLogger;
 use taskfence_config::load_task_file;
 use taskfence_core::{
-    Action, ApprovalDecision, ApprovalEngine, ApprovalId, ApprovalRecord, LogStream, Orchestrator,
-    ResolvedTask, Runner, TaskFenceError, TaskId, TaskStatus,
+    Action, ActionDecision, ApprovalDecision, ApprovalEngine, ApprovalId, ApprovalRecord,
+    LogStream, Orchestrator, ResolvedTask, RiskLevel, Runner, TaskFenceError, TaskId, TaskStatus,
 };
 use taskfence_policy::BuiltInPolicyEngine;
 use taskfence_report::MarkdownReportGenerator;
@@ -79,6 +79,14 @@ enum Command {
         #[arg(long, default_value = ".")]
         workspace: Utf8PathBuf,
     },
+    /// Show a locally recorded approval request.
+    Approval {
+        /// Approval ID to query.
+        approval_id: String,
+        /// Workspace that owns the .taskfence approval directory.
+        #[arg(long, default_value = ".")]
+        workspace: Utf8PathBuf,
+    },
     /// Approve a pending approval request.
     Approve {
         /// Approval ID to approve.
@@ -145,6 +153,10 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
         Command::Tasks { workspace } => show_tasks(workspace),
         Command::Task { task_id, workspace } => show_task(workspace, task_id),
         Command::Approvals { workspace } => show_approvals(workspace),
+        Command::Approval {
+            approval_id,
+            workspace,
+        } => show_approval(workspace, approval_id),
         Command::Approve {
             approval_id,
             workspace,
@@ -196,6 +208,12 @@ fn show_task(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<
 
 fn show_approvals(workspace: Utf8PathBuf) -> taskfence_core::Result<()> {
     let text = approvals_text(workspace)?;
+    print!("{text}");
+    Ok(())
+}
+
+fn show_approval(workspace: Utf8PathBuf, approval_id: String) -> taskfence_core::Result<()> {
+    let text = approval_text(workspace, &ApprovalId(approval_id))?;
     print!("{text}");
     Ok(())
 }
@@ -256,6 +274,15 @@ fn approvals_text(workspace: Utf8PathBuf) -> taskfence_core::Result<String> {
     Ok(render_approval_records(&approvals))
 }
 
+fn approval_text(
+    workspace: Utf8PathBuf,
+    approval_id: &ApprovalId,
+) -> taskfence_core::Result<String> {
+    let store = LocalApprovalStore::new(workspace);
+    let approval = store.read(approval_id)?;
+    Ok(render_approval_record(&approval))
+}
+
 fn render_logs(logs: &TaskLogs) -> String {
     let mut rendered = String::new();
     for entry in &logs.entries {
@@ -293,12 +320,87 @@ fn render_approval_records(records: &[ApprovalRecord]) -> String {
     rendered
 }
 
+fn render_approval_record(record: &ApprovalRecord) -> String {
+    let mut rendered = String::new();
+    rendered.push_str("Approval record\n");
+    rendered.push_str(&format!("  id: {}\n", record.id.0));
+    rendered.push_str(&format!("  task: {}\n", record.task_id.0));
+    rendered.push_str(&format!("  status: {}\n", approval_status(record)));
+    rendered.push_str(&format!("  actor: {}\n", compact_cell(&record.actor)));
+    rendered.push_str(&format!(
+        "  source: {}\n",
+        record
+            .source
+            .as_deref()
+            .map(compact_cell)
+            .as_deref()
+            .unwrap_or("-")
+    ));
+    rendered.push_str(&format!("  requested: {}\n", record.requested_at));
+    rendered.push_str(&format!(
+        "  resolved: {}\n",
+        record
+            .resolved_at
+            .as_ref()
+            .map(|resolved_at| resolved_at.to_string())
+            .unwrap_or_else(|| "-".into())
+    ));
+    rendered.push_str(&format!(
+        "  action: {}\n",
+        approval_action_summary(&record.action)
+    ));
+    rendered.push_str(&format!(
+        "  policy: {}\n",
+        approval_policy_summary(&record.policy_decision)
+    ));
+    rendered
+}
+
 fn approval_status(record: &ApprovalRecord) -> &'static str {
     match record.decision.as_ref() {
         None => "pending",
         Some(ApprovalDecision::Approved) => "approved",
         Some(ApprovalDecision::Denied) => "denied",
         Some(ApprovalDecision::TimedOut) => "timed-out",
+    }
+}
+
+fn approval_policy_summary(decision: &ActionDecision) -> String {
+    match decision {
+        ActionDecision::Allow { rule_id, reason } => {
+            format!("allow{}: {}", rule_suffix(rule_id), compact_cell(reason))
+        }
+        ActionDecision::RequireApproval {
+            approval_kind,
+            rule_id,
+            reason,
+            risk,
+        } => format!(
+            "requires {} approval{}: {}; risk {}",
+            compact_cell(approval_kind),
+            rule_suffix(rule_id),
+            compact_cell(reason),
+            risk_label(risk)
+        ),
+        ActionDecision::Deny { rule_id, reason } => {
+            format!("deny{}: {}", rule_suffix(rule_id), compact_cell(reason))
+        }
+    }
+}
+
+fn rule_suffix(rule_id: &Option<String>) -> String {
+    rule_id
+        .as_deref()
+        .map(|id| format!(" by rule {}", compact_cell(id)))
+        .unwrap_or_default()
+}
+
+fn risk_label(risk: &RiskLevel) -> &'static str {
+    match risk {
+        RiskLevel::Low => "low",
+        RiskLevel::Medium => "medium",
+        RiskLevel::High => "high",
+        RiskLevel::Critical => "critical",
     }
 }
 
@@ -517,10 +619,13 @@ fn run_resolved_task_with_runner_and_approval(
 mod tests {
     use super::*;
     use clap::CommandFactory;
+    use std::collections::BTreeMap;
     use std::fs;
     use std::thread;
     use std::time::{Duration, Instant};
-    use taskfence_core::{Action, ActionDecision, ApprovalDecision, RiskLevel};
+    use taskfence_core::{
+        Action, ActionDecision, ApprovalDecision, RedactedValue, RiskLevel, ToolAction,
+    };
     use taskfence_runner::FakeRunner;
 
     #[test]
@@ -717,6 +822,45 @@ mod tests {
         match cli.command {
             Command::Approvals { workspace } => assert_eq!(workspace, Utf8PathBuf::from("repo")),
             other => panic!("expected approvals command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_approval_approval_id() {
+        let cli = Cli::try_parse_from(["taskfence", "approval", "approval-123"]).unwrap();
+
+        match cli.command {
+            Command::Approval {
+                approval_id,
+                workspace,
+            } => {
+                assert_eq!(approval_id, "approval-123");
+                assert_eq!(workspace, Utf8PathBuf::from("."));
+            }
+            other => panic!("expected approval command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_approval_workspace() {
+        let cli = Cli::try_parse_from([
+            "taskfence",
+            "approval",
+            "approval-123",
+            "--workspace",
+            "repo",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Approval {
+                approval_id,
+                workspace,
+            } => {
+                assert_eq!(approval_id, "approval-123");
+                assert_eq!(workspace, Utf8PathBuf::from("repo"));
+            }
+            other => panic!("expected approval command, got {other:?}"),
         }
     }
 
@@ -937,6 +1081,64 @@ mod tests {
         assert!(text.contains("approval-cli-denied\tpending-approval\tdenied\t"));
         assert!(text.contains("approval-cli-pending\tpending-approval\tpending\t"));
         assert!(text.contains("command `echo ok`"));
+    }
+
+    #[test]
+    fn approval_command_reads_local_approval_detail() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let approval_id = create_pending_approval(&workspace, "approval-cli-detail");
+
+        let text = approval_text(workspace, &approval_id).unwrap();
+
+        assert!(text.contains("Approval record\n"));
+        assert!(text.contains("  id: approval-cli-detail\n"));
+        assert!(text.contains("  task: pending-approval\n"));
+        assert!(text.contains("  status: pending\n"));
+        assert!(text.contains("  actor: local\n"));
+        assert!(text.contains("  source: external\n"));
+        assert!(text.contains("  resolved: -\n"));
+        assert!(text.contains("  action: command `echo ok`\n"));
+        assert!(text.contains(
+            "  policy: requires command approval by rule test: test approval; risk high\n"
+        ));
+    }
+
+    #[test]
+    fn approval_detail_redacts_tool_parameter_values() {
+        let record = taskfence_core::ApprovalRecord {
+            id: ApprovalId("approval-tool-detail".into()),
+            task_id: TaskId("tool-task".into()),
+            actor: "gateway".into(),
+            source: Some("mcp".into()),
+            requested_at: time::OffsetDateTime::now_utc(),
+            resolved_at: None,
+            action: Action::ToolCall(ToolAction {
+                protocol: "mcp".into(),
+                tool: "github".into(),
+                operation: "create_pr".into(),
+                parameters: BTreeMap::from([(
+                    "token".into(),
+                    RedactedValue::Plain("secret-value".into()),
+                )]),
+            }),
+            policy_decision: ActionDecision::RequireApproval {
+                approval_kind: "tool_call".into(),
+                rule_id: Some("tool-test".into()),
+                reason: "needs review".into(),
+                risk: RiskLevel::Critical,
+            },
+            decision: None,
+        };
+
+        let text = render_approval_record(&record);
+
+        assert!(text.contains("tool call mcp github.create_pr with 1 parameter(s)"));
+        assert!(text.contains(
+            "requires tool_call approval by rule tool-test: needs review; risk critical"
+        ));
+        assert!(!text.contains("secret-value"));
     }
 
     #[test]
