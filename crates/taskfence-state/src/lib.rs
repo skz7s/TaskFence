@@ -1,12 +1,17 @@
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader};
 use std::sync::Mutex;
 
-use camino::Utf8PathBuf;
-use taskfence_core::{LogStream, StateStore, TaskFenceError, TaskId, TaskStatus};
+use camino::{Utf8Path, Utf8PathBuf};
+use taskfence_core::{
+    AuditEvent, LogStream, ResolvedTask, StateStore, TaskFenceError, TaskId, TaskStatus,
+};
 
 const TASKFENCE_DIR: &str = ".taskfence";
 const TASKS_DIR: &str = "tasks";
+const RESOLVED_TASK_FILE: &str = "task.resolved.json";
+const EVENTS_FILE: &str = "events.jsonl";
 const STDOUT_FILE: &str = "stdout.log";
 const STDERR_FILE: &str = "stderr.log";
 const REPORT_FILE: &str = "report.md";
@@ -65,6 +70,18 @@ pub struct TaskReport {
     pub contents: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskSummary {
+    pub task_id: TaskId,
+    pub task_dir: Utf8PathBuf,
+    pub status: Option<TaskStatus>,
+    pub goal: Option<String>,
+    pub has_report: bool,
+    pub has_stdout: bool,
+    pub has_stderr: bool,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct LocalTaskEvidenceStore {
     workspace: Utf8PathBuf,
@@ -79,11 +96,67 @@ impl LocalTaskEvidenceStore {
 
     pub fn task_dir(&self, task_id: &TaskId) -> taskfence_core::Result<Utf8PathBuf> {
         validate_task_id_component(&task_id.0)?;
-        Ok(self
-            .workspace
-            .join(TASKFENCE_DIR)
-            .join(TASKS_DIR)
-            .join(task_id.0.as_str()))
+        Ok(self.tasks_dir().join(task_id.0.as_str()))
+    }
+
+    pub fn list_tasks(&self) -> taskfence_core::Result<Vec<TaskSummary>> {
+        let tasks_dir = self.tasks_dir();
+        let metadata = match fs::metadata(tasks_dir.as_std_path()) {
+            Ok(metadata) => metadata,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => {
+                return Err(TaskFenceError::State(format!(
+                    "failed to access task evidence root {tasks_dir}: {err}"
+                )));
+            }
+        };
+
+        if !metadata.is_dir() {
+            return Err(TaskFenceError::State(format!(
+                "task evidence root is not a directory: {tasks_dir}"
+            )));
+        }
+
+        let mut summaries = Vec::new();
+        for entry in fs::read_dir(tasks_dir.as_std_path()).map_err(|err| {
+            TaskFenceError::State(format!(
+                "failed to read task evidence root {tasks_dir}: {err}"
+            ))
+        })? {
+            let entry = entry.map_err(|err| {
+                TaskFenceError::State(format!(
+                    "failed to read task evidence entry under {tasks_dir}: {err}"
+                ))
+            })?;
+            if !entry
+                .file_type()
+                .map_err(|err| {
+                    TaskFenceError::State(format!(
+                        "failed to inspect task evidence entry under {tasks_dir}: {err}"
+                    ))
+                })?
+                .is_dir()
+            {
+                continue;
+            }
+
+            let task_id = entry.file_name().into_string().map_err(|name| {
+                TaskFenceError::State(format!(
+                    "task evidence directory name is not valid UTF-8: {name:?}"
+                ))
+            })?;
+            validate_task_id_component(&task_id)?;
+            let task_id = TaskId(task_id);
+            let task_dir = Utf8PathBuf::from_path_buf(entry.path()).map_err(|path| {
+                TaskFenceError::State(format!(
+                    "task evidence directory path is not valid UTF-8: {path:?}"
+                ))
+            })?;
+            summaries.push(read_task_summary(task_id, task_dir));
+        }
+
+        summaries.sort_by(|left, right| left.task_id.cmp(&right.task_id));
+        Ok(summaries)
     }
 
     pub fn read_logs(&self, task_id: &TaskId) -> taskfence_core::Result<TaskLogs> {
@@ -116,6 +189,115 @@ impl LocalTaskEvidenceStore {
         })?;
         Ok(TaskReport { path, contents })
     }
+
+    fn tasks_dir(&self) -> Utf8PathBuf {
+        self.workspace.join(TASKFENCE_DIR).join(TASKS_DIR)
+    }
+}
+
+fn read_task_summary(task_id: TaskId, task_dir: Utf8PathBuf) -> TaskSummary {
+    let mut warnings = Vec::new();
+    let goal = read_task_goal(&task_id, &task_dir, &mut warnings);
+    let status = read_latest_task_status(&task_id, &task_dir, &mut warnings);
+
+    TaskSummary {
+        task_id,
+        has_report: task_dir.join(REPORT_FILE).is_file(),
+        has_stdout: task_dir.join(STDOUT_FILE).is_file(),
+        has_stderr: task_dir.join(STDERR_FILE).is_file(),
+        task_dir,
+        status,
+        goal,
+        warnings,
+    }
+}
+
+fn read_task_goal(
+    task_id: &TaskId,
+    task_dir: &Utf8Path,
+    warnings: &mut Vec<String>,
+) -> Option<String> {
+    let path = task_dir.join(RESOLVED_TASK_FILE);
+    let contents = match fs::read_to_string(path.as_std_path()) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(err) => {
+            warnings.push(format!("failed to read {RESOLVED_TASK_FILE}: {err}"));
+            return None;
+        }
+    };
+
+    match serde_json::from_str::<ResolvedTask>(&contents) {
+        Ok(task) => {
+            if task.id != *task_id {
+                warnings.push(format!(
+                    "{RESOLVED_TASK_FILE} task id {} does not match directory {}",
+                    task.id.0, task_id.0
+                ));
+            }
+            Some(task.goal)
+        }
+        Err(err) => {
+            warnings.push(format!("failed to parse {RESOLVED_TASK_FILE}: {err}"));
+            None
+        }
+    }
+}
+
+fn read_latest_task_status(
+    task_id: &TaskId,
+    task_dir: &Utf8Path,
+    warnings: &mut Vec<String>,
+) -> Option<TaskStatus> {
+    let path = task_dir.join(EVENTS_FILE);
+    let file = match File::open(path.as_std_path()) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(err) => {
+            warnings.push(format!("failed to read {EVENTS_FILE}: {err}"));
+            return None;
+        }
+    };
+
+    let mut latest = None;
+    for (index, line) in BufReader::new(file).lines().enumerate() {
+        let line_number = index + 1;
+        let line = match line {
+            Ok(line) => line,
+            Err(err) => {
+                warnings.push(format!(
+                    "failed to read {EVENTS_FILE} line {line_number}: {err}"
+                ));
+                continue;
+            }
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        match serde_json::from_str::<AuditEvent>(&line) {
+            Ok(AuditEvent::TaskStatusChanged {
+                task_id: event_task_id,
+                status,
+                ..
+            }) if event_task_id == *task_id => {
+                latest = Some(status);
+            }
+            Ok(AuditEvent::TaskStatusChanged {
+                task_id: event_task_id,
+                ..
+            }) => warnings.push(format!(
+                "{EVENTS_FILE} line {line_number} belongs to task {}",
+                event_task_id.0
+            )),
+            Ok(_) => {}
+            Err(err) => warnings.push(format!(
+                "failed to parse {EVENTS_FILE} line {line_number}: {err}"
+            )),
+        }
+    }
+
+    latest
 }
 
 fn read_optional_log(
@@ -181,6 +363,11 @@ mod tests {
     use super::*;
     use camino::Utf8PathBuf;
     use std::fs;
+    use taskfence_core::{
+        AgentConfig, AgentKind, ApprovalConfig, AuditConfig, LimitConfig, PermissionConfig,
+        SandboxConfig, SandboxKind,
+    };
+    use time::macros::datetime;
 
     #[test]
     fn missing_task_status_returns_none() {
@@ -292,5 +479,148 @@ mod tests {
         assert!(
             matches!(err, TaskFenceError::State(message) if message.contains("safe artifact path component"))
         );
+    }
+
+    #[test]
+    fn list_tasks_returns_empty_when_workspace_has_no_task_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let tasks = store.list_tasks().unwrap();
+
+        assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn list_tasks_reads_structured_task_summaries() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        write_task_evidence(
+            &workspace,
+            "task-b",
+            "second task",
+            &[TaskStatus::Running, TaskStatus::Succeeded],
+            &["report.md"],
+        );
+        write_task_evidence(
+            &workspace,
+            "task-a",
+            "first task",
+            &[TaskStatus::Denied],
+            &["stdout.log", "stderr.log"],
+        );
+        fs::write(workspace.join(".taskfence/tasks/ignore.txt"), "not a task").unwrap();
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let tasks = store.list_tasks().unwrap();
+
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].task_id, TaskId("task-a".into()));
+        assert_eq!(tasks[0].goal.as_deref(), Some("first task"));
+        assert_eq!(tasks[0].status, Some(TaskStatus::Denied));
+        assert!(tasks[0].has_stdout);
+        assert!(tasks[0].has_stderr);
+        assert!(!tasks[0].has_report);
+        assert_eq!(tasks[1].task_id, TaskId("task-b".into()));
+        assert_eq!(tasks[1].goal.as_deref(), Some("second task"));
+        assert_eq!(tasks[1].status, Some(TaskStatus::Succeeded));
+        assert!(tasks[1].has_report);
+        assert!(tasks[1].warnings.is_empty());
+    }
+
+    #[test]
+    fn list_tasks_keeps_summary_with_malformed_evidence_warnings() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let task_dir = workspace.join(".taskfence/tasks/task-broken");
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(task_dir.join("task.resolved.json"), "{not-json").unwrap();
+        fs::write(task_dir.join("events.jsonl"), "also-not-json\n").unwrap();
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let tasks = store.list_tasks().unwrap();
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].task_id, TaskId("task-broken".into()));
+        assert_eq!(tasks[0].goal, None);
+        assert_eq!(tasks[0].status, None);
+        assert!(tasks[0]
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("task.resolved.json")));
+        assert!(tasks[0]
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("events.jsonl line 1")));
+    }
+
+    #[test]
+    fn list_tasks_rejects_unsafe_task_directory_names() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir_all(workspace.join(".taskfence/tasks/bad\nid")).unwrap();
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let err = store.list_tasks().unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("safe artifact path component"))
+        );
+    }
+
+    fn write_task_evidence(
+        workspace: &Utf8PathBuf,
+        task_id: &str,
+        goal: &str,
+        statuses: &[TaskStatus],
+        files: &[&str],
+    ) {
+        let task_dir = workspace.join(".taskfence/tasks").join(task_id);
+        fs::create_dir_all(&task_dir).unwrap();
+        let task = test_task(task_id, workspace, goal);
+        fs::write(
+            task_dir.join("task.resolved.json"),
+            serde_json::to_string_pretty(&task).unwrap(),
+        )
+        .unwrap();
+        let mut events = String::new();
+        for status in statuses {
+            let event = AuditEvent::TaskStatusChanged {
+                task_id: TaskId(task_id.into()),
+                at: datetime!(2024-01-01 00:00 UTC),
+                status: status.clone(),
+            };
+            events.push_str(&serde_json::to_string(&event).unwrap());
+            events.push('\n');
+        }
+        fs::write(task_dir.join("events.jsonl"), events).unwrap();
+        for file in files {
+            fs::write(task_dir.join(file), "artifact\n").unwrap();
+        }
+    }
+
+    fn test_task(task_id: &str, workspace: &Utf8PathBuf, goal: &str) -> ResolvedTask {
+        ResolvedTask {
+            id: TaskId(task_id.into()),
+            task_file: workspace.join("task.yaml"),
+            goal: goal.into(),
+            workspace_host_path: workspace.clone(),
+            workspace_container_path: "/workspace".into(),
+            agent: AgentConfig {
+                kind: AgentKind::Generic,
+                command: "echo".into(),
+                args: vec!["ok".into()],
+            },
+            sandbox: SandboxConfig {
+                kind: SandboxKind::Docker,
+                image: Some("taskfence/runner:latest".into()),
+                limits: LimitConfig::default(),
+            },
+            permissions: PermissionConfig::default(),
+            secrets: Default::default(),
+            approval: ApprovalConfig::default(),
+            audit: AuditConfig::default(),
+        }
     }
 }

@@ -258,9 +258,9 @@ deployments can use object storage.
 Current local artifacts are written under `.taskfence/tasks/<task-id>/` in the
 task workspace and include the resolved task JSON, JSONL audit events,
 stdout/stderr logs when present, a diff artifact, and a Markdown report. The
-local CLI can read generated reports and captured logs from that workspace-local
-artifact directory, but it does not yet provide cross-workspace indexing or a
-SQLite-backed task list.
+local CLI can list workspace-local task summaries and read generated reports or
+captured logs from that workspace-local artifact directory, but it does not yet
+provide cross-workspace indexing, Web UI queries, or SQLite-backed state.
 
 ## Security Boundary
 

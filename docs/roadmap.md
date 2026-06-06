@@ -151,6 +151,12 @@ Minimum demo:
 
 Goal: improve review, debugging, and reproducibility.
 
+Current local coverage before Web UI and SQLite:
+
+- `taskfence tasks --workspace <workspace>` lists workspace-local task
+  summaries from `.taskfence/tasks`, using structured resolved-task JSON and
+  JSONL status events rather than rendered report text
+
 Deliverables:
 
 - task list

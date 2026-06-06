@@ -186,6 +186,7 @@ You can read local task evidence from the workspace that owns the `.taskfence`
 directory:
 
 ```bash
+cargo run -p taskfence-cli -- tasks --workspace examples/repo
 cargo run -p taskfence-cli -- report local-demo --workspace examples/repo
 cargo run -p taskfence-cli -- logs <task-id> --workspace <workspace>
 ```
@@ -233,7 +234,8 @@ The first implementation currently includes:
 6. Audit logs, denied-action records, stdout/stderr capture, and file diff
    artifacts.
 7. Markdown task reports generated from structured evidence.
-8. Local CLI lookup for generated reports and captured stdout/stderr logs.
+8. Local CLI lookup for workspace-local task lists, generated reports, and
+   captured stdout/stderr logs.
 9. Task-file `permissions.tools` parsing and policy/audit/report evidence for
    future gateway-mediated tool actions, including optional approval evidence,
    redacted gateway secret references, and MCP/HTTP request normalization

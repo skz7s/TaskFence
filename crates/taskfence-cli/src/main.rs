@@ -13,7 +13,7 @@ use taskfence_core::{
 use taskfence_policy::BuiltInPolicyEngine;
 use taskfence_report::MarkdownReportGenerator;
 use taskfence_runner::DockerRunner;
-use taskfence_state::{InMemoryStateStore, LocalTaskEvidenceStore, TaskLogs};
+use taskfence_state::{InMemoryStateStore, LocalTaskEvidenceStore, TaskLogs, TaskSummary};
 
 #[derive(Debug, Parser)]
 #[command(name = "taskfence")]
@@ -47,6 +47,12 @@ enum Command {
     Logs {
         /// Task ID to query.
         task_id: String,
+        /// Workspace that owns the .taskfence task evidence directory.
+        #[arg(long, default_value = ".")]
+        workspace: Utf8PathBuf,
+    },
+    /// List locally recorded tasks in a workspace.
+    Tasks {
         /// Workspace that owns the .taskfence task evidence directory.
         #[arg(long, default_value = ".")]
         workspace: Utf8PathBuf,
@@ -113,6 +119,7 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
             run_task_with_runner(task_file, &runner, approval_mode)
         }
         Command::Logs { task_id, workspace } => show_logs(workspace, task_id),
+        Command::Tasks { workspace } => show_tasks(workspace),
         Command::Approve {
             approval_id,
             workspace,
@@ -140,6 +147,12 @@ fn show_logs(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<
 
 fn show_report(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<()> {
     let text = report_text(workspace, &TaskId(task_id))?;
+    print!("{text}");
+    Ok(())
+}
+
+fn show_tasks(workspace: Utf8PathBuf) -> taskfence_core::Result<()> {
+    let text = tasks_text(workspace)?;
     print!("{text}");
     Ok(())
 }
@@ -177,6 +190,12 @@ fn report_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Resu
     Ok(store.read_report(task_id)?.contents)
 }
 
+fn tasks_text(workspace: Utf8PathBuf) -> taskfence_core::Result<String> {
+    let store = LocalTaskEvidenceStore::new(workspace);
+    let tasks = store.list_tasks()?;
+    Ok(render_task_summaries(&tasks))
+}
+
 fn render_logs(logs: &TaskLogs) -> String {
     let mut rendered = String::new();
     for entry in &logs.entries {
@@ -195,6 +214,62 @@ fn render_logs(logs: &TaskLogs) -> String {
         }
     }
     rendered
+}
+
+fn render_task_summaries(tasks: &[TaskSummary]) -> String {
+    let mut rendered = String::from("TASK ID\tSTATUS\tARTIFACTS\tWARNINGS\tGOAL\n");
+    for task in tasks {
+        rendered.push_str(&compact_cell(&task.task_id.0));
+        rendered.push('\t');
+        rendered.push_str(
+            task.status
+                .as_ref()
+                .map(|status| format!("{status:?}"))
+                .as_deref()
+                .unwrap_or("-"),
+        );
+        rendered.push('\t');
+        rendered.push_str(&artifact_flags(task));
+        rendered.push('\t');
+        if task.warnings.is_empty() {
+            rendered.push('-');
+        } else {
+            rendered.push_str("warnings:");
+            rendered.push_str(&task.warnings.len().to_string());
+        }
+        rendered.push('\t');
+        rendered.push_str(
+            task.goal
+                .as_deref()
+                .map(compact_cell)
+                .as_deref()
+                .unwrap_or("-"),
+        );
+        rendered.push('\n');
+    }
+    rendered
+}
+
+fn artifact_flags(task: &TaskSummary) -> String {
+    let mut flags = Vec::new();
+    if task.has_report {
+        flags.push("report");
+    }
+    if task.has_stdout {
+        flags.push("stdout");
+    }
+    if task.has_stderr {
+        flags.push("stderr");
+    }
+    if flags.is_empty() {
+        "-".into()
+    } else {
+        flags.join(",")
+    }
+}
+
+fn compact_cell(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn run_task_with_runner(
@@ -400,6 +475,26 @@ mod tests {
     }
 
     #[test]
+    fn parses_tasks_default_workspace() {
+        let cli = Cli::try_parse_from(["taskfence", "tasks"]).unwrap();
+
+        match cli.command {
+            Command::Tasks { workspace } => assert_eq!(workspace, Utf8PathBuf::from(".")),
+            other => panic!("expected tasks command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_tasks_workspace() {
+        let cli = Cli::try_parse_from(["taskfence", "tasks", "--workspace", "repo"]).unwrap();
+
+        match cli.command {
+            Command::Tasks { workspace } => assert_eq!(workspace, Utf8PathBuf::from("repo")),
+            other => panic!("expected tasks command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_approve_approval_id() {
         let cli = Cli::try_parse_from(["taskfence", "approve", "approval-123"]).unwrap();
 
@@ -537,6 +632,27 @@ mod tests {
         let text = report_text(workspace, &TaskId("task-123".into())).unwrap();
 
         assert_eq!(text, "# Task Report\n");
+    }
+
+    #[test]
+    fn tasks_command_reads_local_task_list() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(&task_file, task_yaml("cli-list", &workspace, "echo ok")).unwrap();
+
+        run_task_with_runner(
+            task_file,
+            &FakeRunner::succeeding(),
+            RunApprovalMode::FailClosed,
+        )
+        .unwrap();
+
+        let text = tasks_text(workspace).unwrap();
+
+        assert!(text.contains("TASK ID\tSTATUS\tARTIFACTS\tWARNINGS\tGOAL\n"));
+        assert!(text.contains("cli-list\tSucceeded\treport\t-\tCLI test\n"));
     }
 
     #[test]

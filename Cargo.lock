@@ -651,8 +651,10 @@ name = "taskfence-state"
 version = "0.1.0"
 dependencies = [
  "camino",
+ "serde_json",
  "taskfence-core",
  "tempfile",
+ "time",
 ]
 
 [[package]]
