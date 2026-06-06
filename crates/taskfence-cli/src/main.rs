@@ -83,6 +83,14 @@ enum Command {
         #[arg(long, default_value = ".")]
         workspace: Utf8PathBuf,
     },
+    /// Show the latest locally recorded task status.
+    Status {
+        /// Task ID to query.
+        task_id: String,
+        /// Workspace that owns the .taskfence task evidence directory.
+        #[arg(long, default_value = ".")]
+        workspace: Utf8PathBuf,
+    },
     /// Show the structured event timeline for a task.
     Events {
         /// Task ID to query.
@@ -169,6 +177,7 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
         Command::Diff { task_id, workspace } => show_diff(workspace, task_id),
         Command::Tasks { workspace } => show_tasks(workspace),
         Command::Task { task_id, workspace } => show_task(workspace, task_id),
+        Command::Status { task_id, workspace } => show_status(workspace, task_id),
         Command::Events { task_id, workspace } => show_events(workspace, task_id),
         Command::Approvals { workspace } => show_approvals(workspace),
         Command::Approval {
@@ -352,6 +361,12 @@ fn show_task(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<
     Ok(())
 }
 
+fn show_status(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<()> {
+    let text = status_text(workspace, &TaskId(task_id))?;
+    print!("{text}");
+    Ok(())
+}
+
 fn show_events(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<()> {
     let task_id = TaskId(task_id);
     let text = events_text(workspace, &task_id)?;
@@ -419,6 +434,12 @@ fn task_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Result
     let store = LocalTaskEvidenceStore::new(workspace);
     let task = store.read_task_summary(task_id)?;
     Ok(render_task_summary(&task))
+}
+
+fn status_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Result<String> {
+    let store = LocalTaskEvidenceStore::new(workspace);
+    let task = store.read_task_summary(task_id)?;
+    Ok(render_task_status(&task))
 }
 
 fn events_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Result<String> {
@@ -763,6 +784,31 @@ fn render_task_summary(task: &TaskSummary) -> String {
     rendered
 }
 
+fn render_task_status(task: &TaskSummary) -> String {
+    let status = task
+        .status
+        .as_ref()
+        .map(|status| format!("{status:?}"))
+        .unwrap_or_else(|| "-".into());
+
+    let mut rendered = String::new();
+    rendered.push_str("Task status\n");
+    rendered.push_str(&format!("  id: {}\n", task.task_id.0));
+    rendered.push_str(&format!("  status: {status}\n"));
+    rendered.push_str(&format!("  evidence: {}\n", task.task_dir));
+    if task.warnings.is_empty() {
+        rendered.push_str("  warnings: -\n");
+    } else {
+        rendered.push_str("  warnings:\n");
+        for warning in &task.warnings {
+            rendered.push_str("    - ");
+            rendered.push_str(&compact_cell(warning));
+            rendered.push('\n');
+        }
+    }
+    rendered
+}
+
 fn artifact_flags(task: &TaskSummary) -> String {
     let mut flags = Vec::new();
     if task.has_report {
@@ -1072,6 +1118,33 @@ mod tests {
                 assert_eq!(workspace, Utf8PathBuf::from("repo"));
             }
             other => panic!("expected task command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_status_task_id() {
+        let cli = Cli::try_parse_from(["taskfence", "status", "task-123"]).unwrap();
+
+        match cli.command {
+            Command::Status { task_id, workspace } => {
+                assert_eq!(task_id, "task-123");
+                assert_eq!(workspace, Utf8PathBuf::from("."));
+            }
+            other => panic!("expected status command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_status_workspace() {
+        let cli = Cli::try_parse_from(["taskfence", "status", "task-123", "--workspace", "repo"])
+            .unwrap();
+
+        match cli.command {
+            Command::Status { task_id, workspace } => {
+                assert_eq!(task_id, "task-123");
+                assert_eq!(workspace, Utf8PathBuf::from("repo"));
+            }
+            other => panic!("expected status command, got {other:?}"),
         }
     }
 
@@ -1490,6 +1563,30 @@ mod tests {
     }
 
     #[test]
+    fn status_command_reads_local_task_status() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(&task_file, task_yaml("cli-status", &workspace, "echo ok")).unwrap();
+
+        run_task_with_runner(
+            task_file,
+            &FakeRunner::succeeding(),
+            RunApprovalMode::FailClosed,
+        )
+        .unwrap();
+
+        let text = status_text(workspace, &TaskId("cli-status".into())).unwrap();
+
+        assert!(text.contains("Task status\n"));
+        assert!(text.contains("  id: cli-status\n"));
+        assert!(text.contains("  status: Succeeded\n"));
+        assert!(text.contains(".taskfence/tasks/cli-status"));
+        assert!(text.contains("  warnings: -\n"));
+    }
+
+    #[test]
     fn events_command_reads_local_task_events() {
         let temp = tempfile::tempdir().unwrap();
         let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
@@ -1636,6 +1733,18 @@ mod tests {
         let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
 
         let err = logs_text(workspace, &TaskId("missing".into())).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("directory not found"))
+        );
+    }
+
+    #[test]
+    fn status_command_surfaces_missing_task_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+
+        let err = status_text(workspace, &TaskId("missing".into())).unwrap_err();
 
         assert!(
             matches!(err, TaskFenceError::State(message) if message.contains("directory not found"))
