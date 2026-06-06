@@ -169,6 +169,7 @@ workspace-local file-backed approval queue:
 
 ```bash
 cargo run -p taskfence-cli -- run --external-approval examples/task.yaml
+cargo run -p taskfence-cli -- approvals --workspace examples/repo
 cargo run -p taskfence-cli -- approve <approval-id> --workspace examples/repo
 cargo run -p taskfence-cli -- deny <approval-id> --workspace examples/repo
 ```
@@ -231,12 +232,12 @@ The first implementation currently includes:
 4. File, command, network, and secret restrictions.
 5. Non-interactive fail-closed local approval records, opt-in local interactive
    approval during `run`, and explicit local external approval through
-   workspace-scoped `approve` / `deny` commands.
+   workspace-scoped `approvals` / `approve` / `deny` commands.
 6. Audit logs, denied-action records, stdout/stderr capture, and file diff
    artifacts.
 7. Markdown task reports generated from structured evidence.
 8. Local CLI lookup for workspace-local task lists, captured diffs, generated
-   reports, and captured stdout/stderr logs.
+   reports, captured stdout/stderr logs, and local approval records.
 9. Task-file `permissions.tools` parsing and policy/audit/report evidence for
    future gateway-mediated tool actions, including optional approval evidence,
    redacted gateway secret references, and MCP/HTTP request normalization

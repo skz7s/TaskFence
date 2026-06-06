@@ -7,8 +7,8 @@ use taskfence_artifacts::LocalArtifactStore;
 use taskfence_audit::LocalJsonlAuditLogger;
 use taskfence_config::load_task_file;
 use taskfence_core::{
-    ApprovalDecision, ApprovalEngine, ApprovalId, LogStream, Orchestrator, ResolvedTask, Runner,
-    TaskFenceError, TaskId, TaskStatus,
+    Action, ApprovalDecision, ApprovalEngine, ApprovalId, ApprovalRecord, LogStream, Orchestrator,
+    ResolvedTask, Runner, TaskFenceError, TaskId, TaskStatus,
 };
 use taskfence_policy::BuiltInPolicyEngine;
 use taskfence_report::MarkdownReportGenerator;
@@ -62,6 +62,12 @@ enum Command {
     /// List locally recorded tasks in a workspace.
     Tasks {
         /// Workspace that owns the .taskfence task evidence directory.
+        #[arg(long, default_value = ".")]
+        workspace: Utf8PathBuf,
+    },
+    /// List locally recorded approval requests in a workspace.
+    Approvals {
+        /// Workspace that owns the .taskfence approval directory.
         #[arg(long, default_value = ".")]
         workspace: Utf8PathBuf,
     },
@@ -129,6 +135,7 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
         Command::Logs { task_id, workspace } => show_logs(workspace, task_id),
         Command::Diff { task_id, workspace } => show_diff(workspace, task_id),
         Command::Tasks { workspace } => show_tasks(workspace),
+        Command::Approvals { workspace } => show_approvals(workspace),
         Command::Approve {
             approval_id,
             workspace,
@@ -168,6 +175,12 @@ fn show_diff(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<
 
 fn show_tasks(workspace: Utf8PathBuf) -> taskfence_core::Result<()> {
     let text = tasks_text(workspace)?;
+    print!("{text}");
+    Ok(())
+}
+
+fn show_approvals(workspace: Utf8PathBuf) -> taskfence_core::Result<()> {
+    let text = approvals_text(workspace)?;
     print!("{text}");
     Ok(())
 }
@@ -216,6 +229,12 @@ fn tasks_text(workspace: Utf8PathBuf) -> taskfence_core::Result<String> {
     Ok(render_task_summaries(&tasks))
 }
 
+fn approvals_text(workspace: Utf8PathBuf) -> taskfence_core::Result<String> {
+    let store = LocalApprovalStore::new(workspace);
+    let approvals = store.list()?;
+    Ok(render_approval_records(&approvals))
+}
+
 fn render_logs(logs: &TaskLogs) -> String {
     let mut rendered = String::new();
     for entry in &logs.entries {
@@ -234,6 +253,63 @@ fn render_logs(logs: &TaskLogs) -> String {
         }
     }
     rendered
+}
+
+fn render_approval_records(records: &[ApprovalRecord]) -> String {
+    let mut rendered = String::from("APPROVAL ID\tTASK ID\tSTATUS\tREQUESTED\tACTION\n");
+    for record in records {
+        rendered.push_str(&compact_cell(&record.id.0));
+        rendered.push('\t');
+        rendered.push_str(&compact_cell(&record.task_id.0));
+        rendered.push('\t');
+        rendered.push_str(approval_status(record));
+        rendered.push('\t');
+        rendered.push_str(&compact_cell(&record.requested_at.to_string()));
+        rendered.push('\t');
+        rendered.push_str(&compact_cell(&approval_action_summary(&record.action)));
+        rendered.push('\n');
+    }
+    rendered
+}
+
+fn approval_status(record: &ApprovalRecord) -> &'static str {
+    match record.decision.as_ref() {
+        None => "pending",
+        Some(ApprovalDecision::Approved) => "approved",
+        Some(ApprovalDecision::Denied) => "denied",
+        Some(ApprovalDecision::TimedOut) => "timed-out",
+    }
+}
+
+fn approval_action_summary(action: &Action) -> String {
+    match action {
+        Action::FileRead { path } => format!("file read {path}"),
+        Action::FileWrite { path } => format!("file write {path}"),
+        Action::Command(command) => {
+            let shell_suffix = if command.shell_wrapped {
+                " (shell wrapped)"
+            } else {
+                ""
+            };
+            format!("command `{}`{shell_suffix}", command.raw)
+        }
+        Action::Network { host, port } => match port {
+            Some(port) => format!("network {host}:{port}"),
+            None => format!("network {host}"),
+        },
+        Action::EnvExpose { name } => format!("environment variable {name}"),
+        Action::SecretAccess { name, scope } => {
+            format!("secret access {name} for scope {scope}")
+        }
+        Action::ToolCall(tool) => format!(
+            "tool call {} {}.{} with {} parameter(s)",
+            tool.protocol,
+            tool.tool,
+            tool.operation,
+            tool.parameters.len()
+        ),
+        Action::Budget { kind, amount } => format!("budget {kind} amount {amount}"),
+    }
 }
 
 fn render_task_summaries(tasks: &[TaskSummary]) -> String {
@@ -545,6 +621,26 @@ mod tests {
     }
 
     #[test]
+    fn parses_approvals_default_workspace() {
+        let cli = Cli::try_parse_from(["taskfence", "approvals"]).unwrap();
+
+        match cli.command {
+            Command::Approvals { workspace } => assert_eq!(workspace, Utf8PathBuf::from(".")),
+            other => panic!("expected approvals command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_approvals_workspace() {
+        let cli = Cli::try_parse_from(["taskfence", "approvals", "--workspace", "repo"]).unwrap();
+
+        match cli.command {
+            Command::Approvals { workspace } => assert_eq!(workspace, Utf8PathBuf::from("repo")),
+            other => panic!("expected approvals command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_approve_approval_id() {
         let cli = Cli::try_parse_from(["taskfence", "approve", "approval-123"]).unwrap();
 
@@ -716,6 +812,25 @@ mod tests {
 
         assert!(text.contains("TASK ID\tSTATUS\tARTIFACTS\tWARNINGS\tGOAL\n"));
         assert!(text.contains("cli-list\tSucceeded\treport,diff\t-\tCLI test\n"));
+    }
+
+    #[test]
+    fn approvals_command_reads_local_approval_list() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        create_pending_approval(&workspace, "approval-cli-pending");
+        let denied_id = create_pending_approval(&workspace, "approval-cli-denied");
+        LocalApprovalStore::new(workspace.clone())
+            .resolve(&denied_id, ApprovalDecision::Denied)
+            .unwrap();
+
+        let text = approvals_text(workspace).unwrap();
+
+        assert!(text.contains("APPROVAL ID\tTASK ID\tSTATUS\tREQUESTED\tACTION\n"));
+        assert!(text.contains("approval-cli-denied\tpending-approval\tdenied\t"));
+        assert!(text.contains("approval-cli-pending\tpending-approval\tpending\t"));
+        assert!(text.contains("command `echo ok`"));
     }
 
     #[test]

@@ -152,18 +152,72 @@ impl LocalApprovalStore {
 
     pub fn read(&self, approval_id: &ApprovalId) -> taskfence_core::Result<ApprovalRecord> {
         let path = self.approval_path(approval_id)?;
-        let contents = fs::read_to_string(path.as_std_path()).map_err(|err| {
+        read_record_at(&path, approval_id)
+    }
+
+    pub fn list(&self) -> taskfence_core::Result<Vec<ApprovalRecord>> {
+        let approvals_dir = self.approvals_dir();
+        let metadata = match fs::metadata(approvals_dir.as_std_path()) {
+            Ok(metadata) => metadata,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => {
+                return Err(TaskFenceError::Approval(format!(
+                    "failed to access approval queue {approvals_dir}: {err}"
+                )));
+            }
+        };
+
+        if !metadata.is_dir() {
+            return Err(TaskFenceError::Approval(format!(
+                "approval queue is not a directory: {approvals_dir}"
+            )));
+        }
+
+        let mut records = Vec::new();
+        for entry in fs::read_dir(approvals_dir.as_std_path()).map_err(|err| {
             TaskFenceError::Approval(format!(
-                "approval record not found for {} at {path}: {err}",
-                approval_id.0
+                "failed to read approval queue {approvals_dir}: {err}"
             ))
-        })?;
-        serde_json::from_str(&contents).map_err(|err| {
-            TaskFenceError::Approval(format!(
-                "approval record is not valid JSON for {} at {path}: {err}",
-                approval_id.0
-            ))
-        })
+        })? {
+            let entry = entry.map_err(|err| {
+                TaskFenceError::Approval(format!(
+                    "failed to read approval queue entry under {approvals_dir}: {err}"
+                ))
+            })?;
+            if !entry
+                .file_type()
+                .map_err(|err| {
+                    TaskFenceError::Approval(format!(
+                        "failed to inspect approval queue entry under {approvals_dir}: {err}"
+                    ))
+                })?
+                .is_file()
+            {
+                continue;
+            }
+
+            let path = Utf8PathBuf::from_path_buf(entry.path()).map_err(|path| {
+                TaskFenceError::Approval(format!(
+                    "approval record path is not valid UTF-8: {path:?}"
+                ))
+            })?;
+            if path.extension() != Some("json") {
+                continue;
+            }
+            let approval_id = path
+                .file_stem()
+                .ok_or_else(|| {
+                    TaskFenceError::Approval(format!(
+                        "approval record has no file stem under {approvals_dir}: {path}"
+                    ))
+                })?
+                .to_owned();
+            validate_approval_id_component(&approval_id)?;
+            records.push(read_record_at(&path, &ApprovalId(approval_id))?);
+        }
+
+        records.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(records)
     }
 
     pub fn resolve(
@@ -611,6 +665,32 @@ fn approval_store_io_error(err: std::io::Error) -> TaskFenceError {
     TaskFenceError::Approval(format!("approval store IO failed: {err}"))
 }
 
+fn read_record_at(
+    path: &Utf8Path,
+    approval_id: &ApprovalId,
+) -> taskfence_core::Result<ApprovalRecord> {
+    let contents = fs::read_to_string(path.as_std_path()).map_err(|err| {
+        TaskFenceError::Approval(format!(
+            "approval record not found for {} at {path}: {err}",
+            approval_id.0
+        ))
+    })?;
+    let record: ApprovalRecord = serde_json::from_str(&contents).map_err(|err| {
+        TaskFenceError::Approval(format!(
+            "approval record is not valid JSON for {} at {path}: {err}",
+            approval_id.0
+        ))
+    })?;
+    validate_approval_id_component(&record.id.0)?;
+    if record.id != *approval_id {
+        return Err(TaskFenceError::Approval(format!(
+            "approval record id {} does not match path id {} at {path}",
+            record.id.0, approval_id.0
+        )));
+    }
+    Ok(record)
+}
+
 fn atomic_write(path: &Utf8Path, bytes: &[u8]) -> taskfence_core::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         TaskFenceError::Approval(format!("approval path has no parent directory: {path}"))
@@ -886,6 +966,110 @@ mod tests {
         assert_eq!(
             store.read(&record.id).unwrap().decision,
             Some(ApprovalDecision::Approved)
+        );
+    }
+
+    #[test]
+    fn local_store_lists_approval_records_sorted_by_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let store = LocalApprovalStore::new(workspace.clone());
+        store.write_pending(&pending_record("approval-b")).unwrap();
+        store.write_pending(&pending_record("approval-a")).unwrap();
+        store
+            .resolve(&ApprovalId("approval-b".into()), ApprovalDecision::Denied)
+            .unwrap();
+
+        let records = store.list().unwrap();
+
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| &record.id.0)
+                .collect::<Vec<_>>(),
+            vec!["approval-a", "approval-b"]
+        );
+        assert_eq!(records[0].decision, None);
+        assert_eq!(records[1].decision, Some(ApprovalDecision::Denied));
+    }
+
+    #[test]
+    fn local_store_list_returns_empty_when_queue_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let store = LocalApprovalStore::new(workspace);
+
+        assert!(store.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn local_store_list_ignores_non_json_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let store = LocalApprovalStore::new(workspace);
+        fs::create_dir_all(store.approvals_dir()).unwrap();
+        fs::write(
+            store.approvals_dir().join("scratch.tmp"),
+            "not approval json",
+        )
+        .unwrap();
+
+        assert!(store.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn local_store_list_rejects_malformed_approval_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let store = LocalApprovalStore::new(workspace);
+        fs::create_dir_all(store.approvals_dir()).unwrap();
+        fs::write(store.approvals_dir().join("approval-bad.json"), "not json").unwrap();
+
+        let err = store.list().unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Approval(message) if message.contains("not valid JSON"))
+        );
+    }
+
+    #[test]
+    fn local_store_list_rejects_mismatched_record_ids() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let store = LocalApprovalStore::new(workspace);
+        let record = pending_record("approval-inner");
+        fs::create_dir_all(store.approvals_dir()).unwrap();
+        fs::write(
+            store.approvals_dir().join("approval-outer.json"),
+            serde_json::to_vec_pretty(&record).unwrap(),
+        )
+        .unwrap();
+
+        let err = store.list().unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Approval(message) if message.contains("does not match path id"))
+        );
+    }
+
+    #[test]
+    fn local_store_list_rejects_unsafe_approval_record_names() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let store = LocalApprovalStore::new(workspace);
+        fs::create_dir_all(store.approvals_dir()).unwrap();
+        fs::write(store.approvals_dir().join("..json"), "{}").unwrap();
+
+        let err = store.list().unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Approval(message) if message.contains("safe path component"))
         );
     }
 

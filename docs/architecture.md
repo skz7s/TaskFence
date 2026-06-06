@@ -57,6 +57,8 @@ Initial commands:
   terminal for approval-required actions during that run.
 - `taskfence run --external-approval <task-file>` writes pending approval
   records under the task workspace and waits for local `approve` / `deny`.
+- `taskfence approvals --workspace <workspace>` lists workspace-local approval
+  records from the file-backed approval queue.
 - `taskfence approve <approval-id> --workspace <workspace>` and
   `taskfence deny <approval-id> --workspace <workspace>` resolve pending local
   approval records.
@@ -219,8 +221,10 @@ explicitly wait for workspace-local file-backed approval records with
 `taskfence run --external-approval`. In external approval mode, pending records
 are written under `.taskfence/approvals/<approval-id>.json` in the task
 workspace and can be resolved by `taskfence approve` or `taskfence deny` from
-another terminal. Preconfigured decisions can model approved, denied, or
-timed-out outcomes in tests.
+another terminal. The CLI can list those workspace-local approval records with
+`taskfence approvals --workspace <workspace>`; this is a local file queue query,
+not a service-side approval system. Preconfigured decisions can model approved,
+denied, or timed-out outcomes in tests.
 
 Policy-denied and approval-denied local runs stop before the runner starts, but
 still write resolved task evidence, structured audit events, and a Markdown
