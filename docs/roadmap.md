@@ -91,13 +91,16 @@ Deliverables:
 - secret redaction rules
 
 Partially implemented: built-in command/file/network/env/secret/tool policy
-decisions, deny precedence, approval-required command patterns,
-non-interactive fail-closed approval records, timeout modeling, and audit/report
-redaction. Opt-in local interactive approval during `run` is implemented, as is
-an explicit workspace-local external approval mode through `taskfence approve`
-and `taskfence deny`. Denied command and approval denial evidence/reporting is
-implemented for local pre-run decisions. Remaining Phase 2 work is broader
-denied action records for future gateway/tool actions.
+decisions, task-file `permissions.tools` parsing, deny precedence,
+approval-required command/tool patterns, non-interactive fail-closed approval
+records, timeout modeling, and audit/report redaction. Opt-in local interactive
+approval during `run` is implemented, as is an explicit workspace-local
+external approval mode through `taskfence approve` and `taskfence deny`.
+Denied command and approval denial evidence/reporting is implemented for local
+pre-run decisions; configured tool-call policy decisions are covered through
+typed gateway mediation and structured report evidence. Remaining Phase 2 work
+is observing or mediating real agent tool actions through an enforcing gateway
+or wrapper path.
 
 Minimum demo:
 
@@ -118,6 +121,15 @@ Deliverables:
 - GitHub tool integration
 - secret broker for GitHub token usage
 - structured tool call audit logs
+
+Current contract coverage before production gateway execution:
+
+- task files can configure `permissions.tools.allow`,
+  `permissions.tools.approval_required`, and `permissions.tools.deny`
+- typed gateway mediation normalizes supported `mcp` tool actions, evaluates
+  policy, and writes structured `PolicyDecision` audit events
+- reports render tool-call decisions, approvals, and denied tool actions from
+  structured audit events without rendering raw parameter values
 
 Minimum demo:
 

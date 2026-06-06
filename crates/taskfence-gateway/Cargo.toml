@@ -9,3 +9,6 @@ rust-version.workspace = true
 [dependencies]
 taskfence-core.workspace = true
 time.workspace = true
+
+[dev-dependencies]
+taskfence-policy.workspace = true

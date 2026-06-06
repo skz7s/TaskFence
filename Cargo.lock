@@ -612,6 +612,7 @@ name = "taskfence-gateway"
 version = "0.1.0"
 dependencies = [
  "taskfence-core",
+ "taskfence-policy",
  "time",
 ]
 

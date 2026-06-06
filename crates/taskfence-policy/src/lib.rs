@@ -250,10 +250,11 @@ fn require_approval(
 mod tests {
     use super::*;
     use camino::Utf8PathBuf;
+    use std::collections::BTreeMap;
     use taskfence_core::{
         AgentConfig, AgentKind, ApprovalConfig, AuditConfig, CommandPermissions, EnvPermissions,
         LimitConfig, NetworkPermissions, PathPermissions, PermissionConfig, SandboxConfig,
-        SandboxKind, SecretConfig, TaskId,
+        SandboxKind, SecretConfig, TaskId, ToolAction, ToolPermissions,
     };
 
     fn task() -> ResolvedTask {
@@ -293,6 +294,15 @@ mod tests {
             approval: ApprovalConfig::default(),
             audit: AuditConfig::default(),
         }
+    }
+
+    fn tool_action(operation: &str) -> Action {
+        Action::ToolCall(ToolAction {
+            protocol: "mcp".into(),
+            tool: "github".into(),
+            operation: operation.into(),
+            parameters: BTreeMap::new(),
+        })
     }
 
     #[test]
@@ -376,5 +386,69 @@ mod tests {
             .unwrap();
 
         assert!(matches!(decision, ActionDecision::RequireApproval { .. }));
+    }
+
+    #[test]
+    fn tool_allow_matches_normalized_key() {
+        let mut task = task();
+        task.permissions.tools = ToolPermissions {
+            allow: vec!["github.read_issue".into()],
+            approval_required: Vec::new(),
+            deny: Vec::new(),
+        };
+
+        let decision = BuiltInPolicyEngine
+            .evaluate(&task, &tool_action("read_issue"))
+            .unwrap();
+
+        assert!(matches!(decision, ActionDecision::Allow { .. }));
+    }
+
+    #[test]
+    fn tool_approval_beats_allow() {
+        let mut task = task();
+        task.permissions.tools = ToolPermissions {
+            allow: vec!["github.create_pr".into()],
+            approval_required: vec!["github.create_pr".into()],
+            deny: Vec::new(),
+        };
+
+        let decision = BuiltInPolicyEngine
+            .evaluate(&task, &tool_action("create_pr"))
+            .unwrap();
+
+        assert!(matches!(
+            decision,
+            ActionDecision::RequireApproval {
+                approval_kind,
+                risk: RiskLevel::Medium,
+                ..
+            } if approval_kind == "tool_call"
+        ));
+    }
+
+    #[test]
+    fn tool_deny_beats_approval_and_allow() {
+        let mut task = task();
+        task.permissions.tools = ToolPermissions {
+            allow: vec!["github.delete_repo".into()],
+            approval_required: vec!["github.delete_repo".into()],
+            deny: vec!["github.delete_repo".into()],
+        };
+
+        let decision = BuiltInPolicyEngine
+            .evaluate(&task, &tool_action("delete_repo"))
+            .unwrap();
+
+        assert!(matches!(decision, ActionDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn unmatched_tool_call_is_denied_by_default() {
+        let decision = BuiltInPolicyEngine
+            .evaluate(&task(), &tool_action("delete_repo"))
+            .unwrap();
+
+        assert!(matches!(decision, ActionDecision::Deny { .. }));
     }
 }

@@ -115,8 +115,9 @@ mod tests {
     use std::sync::Mutex;
     use taskfence_core::{
         AgentConfig, AgentKind, ApprovalConfig, AuditConfig, LimitConfig, PermissionConfig,
-        SandboxConfig, SandboxKind, SecretConfig, TaskId,
+        SandboxConfig, SandboxKind, SecretConfig, TaskId, ToolPermissions,
     };
+    use taskfence_policy::BuiltInPolicyEngine;
 
     #[derive(Debug)]
     struct StaticPolicy {
@@ -248,6 +249,41 @@ mod tests {
             .unwrap();
 
         assert!(matches!(result.decision, ActionDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn records_configured_tool_policy_decision_without_execution() {
+        let policy = BuiltInPolicyEngine;
+        let audit = RecordingAudit::default();
+        let mediator = GatewayMediator::new(&policy, &audit);
+        let mut task = task();
+        task.permissions.tools = ToolPermissions {
+            allow: vec!["github.read_issue".into()],
+            approval_required: vec!["github.create_pr".into()],
+            deny: vec!["github.delete_repo".into()],
+        };
+
+        let result = mediator
+            .mediate_tool_action(&task, tool_action("mcp"))
+            .unwrap();
+
+        assert!(matches!(
+            result.decision,
+            ActionDecision::RequireApproval {
+                approval_kind,
+                ..
+            } if approval_kind == "tool_call"
+        ));
+        let events = audit.events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events.first(),
+            Some(AuditEvent::PolicyDecision {
+                action: Action::ToolCall(action),
+                decision: ActionDecision::RequireApproval { .. },
+                ..
+            }) if action.tool == "github" && action.operation == "create_pr"
+        ));
     }
 
     #[test]

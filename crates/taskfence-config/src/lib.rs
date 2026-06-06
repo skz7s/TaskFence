@@ -6,7 +6,7 @@ use taskfence_core::{
     AgentConfig, AgentKind, ApprovalConfig, AuditConfig, CaptureConfig, CommandPermissions,
     EnvPermissions, LimitConfig, NetworkDefault, NetworkPermissions, PathPermissions,
     PermissionConfig, ReportConfig, ReportFormat, ResolvedTask, SandboxConfig, SandboxKind,
-    SecretConfig, SecretGrant, TaskFenceError, TaskId,
+    SecretConfig, SecretGrant, TaskFenceError, TaskId, ToolPermissions,
 };
 
 pub fn load_task_file(path: impl AsRef<Utf8Path>) -> taskfence_core::Result<ResolvedTask> {
@@ -158,6 +158,8 @@ struct RawPermissions {
     network: RawNetworkPermissions,
     #[serde(default)]
     env: EnvPermissions,
+    #[serde(default)]
+    tools: ToolPermissions,
 }
 
 impl RawPermissions {
@@ -171,7 +173,7 @@ impl RawPermissions {
             commands: self.commands,
             network: self.network.resolve()?,
             env: self.env,
-            tools: Default::default(),
+            tools: self.tools,
         })
     }
 }
@@ -451,6 +453,38 @@ sandbox:
     }
 
     #[test]
+    fn parses_tool_permissions() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("repo")).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        let yaml = r#"
+goal: Test tool policy
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+permissions:
+  tools:
+    allow:
+      - "github.read_issue"
+    approval_required:
+      - "github.create_pr"
+    deny:
+      - "github.delete_repo"
+"#;
+
+        let task = parse_task_file(&task_file, yaml).unwrap();
+
+        assert_eq!(task.permissions.tools.allow, vec!["github.read_issue"]);
+        assert_eq!(
+            task.permissions.tools.approval_required,
+            vec!["github.create_pr"]
+        );
+        assert_eq!(task.permissions.tools.deny, vec!["github.delete_repo"]);
+    }
+
+    #[test]
     fn rejects_unknown_fields() {
         let yaml = r#"
 goal: Test
@@ -463,6 +497,26 @@ sandbox:
 "#;
 
         assert!(parse_task_file(Utf8Path::new("/tmp/task.yaml"), yaml).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_tool_permission_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("repo")).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        let yaml = r#"
+goal: Test
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+permissions:
+  tools:
+    unknown: []
+"#;
+
+        assert!(parse_task_file(&task_file, yaml).is_err());
     }
 
     #[test]

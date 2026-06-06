@@ -706,6 +706,7 @@ Write scope:
 Tasks:
 
 - Define normalized tool action model.
+- Carry configured task-file tool permissions through policy decisions.
 - Define secret broker trait and redacted secret references.
 - Add MCP/HTTP adapter stubs returning explicit unsupported errors.
 - Add tests proving gateway actions route through policy and audit traits.
@@ -897,7 +898,9 @@ The first usable version is complete when:
 - The agent runs inside the Docker runner with controlled mounts and env.
 - Policy decisions are recorded for planned command/tool actions. Observation
   of arbitrary in-container shell commands remains future gateway or wrapper
-  work.
+  work. Task-file `permissions.tools` values are already parsed into policy,
+  and typed gateway mediation can record configured tool-call decisions into
+  audit/report evidence without executing the external tool.
 - Approval-required actions fail closed by default in local mode. Operators can
   opt into in-process terminal approval with `taskfence run --interactive-approval`
   or explicitly wait for workspace-local external approval with

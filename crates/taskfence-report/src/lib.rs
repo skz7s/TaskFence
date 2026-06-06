@@ -595,9 +595,11 @@ fn atomic_write(path: &Utf8Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::fs;
     use taskfence_core::{
-        Action, ActionDecision, AuditEvent, CommandAction, ExitStatus, ReportGenerator, TaskStatus,
+        Action, ActionDecision, AuditEvent, CommandAction, ExitStatus, RedactedValue,
+        ReportGenerator, RiskLevel, TaskStatus, ToolAction,
     };
     use taskfence_testkit::sample_task;
     use time::macros::datetime;
@@ -734,6 +736,97 @@ mod tests {
         assert!(contents.contains("| approval-1 | local | denied |"));
         assert!(contents.contains("No diff artifact was supplied."));
         assert!(contents.contains("No diff artifact was available"));
+    }
+
+    #[test]
+    fn writes_tool_policy_evidence_without_parameter_values() {
+        let temp = tempfile::tempdir().unwrap();
+        let task_dir = Utf8PathBuf::from_path_buf(temp.path().join("task")).unwrap();
+        fs::create_dir_all(&task_dir).unwrap();
+        let report_path = task_dir.join("report.md");
+        let task = sample_task();
+        let denied_action = Action::ToolCall(ToolAction {
+            protocol: "mcp".into(),
+            tool: "github".into(),
+            operation: "delete_repo".into(),
+            parameters: BTreeMap::from([(
+                "token".into(),
+                RedactedValue::Plain("ghp_secret_should_not_render".into()),
+            )]),
+        });
+        let approval_action = Action::ToolCall(ToolAction {
+            protocol: "mcp".into(),
+            tool: "github".into(),
+            operation: "create_pr".into(),
+            parameters: BTreeMap::from([(
+                "authorization".into(),
+                RedactedValue::Plain("Bearer sk-secret-should-not-render".into()),
+            )]),
+        });
+        let approval_decision = ActionDecision::RequireApproval {
+            approval_kind: "tool_call".into(),
+            rule_id: Some("tools.approval".into()),
+            reason: "tool call matched approval rule".into(),
+            risk: RiskLevel::Medium,
+        };
+        let record = taskfence_core::ApprovalRecord {
+            id: taskfence_core::ApprovalId("approval-tool-1".into()),
+            task_id: task.id.clone(),
+            actor: "gateway".into(),
+            source: Some("mcp".into()),
+            requested_at: datetime!(2024-01-01 00:02 UTC),
+            resolved_at: Some(datetime!(2024-01-01 00:03 UTC)),
+            action: approval_action.clone(),
+            policy_decision: approval_decision.clone(),
+            decision: Some(ApprovalDecision::Approved),
+        };
+        let artifacts = ArtifactRefs {
+            task_dir: task_dir.clone(),
+            resolved_task: Some(task_dir.join("task.resolved.json")),
+            events: Some(task_dir.join("events.jsonl")),
+            stdout: Some(task_dir.join("stdout.log")),
+            stderr: Some(task_dir.join("stderr.log")),
+            diff: None,
+            report: Some(report_path.clone()),
+        };
+        let events = vec![
+            AuditEvent::PolicyDecision {
+                task_id: task.id.clone(),
+                at: datetime!(2024-01-01 00:01 UTC),
+                action: denied_action,
+                decision: ActionDecision::Deny {
+                    rule_id: Some("tools.deny".into()),
+                    reason: "tool call matched deny rule".into(),
+                },
+            },
+            AuditEvent::PolicyDecision {
+                task_id: task.id.clone(),
+                at: datetime!(2024-01-01 00:02 UTC),
+                action: approval_action,
+                decision: approval_decision,
+            },
+            AuditEvent::ApprovalRequested {
+                record: record.clone(),
+            },
+            AuditEvent::ApprovalResolved { record },
+        ];
+
+        let path = MarkdownReportGenerator::new()
+            .generate(&task, &artifacts, &events)
+            .unwrap();
+        let contents = fs::read_to_string(path).unwrap();
+
+        assert!(contents.contains("## Tool Calls"));
+        assert!(contents.contains("| mcp:github | delete_repo | deny |"));
+        assert!(contents.contains("| mcp:github | create_pr | approval required |"));
+        assert!(contents.contains("Denied decisions: 1"));
+        assert!(contents.contains("Approval-required decisions: 1"));
+        assert!(
+            contents.contains("tool call github.delete_repo denied: tool call matched deny rule")
+        );
+        assert!(contents.contains("| approval-tool-1 | gateway | approved |"));
+        assert!(!contents.contains("ghp_secret_should_not_render"));
+        assert!(!contents.contains("sk-secret-should-not-render"));
     }
 
     #[test]

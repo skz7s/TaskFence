@@ -34,6 +34,13 @@ permissions:
       - "sudo *"
   network:
     default: "disabled"
+  tools:
+    allow:
+      - "github.read_issue"
+    approval_required:
+      - "github.create_pr"
+    deny:
+      - "github.delete_repo"
 
 secrets:
   expose_to_agent: false
