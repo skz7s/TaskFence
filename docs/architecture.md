@@ -62,6 +62,8 @@ Initial commands:
 - `taskfence approve <approval-id> --workspace <workspace>` and
   `taskfence deny <approval-id> --workspace <workspace>` resolve pending local
   approval records.
+- `taskfence task <task-id> --workspace <workspace>` reads a single structured
+  local task summary and artifact availability from local task evidence.
 - `taskfence logs <task-id> --workspace <workspace>` reads captured stdout and
   stderr logs from local task evidence when present.
 - `taskfence diff <task-id> --workspace <workspace>` reads the captured

@@ -129,6 +129,7 @@ Initial commands:
 - `taskfence init`
 - `taskfence run <task-file>`
 - `taskfence tasks --workspace <workspace>`
+- `taskfence task <task-id> --workspace <workspace>`
 - `taskfence logs <task-id>`
 - `taskfence diff <task-id>`
 - `taskfence approvals --workspace <workspace>`

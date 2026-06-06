@@ -65,6 +65,14 @@ enum Command {
         #[arg(long, default_value = ".")]
         workspace: Utf8PathBuf,
     },
+    /// Show a locally recorded task summary.
+    Task {
+        /// Task ID to query.
+        task_id: String,
+        /// Workspace that owns the .taskfence task evidence directory.
+        #[arg(long, default_value = ".")]
+        workspace: Utf8PathBuf,
+    },
     /// List locally recorded approval requests in a workspace.
     Approvals {
         /// Workspace that owns the .taskfence approval directory.
@@ -135,6 +143,7 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
         Command::Logs { task_id, workspace } => show_logs(workspace, task_id),
         Command::Diff { task_id, workspace } => show_diff(workspace, task_id),
         Command::Tasks { workspace } => show_tasks(workspace),
+        Command::Task { task_id, workspace } => show_task(workspace, task_id),
         Command::Approvals { workspace } => show_approvals(workspace),
         Command::Approve {
             approval_id,
@@ -175,6 +184,12 @@ fn show_diff(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<
 
 fn show_tasks(workspace: Utf8PathBuf) -> taskfence_core::Result<()> {
     let text = tasks_text(workspace)?;
+    print!("{text}");
+    Ok(())
+}
+
+fn show_task(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<()> {
+    let text = task_text(workspace, &TaskId(task_id))?;
     print!("{text}");
     Ok(())
 }
@@ -227,6 +242,12 @@ fn tasks_text(workspace: Utf8PathBuf) -> taskfence_core::Result<String> {
     let store = LocalTaskEvidenceStore::new(workspace);
     let tasks = store.list_tasks()?;
     Ok(render_task_summaries(&tasks))
+}
+
+fn task_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Result<String> {
+    let store = LocalTaskEvidenceStore::new(workspace);
+    let task = store.read_task_summary(task_id)?;
+    Ok(render_task_summary(&task))
 }
 
 fn approvals_text(workspace: Utf8PathBuf) -> taskfence_core::Result<String> {
@@ -342,6 +363,38 @@ fn render_task_summaries(tasks: &[TaskSummary]) -> String {
                 .unwrap_or("-"),
         );
         rendered.push('\n');
+    }
+    rendered
+}
+
+fn render_task_summary(task: &TaskSummary) -> String {
+    let status = task
+        .status
+        .as_ref()
+        .map(|status| format!("{status:?}"))
+        .unwrap_or_else(|| "-".into());
+    let goal = task
+        .goal
+        .as_deref()
+        .map(compact_cell)
+        .unwrap_or_else(|| "-".into());
+
+    let mut rendered = String::new();
+    rendered.push_str("Task summary\n");
+    rendered.push_str(&format!("  id: {}\n", task.task_id.0));
+    rendered.push_str(&format!("  status: {status}\n"));
+    rendered.push_str(&format!("  goal: {goal}\n"));
+    rendered.push_str(&format!("  artifacts: {}\n", artifact_flags(task)));
+    rendered.push_str(&format!("  evidence: {}\n", task.task_dir));
+    if task.warnings.is_empty() {
+        rendered.push_str("  warnings: -\n");
+    } else {
+        rendered.push_str("  warnings:\n");
+        for warning in &task.warnings {
+            rendered.push_str("    - ");
+            rendered.push_str(&compact_cell(warning));
+            rendered.push('\n');
+        }
     }
     rendered
 }
@@ -621,6 +674,33 @@ mod tests {
     }
 
     #[test]
+    fn parses_task_task_id() {
+        let cli = Cli::try_parse_from(["taskfence", "task", "task-123"]).unwrap();
+
+        match cli.command {
+            Command::Task { task_id, workspace } => {
+                assert_eq!(task_id, "task-123");
+                assert_eq!(workspace, Utf8PathBuf::from("."));
+            }
+            other => panic!("expected task command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_task_workspace() {
+        let cli =
+            Cli::try_parse_from(["taskfence", "task", "task-123", "--workspace", "repo"]).unwrap();
+
+        match cli.command {
+            Command::Task { task_id, workspace } => {
+                assert_eq!(task_id, "task-123");
+                assert_eq!(workspace, Utf8PathBuf::from("repo"));
+            }
+            other => panic!("expected task command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_approvals_default_workspace() {
         let cli = Cli::try_parse_from(["taskfence", "approvals"]).unwrap();
 
@@ -812,6 +892,32 @@ mod tests {
 
         assert!(text.contains("TASK ID\tSTATUS\tARTIFACTS\tWARNINGS\tGOAL\n"));
         assert!(text.contains("cli-list\tSucceeded\treport,diff\t-\tCLI test\n"));
+    }
+
+    #[test]
+    fn task_command_reads_local_task_summary() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(&task_file, task_yaml("cli-detail", &workspace, "echo ok")).unwrap();
+
+        run_task_with_runner(
+            task_file,
+            &FakeRunner::succeeding(),
+            RunApprovalMode::FailClosed,
+        )
+        .unwrap();
+
+        let text = task_text(workspace, &TaskId("cli-detail".into())).unwrap();
+
+        assert!(text.contains("Task summary\n"));
+        assert!(text.contains("  id: cli-detail\n"));
+        assert!(text.contains("  status: Succeeded\n"));
+        assert!(text.contains("  goal: CLI test\n"));
+        assert!(text.contains("  artifacts: report,diff\n"));
+        assert!(text.contains(".taskfence/tasks/cli-detail"));
+        assert!(text.contains("  warnings: -\n"));
     }
 
     #[test]

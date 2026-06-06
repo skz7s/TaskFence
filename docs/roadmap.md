@@ -52,9 +52,10 @@ Implemented boundaries:
 - Policy-denied and approval-denied local runs stop before the runner starts,
   but still write resolved task evidence, structured audit events, and a
   Markdown report when artifact creation succeeds.
-- `taskfence report <task-id> --workspace <workspace>`, `taskfence diff
+- `taskfence task <task-id> --workspace <workspace>`,
+  `taskfence report <task-id> --workspace <workspace>`, `taskfence diff
   <task-id> --workspace <workspace>`, and `taskfence logs <task-id> --workspace
-  <workspace>` read generated local task evidence from
+  <workspace>` read structured summaries and generated local task evidence from
   `.taskfence/tasks/<task-id>/` when those artifacts exist.
 - `taskfence approve <approval-id> --workspace <workspace>` and
   `taskfence deny <approval-id> --workspace <workspace>` resolve pending local
@@ -160,6 +161,9 @@ Current local coverage before Web UI and SQLite:
 - `taskfence tasks --workspace <workspace>` lists workspace-local task
   summaries from `.taskfence/tasks`, using structured resolved-task JSON and
   JSONL status events rather than rendered report text
+- `taskfence task <task-id> --workspace <workspace>` reads a single
+  workspace-local task summary and artifact availability without a report text
+  scrape, Web UI, API server, or SQLite index
 - `taskfence diff <task-id> --workspace <workspace>` reads the workspace-local
   `diff.patch` artifact without a browser diff viewer or SQLite index
 - `taskfence approvals --workspace <workspace>` lists workspace-local approval

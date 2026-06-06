@@ -188,6 +188,7 @@ directory:
 
 ```bash
 cargo run -p taskfence-cli -- tasks --workspace examples/repo
+cargo run -p taskfence-cli -- task local-demo --workspace examples/repo
 cargo run -p taskfence-cli -- diff local-demo --workspace examples/repo
 cargo run -p taskfence-cli -- report local-demo --workspace examples/repo
 cargo run -p taskfence-cli -- logs <task-id> --workspace <workspace>
@@ -237,7 +238,8 @@ The first implementation currently includes:
    artifacts.
 7. Markdown task reports generated from structured evidence.
 8. Local CLI lookup for workspace-local task lists, captured diffs, generated
-   reports, captured stdout/stderr logs, and local approval records.
+   reports, captured stdout/stderr logs, local approval records, and single
+   task summaries.
 9. Task-file `permissions.tools` parsing and policy/audit/report evidence for
    future gateway-mediated tool actions, including optional approval evidence,
    redacted gateway secret references, and MCP/HTTP request normalization

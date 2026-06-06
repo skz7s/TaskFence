@@ -167,6 +167,12 @@ impl LocalTaskEvidenceStore {
         Ok(summaries)
     }
 
+    pub fn read_task_summary(&self, task_id: &TaskId) -> taskfence_core::Result<TaskSummary> {
+        let task_dir = self.task_dir(task_id)?;
+        ensure_task_dir(task_id, &task_dir)?;
+        Ok(read_task_summary(task_id.clone(), task_dir))
+    }
+
     pub fn read_logs(&self, task_id: &TaskId) -> taskfence_core::Result<TaskLogs> {
         let task_dir = self.task_dir(task_id)?;
         ensure_task_dir(task_id, &task_dir)?;
@@ -579,6 +585,76 @@ mod tests {
         assert!(tasks[1].has_report);
         assert!(tasks[1].has_diff);
         assert!(tasks[1].warnings.is_empty());
+    }
+
+    #[test]
+    fn reads_single_structured_task_summary() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        write_task_evidence(
+            &workspace,
+            "task-detail",
+            "inspect task",
+            &[TaskStatus::Running, TaskStatus::Succeeded],
+            &["report.md", "diff.patch", "stdout.log"],
+        );
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let task = store
+            .read_task_summary(&TaskId("task-detail".into()))
+            .unwrap();
+
+        assert_eq!(task.task_id, TaskId("task-detail".into()));
+        assert_eq!(task.goal.as_deref(), Some("inspect task"));
+        assert_eq!(task.status, Some(TaskStatus::Succeeded));
+        assert!(task.has_report);
+        assert!(task.has_diff);
+        assert!(task.has_stdout);
+        assert!(!task.has_stderr);
+        assert!(task.task_dir.ends_with(".taskfence/tasks/task-detail"));
+        assert!(task.warnings.is_empty());
+    }
+
+    #[test]
+    fn read_single_task_summary_keeps_malformed_evidence_warnings() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let task_dir = workspace.join(".taskfence/tasks/task-broken");
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(task_dir.join("task.resolved.json"), "{not-json").unwrap();
+        fs::write(task_dir.join("events.jsonl"), "also-not-json\n").unwrap();
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let task = store
+            .read_task_summary(&TaskId("task-broken".into()))
+            .unwrap();
+
+        assert_eq!(task.task_id, TaskId("task-broken".into()));
+        assert_eq!(task.goal, None);
+        assert_eq!(task.status, None);
+        assert!(task
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("task.resolved.json")));
+        assert!(task
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("events.jsonl line 1")));
+    }
+
+    #[test]
+    fn read_single_task_summary_rejects_missing_task_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let err = store
+            .read_task_summary(&TaskId("missing".into()))
+            .unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("directory not found"))
+        );
     }
 
     #[test]
