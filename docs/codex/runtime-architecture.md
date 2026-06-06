@@ -21,6 +21,7 @@
 ## TaskFence Local Runner
 
 - 当前 CLI 已实现 `taskfence init [path]` 本地脚手架入口：默认写入 `taskfence.yaml`，可为嵌套路径创建父目录，目标文件已存在时拒绝覆盖。该命令只写一个 starter task YAML 文件，不执行任务、不生成项目结构，也不是 Web UI、API server、SQLite 状态或 gateway 执行入口。
+- 当前 CLI 已实现 `taskfence validate <task-file>` 本地预运行校验：它会解析并 resolve task file，构造 generic agent invocation，按内建 policy 检查 planned agent command，并构造本地 Docker runner plan 以暴露 unsupported domain allowlist、sandbox kind、mount、env allowlist 等准备阶段错误。该命令不启动 Docker、不写 `.taskfence` artifacts、不请求 approval，也不是 gateway execution、API server、Web UI、SQLite state 或 replay 执行入口。
 - 当前已实现的运行面是 `cargo run -p taskfence-cli -- run examples/task.yaml`，它通过 CLI 加载任务文件，构造本地 policy / approval / audit / artifact / agent / Docker runner / report / state 组件，并进入 `taskfence-core` orchestrator。
 - 默认 `run` 对 approval-required action 仍然 fail closed；显式使用 `taskfence run --interactive-approval <task-file>` 时，当前 CLI 进程会在终端中提示 approve/deny，并将 approval request/resolution 写入结构化审计事件。
 - 显式使用 `taskfence run --external-approval <task-file>` 时，本地运行会在 task workspace 的 `.taskfence/approvals/<approval-id>.json` 写入 pending approval，并等待另一个终端通过 `taskfence approve <approval-id> --workspace <workspace>` 或 `taskfence deny <approval-id> --workspace <workspace>` 解析；`taskfence approvals --workspace <workspace>` 可以列出该 workspace-local 文件队列中的 approval records，`taskfence approval <approval-id> --workspace <workspace>` 可以读取单条 workspace-local approval record 且不渲染原始 tool parameter values。这仍是 workspace-local 文件队列，不是跨 workspace 的持久索引、SQLite 状态、Web UI、API server 或服务端审批系统。

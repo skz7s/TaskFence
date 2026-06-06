@@ -23,6 +23,7 @@ Status: initial local implementation complete.
 Deliverables:
 
 - `taskfence init [path]`
+- `taskfence validate <task-file>`
 - `taskfence run <task-file>`
 - task file parser and validator
 - Docker sandbox runner
@@ -41,6 +42,9 @@ Implemented boundaries:
 - `taskfence init [path]` writes one starter task file, creates parent
   directories for nested paths, and refuses to overwrite an existing target. It
   does not execute the task or generate a larger project structure.
+- `taskfence validate <task-file>` resolves the task file, checks the planned
+  agent command against policy, and builds the local Docker run plan without
+  starting Docker, writing artifacts, or requesting approvals.
 - CLI `run` loads a strict task file, constructs local runtime components, and
   calls the orchestrator.
 - Docker execution runs with `--pull=never`, controlled mounts, no inherited
@@ -73,6 +77,7 @@ Minimum demo:
 
 ```bash
 taskfence init taskfence.yaml
+taskfence validate examples/task.yaml
 taskfence run examples/task.yaml
 ```
 

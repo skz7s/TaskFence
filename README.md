@@ -156,6 +156,16 @@ cargo run -p taskfence-cli -- init taskfence.yaml
 The init command writes one local task YAML file and refuses to overwrite an
 existing target.
 
+Validate a task file before starting the local runner with:
+
+```bash
+cargo run -p taskfence-cli -- validate examples/task.yaml
+```
+
+Validation resolves the task file, checks the planned agent command against
+policy, and builds the local Docker run plan without starting Docker or writing
+task artifacts.
+
 The demo requires Docker and the configured image to be available locally. The
 runner uses `docker run --pull=never`, so it does not silently acquire images at
 task runtime.
@@ -238,7 +248,8 @@ python3 scripts/governance/check_codex_governance.py
 
 The first implementation currently includes:
 
-1. A local `taskfence` CLI with starter task-file scaffolding.
+1. A local `taskfence` CLI with starter task-file scaffolding and pre-run task
+   validation.
 2. Docker-based sandbox execution.
 3. One black-box CLI agent adapter.
 4. File, command, network, and secret restrictions.

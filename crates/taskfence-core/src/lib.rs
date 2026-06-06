@@ -466,6 +466,16 @@ pub struct PreparedRun {
     pub limits: LimitConfig,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskValidation {
+    pub task_id: TaskId,
+    pub workspace_host_path: Utf8PathBuf,
+    pub invocation: AgentInvocation,
+    pub command_action: CommandAction,
+    pub command_decision: ActionDecision,
+    pub prepared: PreparedRun,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunningTask {
     pub task_id: TaskId,
@@ -642,6 +652,59 @@ pub struct Orchestrator<'a> {
     pub state: &'a dyn StateStore,
 }
 
+pub fn validate_task_for_run(
+    task: &ResolvedTask,
+    adapter: &dyn AgentAdapter,
+    policy: &dyn PolicyEngine,
+    runner: &dyn Runner,
+) -> Result<TaskValidation> {
+    let invocation = adapter.build_invocation(task)?;
+    let command_action = command_action_from_invocation(&invocation);
+    let command_decision = policy.evaluate(task, &Action::Command(command_action.clone()))?;
+    if matches!(command_decision, ActionDecision::Deny { .. }) {
+        return Err(TaskFenceError::Policy(format!(
+            "planned agent command rejected: {}",
+            action_decision_summary(&command_decision)
+        )));
+    }
+    let prepared = runner.prepare(task)?;
+
+    Ok(TaskValidation {
+        task_id: task.id.clone(),
+        workspace_host_path: task.workspace_host_path.clone(),
+        invocation,
+        command_action,
+        command_decision,
+        prepared,
+    })
+}
+
+fn command_action_from_invocation(invocation: &AgentInvocation) -> CommandAction {
+    let raw = std::iter::once(invocation.executable.clone())
+        .chain(invocation.args.iter().cloned())
+        .collect::<Vec<_>>()
+        .join(" ");
+    CommandAction {
+        executable: invocation.executable.clone(),
+        args: invocation.args.clone(),
+        shell_wrapped: CommandAction::parse(raw.clone()).shell_wrapped,
+        raw,
+    }
+}
+
+fn action_decision_summary(decision: &ActionDecision) -> String {
+    match decision {
+        ActionDecision::Allow { reason, .. } => format!("allow: {reason}"),
+        ActionDecision::RequireApproval {
+            approval_kind,
+            reason,
+            risk,
+            ..
+        } => format!("requires {approval_kind} approval: {reason}; risk {risk:?}"),
+        ActionDecision::Deny { reason, .. } => format!("deny: {reason}"),
+    }
+}
+
 impl<'a> Orchestrator<'a> {
     pub fn run(&self, task: ResolvedTask) -> Result<TaskResult> {
         let mut events = Vec::new();
@@ -657,29 +720,14 @@ impl<'a> Orchestrator<'a> {
 
         self.transition(&mut events, &task.id, TaskStatus::Validating)?;
         let invocation = self.adapter.build_invocation(&task)?;
+        let command_action = command_action_from_invocation(&invocation);
         self.transition(&mut events, &task.id, TaskStatus::Preparing)?;
         let artifacts = self.artifacts.create_task_dir(&task)?;
         self.artifacts.write_resolved_task(&task)?;
 
-        if let Err(err) = self.evaluate_or_request_approval(
-            &mut events,
-            &task,
-            Action::Command(CommandAction {
-                executable: invocation.executable.clone(),
-                args: invocation.args.clone(),
-                raw: std::iter::once(invocation.executable.clone())
-                    .chain(invocation.args.iter().cloned())
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                shell_wrapped: CommandAction::parse(
-                    std::iter::once(invocation.executable.clone())
-                        .chain(invocation.args.iter().cloned())
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                )
-                .shell_wrapped,
-            }),
-        ) {
+        if let Err(err) =
+            self.evaluate_or_request_approval(&mut events, &task, Action::Command(command_action))
+        {
             return self.finish_pre_run_failure(events, task, artifacts, err);
         }
 

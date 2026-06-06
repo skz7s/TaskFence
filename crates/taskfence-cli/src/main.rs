@@ -9,9 +9,9 @@ use taskfence_artifacts::LocalArtifactStore;
 use taskfence_audit::LocalJsonlAuditLogger;
 use taskfence_config::load_task_file;
 use taskfence_core::{
-    Action, ActionDecision, ApprovalDecision, ApprovalEngine, ApprovalId, ApprovalRecord,
-    AuditEvent, ExitStatus, LogStream, Orchestrator, ResolvedTask, RiskLevel, Runner,
-    TaskFenceError, TaskId, TaskStatus,
+    validate_task_for_run, Action, ActionDecision, ApprovalDecision, ApprovalEngine, ApprovalId,
+    ApprovalRecord, AuditEvent, ExitStatus, LogStream, NetworkDefault, Orchestrator, ResolvedTask,
+    RiskLevel, Runner, TaskFenceError, TaskId, TaskStatus, TaskValidation,
 };
 use taskfence_policy::BuiltInPolicyEngine;
 use taskfence_report::MarkdownReportGenerator;
@@ -36,6 +36,11 @@ enum Command {
         /// Path where the starter task file should be written.
         #[arg(default_value = "taskfence.yaml")]
         path: Utf8PathBuf,
+    },
+    /// Validate a task file without starting the runner.
+    Validate {
+        /// TaskFence YAML task file.
+        task_file: Utf8PathBuf,
     },
     /// Load a task file and start the task orchestration boundary.
     Run {
@@ -139,6 +144,7 @@ fn main() -> ExitCode {
 fn execute(cli: Cli) -> taskfence_core::Result<()> {
     match cli.command {
         Command::Init { path } => init_task_file(path),
+        Command::Validate { task_file } => validate_task_file(task_file),
         Command::Run {
             task_file,
             interactive_approval,
@@ -227,6 +233,17 @@ enum RunApprovalMode {
     External,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct ValidationSummary {
+    task_id: String,
+    workspace: Utf8PathBuf,
+    agent_command: String,
+    command_policy: String,
+    sandbox_image: String,
+    network_mode: String,
+    mount_count: usize,
+}
+
 fn init_task_file(path: Utf8PathBuf) -> taskfence_core::Result<()> {
     write_starter_task_file(&path)?;
     println!("Task file created");
@@ -259,6 +276,50 @@ fn init_write_error(path: &Utf8PathBuf, err: std::io::Error) -> TaskFenceError {
     } else {
         TaskFenceError::Config(format!("failed to create task file {path}: {err}"))
     }
+}
+
+fn validate_task_file(task_file: Utf8PathBuf) -> taskfence_core::Result<()> {
+    let summary = validate_task_file_summary(task_file)?;
+    print_validation_summary(&summary);
+    Ok(())
+}
+
+fn validate_task_file_summary(task_file: Utf8PathBuf) -> taskfence_core::Result<ValidationSummary> {
+    let task = load_task_file(&task_file)?;
+    let adapter = GenericAgentAdapter;
+    let policy = BuiltInPolicyEngine;
+    let runner = DockerRunner::new();
+    Ok(validation_summary(validate_task_for_run(
+        &task, &adapter, &policy, &runner,
+    )?))
+}
+
+fn validation_summary(validation: TaskValidation) -> ValidationSummary {
+    let network_mode = match validation.prepared.network.default {
+        NetworkDefault::Disabled | NetworkDefault::Deny => "none",
+        NetworkDefault::Allow => "bridge",
+    };
+
+    ValidationSummary {
+        task_id: validation.task_id.0,
+        workspace: validation.workspace_host_path,
+        agent_command: validation.command_action.raw,
+        command_policy: approval_policy_summary(&validation.command_decision),
+        sandbox_image: validation.prepared.image.unwrap_or_else(|| "-".into()),
+        network_mode: network_mode.into(),
+        mount_count: validation.prepared.mounts.len(),
+    }
+}
+
+fn print_validation_summary(summary: &ValidationSummary) {
+    println!("Task file valid");
+    println!("  id: {}", summary.task_id);
+    println!("  workspace: {}", summary.workspace);
+    println!("  command: {}", summary.agent_command);
+    println!("  command policy: {}", summary.command_policy);
+    println!("  image: {}", summary.sandbox_image);
+    println!("  network: {}", summary.network_mode);
+    println!("  mounts: {}", summary.mount_count);
 }
 
 fn show_logs(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<()> {
@@ -846,6 +907,18 @@ mod tests {
     }
 
     #[test]
+    fn parses_validate_task_file() {
+        let cli = Cli::try_parse_from(["taskfence", "validate", "task.yaml"]).unwrap();
+
+        match cli.command {
+            Command::Validate { task_file } => {
+                assert_eq!(task_file, Utf8PathBuf::from("task.yaml"))
+            }
+            other => panic!("expected validate command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_run_task_file() {
         let cli = Cli::try_parse_from(["taskfence", "run", "task.yaml"]).unwrap();
 
@@ -1228,6 +1301,86 @@ mod tests {
             matches!(err, TaskFenceError::Config(message) if message.contains("already exists"))
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), "existing task file\n");
+    }
+
+    #[test]
+    fn validate_accepts_local_task_file_without_running() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(&task_file, task_yaml("validate-ok", &workspace, "echo")).unwrap();
+
+        let summary = validate_task_file_summary(task_file).unwrap();
+
+        assert_eq!(summary.task_id, "validate-ok");
+        assert_eq!(summary.workspace, canonical_utf8(&workspace));
+        assert_eq!(summary.agent_command, "echo ok");
+        assert!(summary.command_policy.contains("allow"));
+        assert_eq!(summary.sandbox_image, "taskfence/runner:latest");
+        assert_eq!(summary.network_mode, "none");
+        assert_eq!(summary.mount_count, 1);
+        assert!(!workspace.join(".taskfence").exists());
+    }
+
+    #[test]
+    fn validate_rejects_denied_planned_command() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(
+            &task_file,
+            task_yaml_with_command_policy("validate-deny", &workspace, &[], &[], &["echo"]),
+        )
+        .unwrap();
+
+        let err = validate_task_file_summary(task_file).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Policy(message) if message.contains("planned agent command rejected") && message.contains("deny"))
+        );
+        assert!(!workspace.join(".taskfence").exists());
+    }
+
+    #[test]
+    fn validate_rejects_unsupported_domain_allowlist() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(
+            &task_file,
+            task_yaml_with_network_allowlist("validate-domain", &workspace, &["example.com"]),
+        )
+        .unwrap();
+
+        let err = validate_task_file_summary(task_file).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Runner(message) if message.contains("cannot enforce domain allowlists"))
+        );
+        assert!(!workspace.join(".taskfence").exists());
+    }
+
+    #[test]
+    fn validate_rejects_agent_command_with_embedded_arguments() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(
+            &task_file,
+            task_yaml_with_agent_command("validate-command-shape", &workspace, "echo ok", &[]),
+        )
+        .unwrap();
+
+        let err = validate_task_file_summary(task_file).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Config(message) if message.contains("put arguments in agent.args"))
+        );
+        assert!(!workspace.join(".taskfence").exists());
     }
 
     #[test]
@@ -1775,6 +1928,89 @@ permissions:
       - "{workspace}"
   commands:
 {command_rules}  network:
+    default: "disabled"
+"#
+        )
+    }
+
+    fn task_yaml_with_network_allowlist(
+        id: &str,
+        workspace: &Utf8PathBuf,
+        allow_domains: &[&str],
+    ) -> String {
+        let mut domains = String::new();
+        for domain in allow_domains {
+            domains.push_str("      - \"");
+            domains.push_str(domain);
+            domains.push_str("\"\n");
+        }
+
+        format!(
+            r#"id: "{id}"
+goal: "CLI test"
+workspace: "{workspace}"
+agent:
+  type: "generic"
+  command: "echo"
+  args:
+    - "ok"
+sandbox:
+  type: "docker"
+  image: "taskfence/runner:latest"
+permissions:
+  paths:
+    read:
+      - "{workspace}"
+    write:
+      - "{workspace}"
+  commands:
+    allow:
+      - "echo"
+  network:
+    default: "deny"
+    allow_domains:
+{domains}"#
+        )
+    }
+
+    fn task_yaml_with_agent_command(
+        id: &str,
+        workspace: &Utf8PathBuf,
+        command: &str,
+        args: &[&str],
+    ) -> String {
+        let rendered_args = if args.is_empty() {
+            "  args: []\n".to_owned()
+        } else {
+            let mut rendered_args = String::from("  args:\n");
+            for arg in args {
+                rendered_args.push_str("    - \"");
+                rendered_args.push_str(arg);
+                rendered_args.push_str("\"\n");
+            }
+            rendered_args
+        };
+
+        format!(
+            r#"id: "{id}"
+goal: "CLI test"
+workspace: "{workspace}"
+agent:
+  type: "generic"
+  command: "{command}"
+{rendered_args}sandbox:
+  type: "docker"
+  image: "taskfence/runner:latest"
+permissions:
+  paths:
+    read:
+      - "{workspace}"
+    write:
+      - "{workspace}"
+  commands:
+    allow:
+      - "echo"
+  network:
     default: "disabled"
 "#
         )

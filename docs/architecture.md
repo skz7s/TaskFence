@@ -53,6 +53,9 @@ Initial commands:
 
 - `taskfence init [path]` writes one starter task file, creating parent
   directories for nested paths and refusing to overwrite an existing target.
+- `taskfence validate <task-file>` resolves the task file, checks the planned
+  agent command against policy, and builds the local Docker run plan without
+  creating artifacts, starting Docker, or requesting approvals.
 - `taskfence run <task-file>` executes the current local Docker runner path,
   failing closed for approval-required actions by default.
 - `taskfence run --interactive-approval <task-file>` prompts in the local
