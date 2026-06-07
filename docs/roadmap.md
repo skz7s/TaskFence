@@ -149,7 +149,7 @@ Deliverables:
 - secret broker for GitHub token usage
 - structured tool call audit logs
 
-Current implemented coverage before production gateway transports:
+Current implemented gateway coverage:
 
 - task files can configure `permissions.tools.allow`,
   `permissions.tools.approval_required`, and `permissions.tools.deny`
@@ -163,11 +163,12 @@ Current implemented coverage before production gateway transports:
   any adapter execution
 - gateway secret broker contracts can authorize configured
   `secrets.available_to_gateway` grants and attach redacted secret references
-  to tool parameters after policy, registry, and approval checks without reading
-  or using raw credentials
-- `taskfence gateway call` can execute deterministic local fixture tools from a
-  task file and write structured `.taskfence/tasks/<task-id>/` evidence and a
-  Markdown report
+  to tool parameters after policy, registry, and approval checks; local fixture
+  execution receives only redacted handles, while live GitHub REST execution
+  receives raw tokens only through the gateway-side secret broker
+- `taskfence gateway call` can execute deterministic local fixture tools and a
+  bounded GitHub REST connector from a task file, then write structured
+  `.taskfence/tasks/<task-id>/` evidence and a Markdown report
 - task artifact setup creates a task-local `gateway-spool/requests`,
   `gateway-spool/responses`, and generated `taskfence-gateway-submit` wrapper
   for configured gateway tasks
@@ -182,14 +183,19 @@ Current implemented coverage before production gateway transports:
 - the GitHub-shaped fixture supports `github.read_issue` from local JSON and
   `github.create_pr` as a PR proposal artifact after explicit approval; it does
   not call live GitHub or use a real token
-- MCP and HTTP adapter stubs normalize protocol-shaped requests into
-  `ToolAction` values and return explicit unsupported execution errors
+- the live `github_rest` connector supports `github.read_issue`,
+  `github.create_pr`, and `github.comment_issue`; `create_pr` assumes the
+  requested `head` and `base` already exist and does not create branches or
+  commits
+- MCP and HTTP adapter entry points normalize protocol-shaped requests into
+  `ToolAction` values and execute through the existing gateway executor when
+  the action is explicitly configured
 - reports render tool-call decisions, approvals, local fixture executions, and
   denied tool actions from structured audit events without rendering raw
   parameter values
-- sidecar/listener, production MCP/HTTP/GitHub execution, live credentials,
-  Web UI, replay, team-server, and enterprise gateway surfaces remain future
-  work
+- MCP/HTTP listener or proxy servers, SDK/webhook connectors, arbitrary HTTP
+  proxying, branch/commit creation, Web UI, replay, team-server, and
+  enterprise gateway surfaces remain future work
 
 Current local fixture demo:
 
@@ -203,7 +209,9 @@ Current local fixture demo:
   command processes one request file and writes its response under the same task
   evidence root
 - raw GitHub token values are not read, used, logged, reported, or exposed to
-  the agent process
+  the agent process by local fixtures; live `github_rest` tools read raw token
+  values only from `TASKFENCE_GATEWAY_SECRET_<NORMALIZED_SECRET_NAME>` in the
+  host gateway process after policy, registry, and approval checks
 
 ## Phase 4: Web UI and Replay
 

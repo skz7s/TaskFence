@@ -1,0 +1,79 @@
+# Example TaskFence task file for the bounded GitHub REST connector.
+#
+# This file is for validation and configuration reference. Running it requires
+# a real repository, an existing head/base for create_pr operations, and a
+# gateway-side token exported as:
+#
+#   TASKFENCE_GATEWAY_SECRET_GITHUB_TOKEN=...
+
+id: "github-rest-demo"
+goal: "Read a GitHub issue through the bounded gateway connector"
+workspace: "./repo"
+
+agent:
+  type: "generic"
+  command: "/usr/bin/true"
+
+sandbox:
+  type: "docker"
+  image: "debian:bookworm-slim"
+
+permissions:
+  paths:
+    read:
+      - "./repo/README.md"
+    write:
+      - "./repo/src"
+  commands:
+    allow:
+      - "/usr/bin/true"
+  network:
+    default: "disabled"
+  tools:
+    allow:
+      - "github.read_issue"
+    approval_required:
+      - "github.create_pr"
+      - "github.comment_issue"
+
+secrets:
+  expose_to_agent: false
+  available_to_gateway:
+    - name: "github_token"
+      use_for:
+        - "github.read_issue"
+        - "github.create_pr"
+        - "github.comment_issue"
+
+gateway:
+  tools:
+    - protocol: "mcp"
+      tool: "github"
+      operation: "read_issue"
+      connector:
+        type: "github_rest"
+        repository: "owner/repo"
+      secret_refs:
+        - name: "github_token"
+          parameter: "authorization"
+          scope: "github.read_issue"
+    - protocol: "mcp"
+      tool: "github"
+      operation: "create_pr"
+      connector:
+        type: "github_rest"
+        repository: "owner/repo"
+      secret_refs:
+        - name: "github_token"
+          parameter: "authorization"
+          scope: "github.create_pr"
+    - protocol: "mcp"
+      tool: "github"
+      operation: "comment_issue"
+      connector:
+        type: "github_rest"
+        repository: "owner/repo"
+      secret_refs:
+        - name: "github_token"
+          parameter: "authorization"
+          scope: "github.comment_issue"

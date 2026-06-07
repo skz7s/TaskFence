@@ -423,18 +423,25 @@ Responsibilities:
 - Request approval for high-risk tool actions when an approval engine is
   explicitly attached.
 - Define secret broker references without exposing raw secrets to the agent.
-- Normalize MCP/HTTP-shaped adapter stub requests into tool actions and return
-  explicit unsupported execution errors until real protocol transports exist.
-- Execute configured deterministic local fixture adapters through typed request,
-  result, failure, approval, redaction, audit, artifact, and report contracts.
+- Normalize MCP/HTTP-shaped adapter requests into tool actions and execute them
+  through the gateway executor when the normalized action is explicitly
+  configured.
+- Execute configured deterministic local fixture adapters and the bounded
+  `github_rest` adapter through typed request, result, failure, approval,
+  redaction, audit, artifact, and report contracts.
+- Keep live GitHub REST credentials gateway-side via
+  `TASKFENCE_GATEWAY_SECRET_<NORMALIZED_SECRET_NAME>` and pass raw tokens only
+  out-of-band to the connector client after policy, registry, and approval
+  checks.
 - Emit structured audit events.
 
 This crate can start with contracts and deterministic local fixtures, but the
 contracts must stay aligned with Phase 3 so policy and audit are not limited to
 shell commands. The bounded agent-facing request/response spool prototype is
-implemented as a task-local file contract over deterministic local fixture
-execution. Production MCP/HTTP transports, live GitHub integration, and
-sidecar/listener behavior still need separate plans.
+implemented as a task-local file contract over configured gateway action
+execution. MCP/HTTP listener or proxy servers, SDK/webhook connectors,
+arbitrary HTTP proxying, branch/commit creation, and sidecar/listener behavior
+still need separate plans.
 
 ### `taskfence-report`
 
@@ -742,10 +749,12 @@ Tasks:
 - Define normalized tool action model.
 - Carry configured task-file tool permissions through policy decisions.
 - Define secret broker trait and redacted secret references.
-- Keep MCP/HTTP adapter stubs returning explicit unsupported errors aligned with
-  the normalized tool action model.
+- Keep MCP/HTTP adapter entry points aligned with the normalized tool action
+  model and route explicitly configured actions through the gateway executor.
 - Add a deterministic local fixture adapter path for GitHub-shaped
   `read_issue` and `create_pr` behavior without live credentials.
+- Add the bounded `github_rest` adapter for `read_issue`, `create_pr`, and
+  `comment_issue`, with raw tokens sourced only from the host gateway process.
 - Add tests proving gateway actions route through policy and audit traits.
 
 Acceptance:
@@ -948,8 +957,9 @@ The first usable version is complete when:
   known-tool registry checks, approval request/resolution evidence, and
   redacted secret references into audit/report output. The current executable
   paths are limited to `taskfence gateway call` and one-request
-  `taskfence gateway spool process` handling against deterministic local
-  fixture adapters, not external tool execution.
+  `taskfence gateway spool process` handling against configured local fixture
+  adapters or the bounded `github_rest` adapter, not arbitrary external tool
+  execution.
 - Approval-required actions fail closed by default in local mode. Operators can
   opt into in-process terminal approval with `taskfence run --interactive-approval`
   or explicitly wait for workspace-local external approval with
@@ -962,7 +972,7 @@ The first usable version is complete when:
 - Tests cover the main success path and the important failure branches.
 
 Current unsupported surfaces must remain explicit in docs and errors: Docker
-domain allowlists without an enforcing proxy, production gateway protocol
-transports, live GitHub/API execution, sidecar/listener behavior, arbitrary
-in-container command observation, Web UI, replay, team server, and enterprise
-behavior.
+domain allowlists without an enforcing proxy, MCP/HTTP listener or proxy
+servers, SDK/webhook connectors, arbitrary HTTP proxying, branch/commit
+creation, sidecar/listener behavior, arbitrary in-container command
+observation, Web UI, replay, team server, and enterprise behavior.

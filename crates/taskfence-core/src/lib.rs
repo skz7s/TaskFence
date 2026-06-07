@@ -292,8 +292,18 @@ pub struct GatewayToolConfig {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum GatewayConnectorConfig {
-    LocalFixture { kind: String, path: Utf8PathBuf },
-    Unsupported { kind: String },
+    LocalFixture {
+        kind: String,
+        path: Utf8PathBuf,
+    },
+    #[serde(rename = "github_rest")]
+    GitHubRest {
+        api_base: String,
+        repository: String,
+    },
+    Unsupported {
+        kind: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

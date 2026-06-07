@@ -33,6 +33,7 @@ tempfile = "3.10"
 thiserror = "1.0"
 time = { version = "0.3", features = ["formatting", "macros", "serde"] }
 tokio = { version = "1.37", features = ["io-util", "macros", "process", "rt-multi-thread", "time"] }
+ureq = { version = "2.12", features = ["json"] }
 uuid = { version = "1.8", features = ["serde", "v4", "v7"] }
 
 taskfence-agent = { path = "crates/taskfence-agent" }

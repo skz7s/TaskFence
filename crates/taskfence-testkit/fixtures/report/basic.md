@@ -88,6 +88,7 @@ No structured test results recorded.
 | stderr | /tmp/taskfence-golden/task/stderr.log |
 | diff | /tmp/taskfence-golden/task/diff.patch |
 | report | /tmp/taskfence-golden/task/report.md |
+| gateway_spool | /tmp/taskfence-golden/task/gateway-spool |
 
 ## Residual Risks
 

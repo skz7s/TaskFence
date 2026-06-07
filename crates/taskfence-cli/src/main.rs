@@ -10,16 +10,18 @@ use taskfence_audit::LocalJsonlAuditLogger;
 use taskfence_config::load_task_file;
 use taskfence_core::{
     validate_task_for_run, Action, ActionDecision, ApprovalDecision, ApprovalEngine, ApprovalId,
-    ApprovalRecord, ArtifactRefs, ArtifactStore, AuditEvent, AuditLogger, ExitStatus, LogStream,
-    NetworkDefault, Orchestrator, RedactedValue, ReportGenerator, ResolvedTask, RiskLevel, Runner,
-    StateStore, TaskFenceError, TaskId, TaskStatus, TaskValidation, ToolAction, ToolExecution,
-    ToolExecutionContext, ToolExecutionErrorKind,
+    ApprovalRecord, ArtifactRefs, ArtifactStore, AuditEvent, AuditLogger, ExitStatus,
+    GatewayConnectorConfig, LogStream, NetworkDefault, Orchestrator, RedactedValue,
+    ReportGenerator, ResolvedTask, RiskLevel, Runner, StateStore, TaskFenceError, TaskId,
+    TaskStatus, TaskValidation, ToolAction, ToolExecution, ToolExecutionContext,
+    ToolExecutionErrorKind,
 };
 use taskfence_gateway::{
     gateway_spool_request_id_from_path, normalize_tool_action, read_gateway_spool_request,
-    write_gateway_spool_response, GatewayExecutor, GatewaySpoolPaths, GatewaySpoolResponse,
-    GatewaySpoolResponseState, InMemoryToolRegistry, LocalFixtureToolAdapter,
-    LocalRedactedSecretBroker, RegisteredTool, ToolAdapter, UnsupportedGatewayAdapter,
+    write_gateway_spool_response, EnvironmentSecretBroker, GatewayExecutor, GatewaySpoolPaths,
+    GatewaySpoolResponse, GatewaySpoolResponseState, GitHubRestAdapter, InMemoryToolRegistry,
+    LocalFixtureToolAdapter, LocalRedactedSecretBroker, RegisteredTool, SecretBroker, ToolAdapter,
+    UnsupportedGatewayAdapter, UreqGitHubClient,
 };
 use taskfence_policy::BuiltInPolicyEngine;
 use taskfence_report::MarkdownReportGenerator;
@@ -1184,7 +1186,7 @@ fn run_gateway_call(
         .collect::<Vec<_>>();
     let policy = BuiltInPolicyEngine;
     let adapter = gateway_adapter_for(&task, &action);
-    let secret_broker = LocalRedactedSecretBroker;
+    let secret_broker = gateway_secret_broker_for(&task, &action);
 
     gateway_transition(&audit, &state, &task.id, TaskStatus::Preparing)?;
     gateway_transition(&audit, &state, &task.id, TaskStatus::Running)?;
@@ -1207,7 +1209,7 @@ fn run_gateway_call(
                 supported_protocols,
                 &approval,
                 adapter.as_ref(),
-                &secret_broker,
+                secret_broker.as_ref(),
             )?
         }
         GatewayApprovalMode::Approved => {
@@ -1224,7 +1226,7 @@ fn run_gateway_call(
                 supported_protocols,
                 &approval,
                 adapter.as_ref(),
-                &secret_broker,
+                secret_broker.as_ref(),
             )?
         }
         GatewayApprovalMode::External => {
@@ -1240,7 +1242,7 @@ fn run_gateway_call(
                 supported_protocols,
                 &approval,
                 adapter.as_ref(),
-                &secret_broker,
+                secret_broker.as_ref(),
             )?
         }
     };
@@ -1366,7 +1368,7 @@ fn run_gateway_spool_process(
         .collect::<Vec<_>>();
     let policy = BuiltInPolicyEngine;
     let adapter = gateway_adapter_for(&task, &request.action);
-    let secret_broker = LocalRedactedSecretBroker;
+    let secret_broker = gateway_secret_broker_for(&task, &request.action);
 
     gateway_transition(&audit, &state, &task.id, TaskStatus::Preparing)?;
     gateway_transition(&audit, &state, &task.id, TaskStatus::Running)?;
@@ -1381,7 +1383,7 @@ fn run_gateway_spool_process(
                 .with_source("spool-fail-closed");
             execute_gateway_action(
                 &task,
-                request.action,
+                request.action.clone(),
                 context,
                 &policy,
                 &audit,
@@ -1389,7 +1391,7 @@ fn run_gateway_spool_process(
                 supported_protocols,
                 &approval,
                 adapter.as_ref(),
-                &secret_broker,
+                secret_broker.as_ref(),
             )?
         }
         GatewayApprovalMode::Approved => {
@@ -1398,7 +1400,7 @@ fn run_gateway_spool_process(
                 .with_source("spool-approved");
             execute_gateway_action(
                 &task,
-                request.action,
+                request.action.clone(),
                 context,
                 &policy,
                 &audit,
@@ -1406,7 +1408,7 @@ fn run_gateway_spool_process(
                 supported_protocols,
                 &approval,
                 adapter.as_ref(),
-                &secret_broker,
+                secret_broker.as_ref(),
             )?
         }
         GatewayApprovalMode::External => {
@@ -1414,7 +1416,7 @@ fn run_gateway_spool_process(
                 .with_actor("gateway");
             execute_gateway_action(
                 &task,
-                request.action,
+                request.action.clone(),
                 context,
                 &policy,
                 &audit,
@@ -1422,7 +1424,7 @@ fn run_gateway_spool_process(
                 supported_protocols,
                 &approval,
                 adapter.as_ref(),
-                &secret_broker,
+                secret_broker.as_ref(),
             )?
         }
     };
@@ -1518,7 +1520,7 @@ fn execute_gateway_action(
     supported_protocols: Vec<String>,
     approval: &dyn ApprovalEngine,
     adapter: &dyn ToolAdapter,
-    secret_broker: &LocalRedactedSecretBroker,
+    secret_broker: &dyn SecretBroker,
 ) -> taskfence_core::Result<ToolExecution> {
     let mediator = GatewayExecutor::new(
         taskfence_gateway::GatewayMediator::new(policy, audit)
@@ -1571,13 +1573,40 @@ fn gateway_adapter_for(task: &ResolvedTask, action: &ToolAction) -> Box<dyn Tool
                 && tool.tool == action.tool
                 && tool.operation == action.operation
         })
-        .map(|tool| Box::new(LocalFixtureToolAdapter::new(tool.clone())) as Box<dyn ToolAdapter>)
+        .map(|tool| match &tool.connector {
+            GatewayConnectorConfig::LocalFixture { .. } => {
+                Box::new(LocalFixtureToolAdapter::new(tool.clone())) as Box<dyn ToolAdapter>
+            }
+            GatewayConnectorConfig::GitHubRest { .. } => {
+                Box::new(GitHubRestAdapter::new(tool.clone(), UreqGitHubClient))
+                    as Box<dyn ToolAdapter>
+            }
+            GatewayConnectorConfig::Unsupported { kind } => {
+                Box::new(UnsupportedGatewayAdapter::new("unsupported", kind.clone()))
+                    as Box<dyn ToolAdapter>
+            }
+        })
         .unwrap_or_else(|| {
             Box::new(UnsupportedGatewayAdapter::new(
                 "unregistered",
                 "unregistered",
             ))
         })
+}
+
+fn gateway_secret_broker_for(task: &ResolvedTask, action: &ToolAction) -> Box<dyn SecretBroker> {
+    let uses_live_connector = task.gateway.tools.iter().any(|tool| {
+        tool.protocol == action.protocol
+            && tool.tool == action.tool
+            && tool.operation == action.operation
+            && matches!(tool.connector, GatewayConnectorConfig::GitHubRest { .. })
+    });
+
+    if uses_live_connector {
+        Box::new(EnvironmentSecretBroker::new())
+    } else {
+        Box::new(LocalRedactedSecretBroker)
+    }
 }
 
 fn gateway_transition(
@@ -3232,6 +3261,57 @@ mod tests {
     }
 
     #[test]
+    fn gateway_call_github_rest_missing_env_secret_fails_closed_with_evidence() {
+        let (_temp, workspace, task_file) = gateway_github_rest_task("gateway-live-missing-secret");
+        std::env::remove_var("TASKFENCE_GATEWAY_SECRET_GITHUB_TOKEN_PHASE2_MISSING");
+
+        let err = run_gateway_call(
+            task_file,
+            "mcp".into(),
+            "github".into(),
+            "read_issue".into(),
+            vec!["number=42".into()],
+            GatewayApprovalMode::FailClosed,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Gateway(message) if message.contains("status Failed"))
+        );
+        let task_id = TaskId("gateway-live-missing-secret".into());
+        let events = LocalTaskEvidenceStore::new(workspace.clone())
+            .read_events(&task_id)
+            .unwrap();
+        assert!(!events
+            .events
+            .iter()
+            .any(|event| matches!(event, AuditEvent::ToolExecutionStarted { .. })));
+        assert!(events.events.iter().any(|event| {
+            matches!(
+                event,
+                AuditEvent::ToolExecutionFinished {
+                    execution:
+                        ToolExecution {
+                            error: Some(error),
+                            ..
+                        },
+                    ..
+                } if error.kind == ToolExecutionErrorKind::SecretUnavailable
+                    && error
+                        .message
+                        .contains("TASKFENCE_GATEWAY_SECRET_GITHUB_TOKEN_PHASE2_MISSING")
+            )
+        }));
+
+        let event_text = events_text(workspace.clone(), &task_id).unwrap();
+        let report = report_text(workspace, &task_id).unwrap();
+        assert!(event_text.contains("SecretUnavailable"));
+        assert!(report.contains("SecretUnavailable"));
+        assert!(!event_text.contains("ghp_"));
+        assert!(!report.contains("ghp_"));
+    }
+
+    #[test]
     fn gateway_spool_process_writes_success_response_and_evidence() {
         let (_temp, workspace, task_file) = gateway_fixture_task("gateway-spool-ok");
         let request_path = write_gateway_spool_request(
@@ -3806,6 +3886,66 @@ mod tests {
         fs::write(&task_file, gateway_task_yaml(id, &workspace, &fixture_path)).unwrap();
 
         (temp, workspace, task_file)
+    }
+
+    fn gateway_github_rest_task(id: &str) -> (tempfile::TempDir, Utf8PathBuf, Utf8PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(&task_file, gateway_github_rest_task_yaml(id, &workspace)).unwrap();
+
+        (temp, workspace, task_file)
+    }
+
+    fn gateway_github_rest_task_yaml(id: &str, workspace: &Utf8PathBuf) -> String {
+        format!(
+            r#"id: "{id}"
+goal: "Gateway REST CLI test"
+workspace: "{workspace}"
+agent:
+  type: "generic"
+  command: "echo"
+  args:
+    - "ok"
+sandbox:
+  type: "docker"
+  image: "taskfence/runner:latest"
+permissions:
+  paths:
+    read:
+      - "{workspace}"
+    write:
+      - "{workspace}"
+  commands:
+    allow:
+      - "echo"
+  network:
+    default: "disabled"
+  tools:
+    allow:
+      - "github.read_issue"
+secrets:
+  expose_to_agent: false
+  available_to_gateway:
+    - name: "github_token_phase2_missing"
+      use_for:
+        - "github.read_issue"
+gateway:
+  tools:
+    - protocol: "mcp"
+      tool: "github"
+      operation: "read_issue"
+      connector:
+        type: "github_rest"
+        api_base: "https://api.github.invalid"
+        repository: "taskfence/example"
+      secret_refs:
+        - name: "github_token_phase2_missing"
+          parameter: "authorization"
+          scope: "github.read_issue"
+"#
+        )
     }
 
     fn gateway_task_yaml(id: &str, workspace: &Utf8PathBuf, fixture_path: &Utf8PathBuf) -> String {

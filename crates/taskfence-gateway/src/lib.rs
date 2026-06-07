@@ -367,7 +367,7 @@ impl SecretReference {
 pub trait SecretBroker {
     fn issue_reference(
         &self,
-        task: &ResolvedTask,
+        _task: &ResolvedTask,
         name: &str,
         scope: &str,
     ) -> taskfence_core::Result<SecretReference>;
@@ -485,13 +485,13 @@ impl McpGatewayAdapter {
 
     pub fn execute(
         &self,
+        task: &ResolvedTask,
         request: McpToolRequest,
-    ) -> taskfence_core::Result<UnsupportedToolExecution> {
+        executor: &GatewayExecutor<'_>,
+        context: ToolExecutionContext,
+    ) -> taskfence_core::Result<ToolExecution> {
         let action = self.to_tool_action(request)?;
-        Err(TaskFenceError::Unsupported(format!(
-            "mcp gateway execution is not implemented for {}.{}",
-            action.tool, action.operation
-        )))
+        executor.execute_tool_action(task, action, context)
     }
 }
 
@@ -510,13 +510,13 @@ impl HttpGatewayAdapter {
 
     pub fn execute(
         &self,
+        task: &ResolvedTask,
         request: HttpToolRequest,
-    ) -> taskfence_core::Result<UnsupportedToolExecution> {
+        executor: &GatewayExecutor<'_>,
+        context: ToolExecutionContext,
+    ) -> taskfence_core::Result<ToolExecution> {
         let action = self.to_tool_action(request)?;
-        Err(TaskFenceError::Unsupported(format!(
-            "http gateway execution is not implemented for {}.{}",
-            action.tool, action.operation
-        )))
+        executor.execute_tool_action(task, action, context)
     }
 }
 
@@ -548,6 +548,22 @@ pub trait ToolAdapter {
         action: &ToolAction,
         context: &ToolExecutionContext,
     ) -> std::result::Result<ToolResult, ToolExecutionError>;
+
+    fn execute_with_secrets(
+        &self,
+        task: &ResolvedTask,
+        action: &ToolAction,
+        context: &ToolExecutionContext,
+        _secrets: &[GatewaySecretBinding],
+    ) -> std::result::Result<ToolResult, ToolExecutionError> {
+        self.execute(task, action, context)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GatewaySecretBinding {
+    pub parameter: String,
+    pub reference: SecretReference,
 }
 
 pub struct GatewayExecutor<'a> {
@@ -631,19 +647,20 @@ impl<'a> GatewayExecutor<'a> {
             ActionDecision::Allow { .. } | ActionDecision::RequireApproval { .. } => {}
         }
 
-        let request = match self.attach_configured_secret_references(task, request.clone()) {
-            Ok(request) => request,
-            Err(error) => {
-                return self.record_finished(
-                    task,
-                    ToolExecution {
-                        request,
-                        result: None,
-                        error: Some(error),
-                    },
-                );
-            }
-        };
+        let (request, secret_bindings) =
+            match self.attach_configured_secret_references(task, request.clone()) {
+                Ok(bound) => bound,
+                Err(error) => {
+                    return self.record_finished(
+                        task,
+                        ToolExecution {
+                            request,
+                            result: None,
+                            error: Some(error),
+                        },
+                    );
+                }
+            };
 
         self.audit.record(AuditEvent::ToolExecutionStarted {
             task_id: task.id.clone(),
@@ -651,7 +668,12 @@ impl<'a> GatewayExecutor<'a> {
             request: request.clone(),
         })?;
 
-        let execution = match self.adapter.execute(task, &request.action, &context) {
+        let execution = match self.adapter.execute_with_secrets(
+            task,
+            &request.action,
+            &context,
+            &secret_bindings,
+        ) {
             Ok(result) => ToolExecution {
                 request,
                 result: Some(result),
@@ -677,9 +699,9 @@ impl<'a> GatewayExecutor<'a> {
         &self,
         task: &ResolvedTask,
         request: ToolRequest,
-    ) -> std::result::Result<ToolRequest, ToolExecutionError> {
+    ) -> std::result::Result<(ToolRequest, Vec<GatewaySecretBinding>), ToolExecutionError> {
         if self.adapter.secret_references().is_empty() {
-            return Ok(request);
+            return Ok((request, Vec::new()));
         }
 
         let broker = self.secret_broker.ok_or_else(|| ToolExecutionError {
@@ -688,18 +710,26 @@ impl<'a> GatewayExecutor<'a> {
         })?;
 
         let mut action = request.action;
+        let mut bindings = Vec::new();
         for secret_ref in self.adapter.secret_references() {
             let reference =
                 gateway_secret_reference(task, broker, &secret_ref.name, &secret_ref.scope)
                     .map_err(|err| tool_execution_error_from_taskfence(&err))?;
             action = attach_secret_reference(action, &secret_ref.parameter, &reference)
                 .map_err(|err| tool_execution_error_from_taskfence(&err))?;
+            bindings.push(GatewaySecretBinding {
+                parameter: secret_ref.parameter.clone(),
+                reference,
+            });
         }
 
-        Ok(ToolRequest {
-            action,
-            adapter: request.adapter,
-        })
+        Ok((
+            ToolRequest {
+                action,
+                adapter: request.adapter,
+            },
+            bindings,
+        ))
     }
 
     fn record_finished(
@@ -754,6 +784,327 @@ impl ToolAdapter for UnsupportedGatewayAdapter {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitHubIssue {
+    pub number: u64,
+    pub title: String,
+    pub state: String,
+    pub body: String,
+    pub html_url: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitHubPullRequestInput {
+    pub title: String,
+    pub head: String,
+    pub base: String,
+    pub body: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitHubPullRequest {
+    pub number: u64,
+    pub title: String,
+    pub html_url: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitHubIssueComment {
+    pub id: u64,
+    pub body: String,
+    pub html_url: String,
+}
+
+pub trait GitHubApiClient {
+    fn read_issue(
+        &self,
+        api_base: &str,
+        repository: &str,
+        token: &str,
+        number: u64,
+    ) -> std::result::Result<GitHubIssue, ToolExecutionError>;
+
+    fn create_pull_request(
+        &self,
+        api_base: &str,
+        repository: &str,
+        token: &str,
+        input: GitHubPullRequestInput,
+    ) -> std::result::Result<GitHubPullRequest, ToolExecutionError>;
+
+    fn create_issue_comment(
+        &self,
+        api_base: &str,
+        repository: &str,
+        token: &str,
+        number: u64,
+        body: String,
+    ) -> std::result::Result<GitHubIssueComment, ToolExecutionError>;
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct UreqGitHubClient;
+
+impl GitHubApiClient for UreqGitHubClient {
+    fn read_issue(
+        &self,
+        api_base: &str,
+        repository: &str,
+        token: &str,
+        number: u64,
+    ) -> std::result::Result<GitHubIssue, ToolExecutionError> {
+        let url = github_api_url(api_base, &format!("repos/{repository}/issues/{number}"));
+        let value = github_get_json(&url, token)?;
+        Ok(GitHubIssue {
+            number: json_u64_field(&value, "number").unwrap_or(number),
+            title: json_string_field(&value, "title"),
+            state: json_string_field(&value, "state"),
+            body: json_string_field(&value, "body"),
+            html_url: json_string_field(&value, "html_url"),
+        })
+    }
+
+    fn create_pull_request(
+        &self,
+        api_base: &str,
+        repository: &str,
+        token: &str,
+        input: GitHubPullRequestInput,
+    ) -> std::result::Result<GitHubPullRequest, ToolExecutionError> {
+        let url = github_api_url(api_base, &format!("repos/{repository}/pulls"));
+        let value = github_post_json(
+            &url,
+            token,
+            serde_json::json!({
+                "title": input.title,
+                "head": input.head,
+                "base": input.base,
+                "body": input.body,
+            }),
+        )?;
+        Ok(GitHubPullRequest {
+            number: json_u64_field(&value, "number").unwrap_or_default(),
+            title: json_string_field(&value, "title"),
+            html_url: json_string_field(&value, "html_url"),
+        })
+    }
+
+    fn create_issue_comment(
+        &self,
+        api_base: &str,
+        repository: &str,
+        token: &str,
+        number: u64,
+        body: String,
+    ) -> std::result::Result<GitHubIssueComment, ToolExecutionError> {
+        let url = github_api_url(
+            api_base,
+            &format!("repos/{repository}/issues/{number}/comments"),
+        );
+        let value = github_post_json(&url, token, serde_json::json!({ "body": body }))?;
+        Ok(GitHubIssueComment {
+            id: json_u64_field(&value, "id").unwrap_or_default(),
+            body: json_string_field(&value, "body"),
+            html_url: json_string_field(&value, "html_url"),
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct GitHubRestAdapter<C> {
+    tool: GatewayToolConfig,
+    client: C,
+}
+
+impl<C> GitHubRestAdapter<C> {
+    pub fn new(tool: GatewayToolConfig, client: C) -> Self {
+        Self { tool, client }
+    }
+}
+
+impl<C> ToolAdapter for GitHubRestAdapter<C>
+where
+    C: GitHubApiClient,
+{
+    fn identity(&self) -> ToolAdapterIdentity {
+        ToolAdapterIdentity {
+            kind: "github_rest".into(),
+            name: "github".into(),
+        }
+    }
+
+    fn secret_references(&self) -> &[GatewaySecretReferenceConfig] {
+        &self.tool.secret_refs
+    }
+
+    fn execute(
+        &self,
+        task: &ResolvedTask,
+        action: &ToolAction,
+        context: &ToolExecutionContext,
+    ) -> std::result::Result<ToolResult, ToolExecutionError> {
+        self.execute_with_secrets(task, action, context, &[])
+    }
+
+    fn execute_with_secrets(
+        &self,
+        _task: &ResolvedTask,
+        action: &ToolAction,
+        _context: &ToolExecutionContext,
+        secrets: &[GatewaySecretBinding],
+    ) -> std::result::Result<ToolResult, ToolExecutionError> {
+        if self.tool.protocol != action.protocol
+            || self.tool.tool != action.tool
+            || self.tool.operation != action.operation
+        {
+            return Err(ToolExecutionError {
+                kind: ToolExecutionErrorKind::UnsupportedTool,
+                message: format!(
+                    "github_rest adapter {}.{} cannot execute {}.{}",
+                    self.tool.tool, self.tool.operation, action.tool, action.operation
+                ),
+            });
+        }
+
+        let GatewayConnectorConfig::GitHubRest {
+            api_base,
+            repository,
+        } = &self.tool.connector
+        else {
+            return Err(ToolExecutionError {
+                kind: ToolExecutionErrorKind::UnsupportedTool,
+                message: "gateway connector is not github_rest".into(),
+            });
+        };
+
+        if action.tool != "github" {
+            return Err(ToolExecutionError {
+                kind: ToolExecutionErrorKind::UnsupportedTool,
+                message: format!(
+                    "github_rest connector does not support tool {}",
+                    action.tool
+                ),
+            });
+        }
+
+        let token = github_token_from_bindings(secrets)?;
+        match action.operation.as_str() {
+            "read_issue" => {
+                let number = plain_u64_parameter(action, "number")?;
+                let issue = self
+                    .client
+                    .read_issue(api_base, repository, token, number)?;
+                Ok(ToolResult {
+                    summary: format!("read GitHub issue #{} from {repository}", issue.number),
+                    values: BTreeMap::from([
+                        (
+                            "repository".into(),
+                            RedactedValue::Plain(repository.clone()),
+                        ),
+                        (
+                            "number".into(),
+                            RedactedValue::Plain(issue.number.to_string()),
+                        ),
+                        (
+                            "title".into(),
+                            RedactedValue::Plain(redact_secret_like_text(&issue.title)),
+                        ),
+                        (
+                            "state".into(),
+                            RedactedValue::Plain(redact_secret_like_text(&issue.state)),
+                        ),
+                        (
+                            "body".into(),
+                            RedactedValue::Plain(redact_secret_like_text(&issue.body)),
+                        ),
+                        (
+                            "html_url".into(),
+                            RedactedValue::Plain(redact_secret_like_text(&issue.html_url)),
+                        ),
+                    ]),
+                    artifacts: Vec::new(),
+                })
+            }
+            "create_pr" => {
+                let input = GitHubPullRequestInput {
+                    title: plain_required_parameter(action, "title")?.to_owned(),
+                    head: plain_required_parameter(action, "head")?.to_owned(),
+                    base: plain_required_parameter(action, "base")?.to_owned(),
+                    body: plain_optional_parameter(action, "body").unwrap_or_default(),
+                };
+                let pull = self
+                    .client
+                    .create_pull_request(api_base, repository, token, input)?;
+                Ok(ToolResult {
+                    summary: format!(
+                        "created GitHub pull request #{} in {repository}",
+                        pull.number
+                    ),
+                    values: BTreeMap::from([
+                        (
+                            "repository".into(),
+                            RedactedValue::Plain(repository.clone()),
+                        ),
+                        (
+                            "number".into(),
+                            RedactedValue::Plain(pull.number.to_string()),
+                        ),
+                        (
+                            "title".into(),
+                            RedactedValue::Plain(redact_secret_like_text(&pull.title)),
+                        ),
+                        (
+                            "html_url".into(),
+                            RedactedValue::Plain(redact_secret_like_text(&pull.html_url)),
+                        ),
+                    ]),
+                    artifacts: Vec::new(),
+                })
+            }
+            "comment_issue" => {
+                let number = plain_u64_parameter(action, "number")?;
+                let body = plain_required_parameter(action, "body")?.to_owned();
+                let comment = self
+                    .client
+                    .create_issue_comment(api_base, repository, token, number, body)?;
+                Ok(ToolResult {
+                    summary: format!(
+                        "created GitHub issue comment {} on {repository}#{number}",
+                        comment.id
+                    ),
+                    values: BTreeMap::from([
+                        (
+                            "repository".into(),
+                            RedactedValue::Plain(repository.clone()),
+                        ),
+                        ("number".into(), RedactedValue::Plain(number.to_string())),
+                        (
+                            "comment_id".into(),
+                            RedactedValue::Plain(comment.id.to_string()),
+                        ),
+                        (
+                            "body".into(),
+                            RedactedValue::Plain(redact_secret_like_text(&comment.body)),
+                        ),
+                        (
+                            "html_url".into(),
+                            RedactedValue::Plain(redact_secret_like_text(&comment.html_url)),
+                        ),
+                    ]),
+                    artifacts: Vec::new(),
+                })
+            }
+            _ => Err(ToolExecutionError {
+                kind: ToolExecutionErrorKind::UnsupportedTool,
+                message: format!(
+                    "github_rest connector does not support github.{}",
+                    action.operation
+                ),
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalFixtureToolAdapter {
     tool: GatewayToolConfig,
 }
@@ -770,6 +1121,10 @@ impl ToolAdapter for LocalFixtureToolAdapter {
             GatewayConnectorConfig::LocalFixture { kind, .. } => ToolAdapterIdentity {
                 kind: "local_fixture".into(),
                 name: kind.clone(),
+            },
+            GatewayConnectorConfig::GitHubRest { .. } => ToolAdapterIdentity {
+                kind: "github_rest".into(),
+                name: "github".into(),
             },
             GatewayConnectorConfig::Unsupported { kind } => ToolAdapterIdentity {
                 kind: "unsupported".into(),
@@ -844,6 +1199,52 @@ impl SecretBroker for LocalRedactedSecretBroker {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct EnvironmentSecretBroker;
+
+impl EnvironmentSecretBroker {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl SecretBroker for EnvironmentSecretBroker {
+    fn issue_reference(
+        &self,
+        _task: &ResolvedTask,
+        name: &str,
+        scope: &str,
+    ) -> taskfence_core::Result<SecretReference> {
+        let env_name = gateway_secret_env_name(name)?;
+        match std::env::var(&env_name) {
+            Ok(value) if !value.trim().is_empty() => Ok(SecretReference {
+                name: name.into(),
+                scope: scope.into(),
+                handle: value,
+            }),
+            _ => Err(TaskFenceError::Gateway(format!(
+                "gateway secret {name} for {scope} is unavailable; set {env_name} for live connector execution"
+            ))),
+        }
+    }
+}
+
+fn gateway_secret_env_name(name: &str) -> taskfence_core::Result<String> {
+    let name = normalize_required_segment("secret name", name.to_owned())?;
+    Ok(format!(
+        "TASKFENCE_GATEWAY_SECRET_{}",
+        name.chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() {
+                    ch.to_ascii_uppercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>()
+    ))
+}
+
 fn tool_execution_error_from_taskfence(err: &TaskFenceError) -> ToolExecutionError {
     let message = err.to_string();
     let kind = match err {
@@ -870,6 +1271,103 @@ fn tool_execution_error_from_taskfence(err: &TaskFenceError) -> ToolExecutionErr
         | TaskFenceError::State(_) => ToolExecutionErrorKind::AdapterFailed,
     };
     ToolExecutionError { kind, message }
+}
+
+fn github_token_from_bindings(
+    secrets: &[GatewaySecretBinding],
+) -> std::result::Result<&str, ToolExecutionError> {
+    let binding = secrets
+        .iter()
+        .find(|binding| binding.parameter == "authorization" || binding.parameter == "token")
+        .or_else(|| secrets.first())
+        .ok_or_else(|| ToolExecutionError {
+            kind: ToolExecutionErrorKind::SecretUnavailable,
+            message: "github_rest connector requires a gateway-side token secret".into(),
+        })?;
+    if binding.reference.handle.starts_with("taskfence://")
+        || binding.reference.handle.trim().is_empty()
+    {
+        return Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::SecretUnavailable,
+            message: format!(
+                "gateway secret {} for {} is not backed by a live token",
+                binding.reference.name, binding.reference.scope
+            ),
+        });
+    }
+    Ok(binding.reference.handle.trim())
+}
+
+fn github_api_url(api_base: &str, path: &str) -> String {
+    format!(
+        "{}/{}",
+        api_base.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
+}
+
+fn github_get_json(
+    url: &str,
+    token: &str,
+) -> std::result::Result<serde_json::Value, ToolExecutionError> {
+    let response = github_request_headers(ureq::get(url), token)
+        .call()
+        .map_err(github_ureq_error)?;
+    response
+        .into_json::<serde_json::Value>()
+        .map_err(|err| ToolExecutionError {
+            kind: ToolExecutionErrorKind::AdapterFailed,
+            message: format!("failed to parse GitHub response: {err}"),
+        })
+}
+
+fn github_post_json(
+    url: &str,
+    token: &str,
+    body: serde_json::Value,
+) -> std::result::Result<serde_json::Value, ToolExecutionError> {
+    let response = github_request_headers(ureq::post(url), token)
+        .send_json(body)
+        .map_err(github_ureq_error)?;
+    response
+        .into_json::<serde_json::Value>()
+        .map_err(|err| ToolExecutionError {
+            kind: ToolExecutionErrorKind::AdapterFailed,
+            message: format!("failed to parse GitHub response: {err}"),
+        })
+}
+
+fn github_request_headers(request: ureq::Request, token: &str) -> ureq::Request {
+    request
+        .set("Authorization", &format!("Bearer {token}"))
+        .set("Accept", "application/vnd.github+json")
+        .set("X-GitHub-Api-Version", "2022-11-28")
+        .set("User-Agent", "taskfence-gateway")
+}
+
+fn github_ureq_error(err: ureq::Error) -> ToolExecutionError {
+    match err {
+        ureq::Error::Status(status, response) => {
+            let message = response
+                .into_string()
+                .unwrap_or_else(|_| "unable to read GitHub error response".into());
+            ToolExecutionError {
+                kind: ToolExecutionErrorKind::AdapterFailed,
+                message: format!(
+                    "GitHub API returned HTTP {status}: {}",
+                    redact_secret_like_text(&message)
+                ),
+            }
+        }
+        ureq::Error::Transport(transport) => ToolExecutionError {
+            kind: ToolExecutionErrorKind::AdapterFailed,
+            message: format!("GitHub API transport failed: {transport}"),
+        },
+    }
+}
+
+fn json_u64_field(value: &serde_json::Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(serde_json::Value::as_u64)
 }
 
 fn execute_github_read_issue(
@@ -1340,7 +1838,7 @@ fn normalize_parameters(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
     use taskfence_core::{
         AgentConfig, AgentKind, ApprovalConfig, ApprovalId, AuditConfig, LimitConfig,
         PermissionConfig, SandboxConfig, SandboxKind, SecretConfig, SecretGrant, TaskId,
@@ -1452,6 +1950,143 @@ mod tests {
                 name: name.into(),
                 scope: scope.into(),
                 handle: format!("taskfence://{}/{name}/{scope}", task.id.0),
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct StaticLiveSecretBroker {
+        issued: Mutex<Vec<(String, String)>>,
+        token: String,
+    }
+
+    impl StaticLiveSecretBroker {
+        fn new(token: impl Into<String>) -> Self {
+            Self {
+                issued: Mutex::new(Vec::new()),
+                token: token.into(),
+            }
+        }
+    }
+
+    impl SecretBroker for StaticLiveSecretBroker {
+        fn issue_reference(
+            &self,
+            _task: &ResolvedTask,
+            name: &str,
+            scope: &str,
+        ) -> taskfence_core::Result<SecretReference> {
+            self.issued
+                .lock()
+                .unwrap()
+                .push((name.into(), scope.into()));
+            Ok(SecretReference {
+                name: name.into(),
+                scope: scope.into(),
+                handle: self.token.clone(),
+            })
+        }
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum GitHubClientCall {
+        ReadIssue {
+            api_base: String,
+            repository: String,
+            token: String,
+            number: u64,
+        },
+        CreatePullRequest {
+            api_base: String,
+            repository: String,
+            token: String,
+            input: GitHubPullRequestInput,
+        },
+        CreateIssueComment {
+            api_base: String,
+            repository: String,
+            token: String,
+            number: u64,
+            body: String,
+        },
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct RecordingGitHubClient {
+        calls: Arc<Mutex<Vec<GitHubClientCall>>>,
+    }
+
+    impl GitHubApiClient for RecordingGitHubClient {
+        fn read_issue(
+            &self,
+            api_base: &str,
+            repository: &str,
+            token: &str,
+            number: u64,
+        ) -> std::result::Result<GitHubIssue, ToolExecutionError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(GitHubClientCall::ReadIssue {
+                    api_base: api_base.into(),
+                    repository: repository.into(),
+                    token: token.into(),
+                    number,
+                });
+            Ok(GitHubIssue {
+                number,
+                title: "Needs review".into(),
+                state: "open".into(),
+                body: "No credentials here".into(),
+                html_url: format!("https://github.example/{repository}/issues/{number}"),
+            })
+        }
+
+        fn create_pull_request(
+            &self,
+            api_base: &str,
+            repository: &str,
+            token: &str,
+            input: GitHubPullRequestInput,
+        ) -> std::result::Result<GitHubPullRequest, ToolExecutionError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(GitHubClientCall::CreatePullRequest {
+                    api_base: api_base.into(),
+                    repository: repository.into(),
+                    token: token.into(),
+                    input,
+                });
+            Ok(GitHubPullRequest {
+                number: 7,
+                title: "Ship bounded connector".into(),
+                html_url: format!("https://github.example/{repository}/pull/7"),
+            })
+        }
+
+        fn create_issue_comment(
+            &self,
+            api_base: &str,
+            repository: &str,
+            token: &str,
+            number: u64,
+            body: String,
+        ) -> std::result::Result<GitHubIssueComment, ToolExecutionError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(GitHubClientCall::CreateIssueComment {
+                    api_base: api_base.into(),
+                    repository: repository.into(),
+                    token: token.into(),
+                    number,
+                    body,
+                });
+            Ok(GitHubIssueComment {
+                id: 99,
+                body: "Comment recorded".into(),
+                html_url: format!("https://github.example/{repository}/issues/{number}#comment-99"),
             })
         }
     }
@@ -1601,23 +2236,40 @@ mod tests {
     }
 
     #[test]
-    fn mcp_adapter_execution_is_explicitly_unsupported() {
+    fn mcp_adapter_executes_through_gateway_executor() {
         let adapter = McpGatewayAdapter;
+        let policy = StaticPolicy::new(allow());
+        let audit = RecordingAudit::default();
+        let tool_adapter = StaticToolAdapter::succeeding("mcp execution complete");
+        let registry =
+            InMemoryToolRegistry::new([RegisteredTool::new("mcp", "github", "create_pr").unwrap()]);
+        let mediator = GatewayMediator::new(&policy, &audit)
+            .with_tool_registry(&registry)
+            .with_supported_protocols(["mcp"]);
+        let executor = GatewayExecutor::new(mediator, &audit, &tool_adapter);
 
-        let err = adapter
-            .execute(McpToolRequest {
-                server: "github".into(),
-                tool: "read_issue".into(),
-                arguments: BTreeMap::new(),
-            })
-            .unwrap_err();
+        let execution = adapter
+            .execute(
+                &task(),
+                McpToolRequest {
+                    server: "github".into(),
+                    tool: "create_pr".into(),
+                    arguments: BTreeMap::from([(
+                        "title".into(),
+                        RedactedValue::Plain("Ship connector".into()),
+                    )]),
+                },
+                &executor,
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
 
+        assert!(execution.error.is_none());
         assert!(matches!(
-            err,
-            TaskFenceError::Unsupported(message)
-                if message.contains("mcp gateway execution is not implemented")
-                    && message.contains("github.read_issue")
+            execution.result,
+            Some(ToolResult { summary, .. }) if summary == "mcp execution complete"
         ));
+        assert_eq!(tool_adapter.call_count(), 1);
     }
 
     #[test]
@@ -1645,23 +2297,42 @@ mod tests {
     }
 
     #[test]
-    fn http_adapter_execution_is_explicitly_unsupported() {
+    fn http_adapter_executes_through_gateway_executor() {
         let adapter = HttpGatewayAdapter;
+        let policy = StaticPolicy::new(allow());
+        let audit = RecordingAudit::default();
+        let tool_adapter = StaticToolAdapter::succeeding("http execution complete");
+        let registry =
+            InMemoryToolRegistry::new(
+                [RegisteredTool::new("http", "github", "create_pr").unwrap()],
+            );
+        let mediator = GatewayMediator::new(&policy, &audit)
+            .with_tool_registry(&registry)
+            .with_supported_protocols(["http"]);
+        let executor = GatewayExecutor::new(mediator, &audit, &tool_adapter);
 
-        let err = adapter
-            .execute(HttpToolRequest {
-                connector: "github".into(),
-                operation: "create_pr".into(),
-                parameters: BTreeMap::new(),
-            })
-            .unwrap_err();
+        let execution = adapter
+            .execute(
+                &task(),
+                HttpToolRequest {
+                    connector: "github".into(),
+                    operation: "create_pr".into(),
+                    parameters: BTreeMap::from([(
+                        "title".into(),
+                        RedactedValue::Plain("Ship connector".into()),
+                    )]),
+                },
+                &executor,
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
 
+        assert!(execution.error.is_none());
         assert!(matches!(
-            err,
-            TaskFenceError::Unsupported(message)
-                if message.contains("http gateway execution is not implemented")
-                    && message.contains("github.create_pr")
+            execution.result,
+            Some(ToolResult { summary, .. }) if summary == "http execution complete"
         ));
+        assert_eq!(tool_adapter.call_count(), 1);
     }
 
     #[test]
@@ -1699,12 +2370,33 @@ mod tests {
     }
 
     fn task_with_gateway_secret() -> ResolvedTask {
+        task_with_gateway_secret_scope("github.create_pr")
+    }
+
+    fn task_with_gateway_secret_scope(scope: &str) -> ResolvedTask {
         let mut task = task();
         task.secrets.available_to_gateway = vec![SecretGrant {
             name: "github_token".into(),
-            use_for: vec!["github.create_pr".into()],
+            use_for: vec![scope.into()],
         }];
         task
+    }
+
+    fn github_rest_tool(operation: &str) -> GatewayToolConfig {
+        GatewayToolConfig {
+            protocol: "mcp".into(),
+            tool: "github".into(),
+            operation: operation.into(),
+            connector: GatewayConnectorConfig::GitHubRest {
+                api_base: "https://api.github.test".into(),
+                repository: "taskfence/example".into(),
+            },
+            secret_refs: vec![GatewaySecretReferenceConfig {
+                name: "github_token".into(),
+                parameter: "authorization".into(),
+                scope: format!("github.{operation}"),
+            }],
+        }
     }
 
     #[test]
@@ -2312,6 +3004,310 @@ mod tests {
                 })
             )
         ));
+    }
+
+    #[test]
+    fn github_rest_read_issue_uses_live_token_without_auditing_it() {
+        let token = "ghp_live_test_token";
+        let client = RecordingGitHubClient::default();
+        let adapter = GitHubRestAdapter::new(github_rest_tool("read_issue"), client.clone());
+        let broker = StaticLiveSecretBroker::new(token);
+        let policy = BuiltInPolicyEngine;
+        let audit = RecordingAudit::default();
+        let registry =
+            InMemoryToolRegistry::new(
+                [RegisteredTool::new("mcp", "github", "read_issue").unwrap()],
+            );
+        let mediator = GatewayMediator::new(&policy, &audit).with_tool_registry(&registry);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
+        let mut task = task_with_gateway_secret_scope("github.read_issue");
+        task.permissions.tools.allow = vec!["github.read_issue".into()];
+
+        let execution = executor
+            .execute_tool_action(
+                &task,
+                ToolAction {
+                    protocol: "mcp".into(),
+                    tool: "github".into(),
+                    operation: "read_issue".into(),
+                    parameters: BTreeMap::from([(
+                        "number".into(),
+                        RedactedValue::Plain("42".into()),
+                    )]),
+                },
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(execution.error.is_none());
+        assert!(matches!(
+            execution.result,
+            Some(ToolResult { summary, values, .. })
+                if summary == "read GitHub issue #42 from taskfence/example"
+                    && matches!(
+                        values.get("title"),
+                        Some(RedactedValue::Plain(title)) if title == "Needs review"
+                    )
+        ));
+        assert_eq!(
+            client.calls.lock().unwrap().as_slice(),
+            &[GitHubClientCall::ReadIssue {
+                api_base: "https://api.github.test".into(),
+                repository: "taskfence/example".into(),
+                token: token.into(),
+                number: 42,
+            }]
+        );
+        assert_eq!(
+            broker.issued.lock().unwrap().as_slice(),
+            &[("github_token".into(), "github.read_issue".into())]
+        );
+
+        let events = audit.events.lock().unwrap();
+        assert!(!format!("{events:?}").contains(token));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                AuditEvent::ToolExecutionStarted { request, .. }
+                    if matches!(
+                        request.action.parameters.get("authorization"),
+                        Some(RedactedValue::Redacted { reason })
+                            if reason == "gateway secret reference for github_token"
+                    )
+            )
+        }));
+    }
+
+    #[test]
+    fn github_rest_create_pr_runs_after_approval() {
+        let token = "ghp_live_test_token";
+        let client = RecordingGitHubClient::default();
+        let adapter = GitHubRestAdapter::new(github_rest_tool("create_pr"), client.clone());
+        let broker = StaticLiveSecretBroker::new(token);
+        let policy = BuiltInPolicyEngine;
+        let approval = StaticApproval::new(ApprovalDecision::Approved);
+        let audit = RecordingAudit::default();
+        let registry =
+            InMemoryToolRegistry::new([RegisteredTool::new("mcp", "github", "create_pr").unwrap()]);
+        let mediator = GatewayMediator::new(&policy, &audit)
+            .with_tool_registry(&registry)
+            .with_approval(&approval);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
+        let mut task = task_with_gateway_secret();
+        task.permissions.tools.approval_required = vec!["github.create_pr".into()];
+
+        let execution = executor
+            .execute_tool_action(
+                &task,
+                ToolAction {
+                    protocol: "mcp".into(),
+                    tool: "github".into(),
+                    operation: "create_pr".into(),
+                    parameters: BTreeMap::from([
+                        (
+                            "title".into(),
+                            RedactedValue::Plain("Ship connector".into()),
+                        ),
+                        (
+                            "head".into(),
+                            RedactedValue::Plain("codex/connector".into()),
+                        ),
+                        ("base".into(), RedactedValue::Plain("main".into())),
+                        (
+                            "body".into(),
+                            RedactedValue::Plain("Bounded GitHub REST PR".into()),
+                        ),
+                    ]),
+                },
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(execution.error.is_none());
+        assert!(matches!(
+            execution.result,
+            Some(ToolResult { summary, values, .. })
+                if summary == "created GitHub pull request #7 in taskfence/example"
+                    && matches!(
+                        values.get("html_url"),
+                        Some(RedactedValue::Plain(url)) if url.ends_with("/pull/7")
+                    )
+        ));
+        assert_eq!(
+            client.calls.lock().unwrap().as_slice(),
+            &[GitHubClientCall::CreatePullRequest {
+                api_base: "https://api.github.test".into(),
+                repository: "taskfence/example".into(),
+                token: token.into(),
+                input: GitHubPullRequestInput {
+                    title: "Ship connector".into(),
+                    head: "codex/connector".into(),
+                    base: "main".into(),
+                    body: "Bounded GitHub REST PR".into(),
+                },
+            }]
+        );
+
+        let events = audit.events.lock().unwrap();
+        assert!(!format!("{events:?}").contains(token));
+        assert!(matches!(
+            events.as_slice(),
+            [
+                AuditEvent::PolicyDecision {
+                    decision: ActionDecision::RequireApproval { .. },
+                    ..
+                },
+                AuditEvent::ApprovalRequested { .. },
+                AuditEvent::ApprovalResolved { record },
+                AuditEvent::ToolExecutionStarted { request, .. },
+                AuditEvent::ToolExecutionFinished { execution, .. },
+            ] if record.decision == Some(ApprovalDecision::Approved)
+                && matches!(
+                    request.action.parameters.get("authorization"),
+                    Some(RedactedValue::Redacted { .. })
+                )
+                && execution.error.is_none()
+        ));
+    }
+
+    #[test]
+    fn github_rest_comment_issue_uses_mocked_api_client() {
+        let token = "ghp_live_test_token";
+        let client = RecordingGitHubClient::default();
+        let adapter = GitHubRestAdapter::new(github_rest_tool("comment_issue"), client.clone());
+        let broker = StaticLiveSecretBroker::new(token);
+        let policy = BuiltInPolicyEngine;
+        let audit = RecordingAudit::default();
+        let registry =
+            InMemoryToolRegistry::new([
+                RegisteredTool::new("mcp", "github", "comment_issue").unwrap()
+            ]);
+        let mediator = GatewayMediator::new(&policy, &audit).with_tool_registry(&registry);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
+        let mut task = task_with_gateway_secret_scope("github.comment_issue");
+        task.permissions.tools.allow = vec!["github.comment_issue".into()];
+
+        let execution = executor
+            .execute_tool_action(
+                &task,
+                ToolAction {
+                    protocol: "mcp".into(),
+                    tool: "github".into(),
+                    operation: "comment_issue".into(),
+                    parameters: BTreeMap::from([
+                        ("number".into(), RedactedValue::Plain("42".into())),
+                        ("body".into(), RedactedValue::Plain("Looks good".into())),
+                    ]),
+                },
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(execution.error.is_none());
+        assert!(matches!(
+            execution.result,
+            Some(ToolResult { summary, values, .. })
+                if summary == "created GitHub issue comment 99 on taskfence/example#42"
+                    && matches!(
+                        values.get("comment_id"),
+                        Some(RedactedValue::Plain(id)) if id == "99"
+                    )
+        ));
+        assert_eq!(
+            client.calls.lock().unwrap().as_slice(),
+            &[GitHubClientCall::CreateIssueComment {
+                api_base: "https://api.github.test".into(),
+                repository: "taskfence/example".into(),
+                token: token.into(),
+                number: 42,
+                body: "Looks good".into(),
+            }]
+        );
+        assert!(!format!("{:?}", audit.events.lock().unwrap()).contains(token));
+    }
+
+    #[test]
+    fn github_rest_unsupported_operation_fails_closed() {
+        let client = RecordingGitHubClient::default();
+        let adapter = GitHubRestAdapter::new(github_rest_tool("close_issue"), client.clone());
+        let broker = StaticLiveSecretBroker::new("ghp_live_test_token");
+        let policy = BuiltInPolicyEngine;
+        let audit = RecordingAudit::default();
+        let registry =
+            InMemoryToolRegistry::new([
+                RegisteredTool::new("mcp", "github", "close_issue").unwrap()
+            ]);
+        let mediator = GatewayMediator::new(&policy, &audit).with_tool_registry(&registry);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
+        let mut task = task_with_gateway_secret_scope("github.close_issue");
+        task.permissions.tools.allow = vec!["github.close_issue".into()];
+
+        let execution = executor
+            .execute_tool_action(
+                &task,
+                ToolAction {
+                    protocol: "mcp".into(),
+                    tool: "github".into(),
+                    operation: "close_issue".into(),
+                    parameters: BTreeMap::from([(
+                        "number".into(),
+                        RedactedValue::Plain("42".into()),
+                    )]),
+                },
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            execution.error,
+            Some(ToolExecutionError {
+                kind: ToolExecutionErrorKind::UnsupportedTool,
+                message,
+            }) if message.contains("github.close_issue")
+        ));
+        assert!(client.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn github_rest_missing_live_token_fails_before_api_client_call() {
+        let client = RecordingGitHubClient::default();
+        let adapter = GitHubRestAdapter::new(github_rest_tool("read_issue"), client.clone());
+        let broker = StaticSecretBroker::default();
+        let policy = BuiltInPolicyEngine;
+        let audit = RecordingAudit::default();
+        let registry =
+            InMemoryToolRegistry::new(
+                [RegisteredTool::new("mcp", "github", "read_issue").unwrap()],
+            );
+        let mediator = GatewayMediator::new(&policy, &audit).with_tool_registry(&registry);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
+        let mut task = task_with_gateway_secret_scope("github.read_issue");
+        task.permissions.tools.allow = vec!["github.read_issue".into()];
+
+        let execution = executor
+            .execute_tool_action(
+                &task,
+                ToolAction {
+                    protocol: "mcp".into(),
+                    tool: "github".into(),
+                    operation: "read_issue".into(),
+                    parameters: BTreeMap::from([(
+                        "number".into(),
+                        RedactedValue::Plain("42".into()),
+                    )]),
+                },
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            execution.error,
+            Some(ToolExecutionError {
+                kind: ToolExecutionErrorKind::SecretUnavailable,
+                message,
+            }) if message.contains("not backed by a live token")
+        ));
+        assert!(client.calls.lock().unwrap().is_empty());
     }
 
     #[test]

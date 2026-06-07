@@ -379,8 +379,19 @@ impl RawGatewayTool {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum RawGatewayConnector {
-    LocalFixture { kind: String, path: Utf8PathBuf },
-    Unsupported { kind: String },
+    LocalFixture {
+        kind: String,
+        path: Utf8PathBuf,
+    },
+    #[serde(rename = "github_rest")]
+    GitHubRest {
+        repository: String,
+        #[serde(default = "default_github_api_base")]
+        api_base: String,
+    },
+    Unsupported {
+        kind: String,
+    },
 }
 
 impl RawGatewayConnector {
@@ -424,11 +435,22 @@ impl RawGatewayConnector {
                     path: canonical,
                 })
             }
+            Self::GitHubRest {
+                api_base,
+                repository,
+            } => Ok(GatewayConnectorConfig::GitHubRest {
+                api_base: normalize_gateway_api_base(&api_base)?,
+                repository: normalize_github_repository(&repository)?,
+            }),
             Self::Unsupported { kind } => Ok(GatewayConnectorConfig::Unsupported {
                 kind: normalize_gateway_segment("gateway.tools.connector.kind", &kind)?,
             }),
         }
     }
+}
+
+fn default_github_api_base() -> String {
+    "https://api.github.com".into()
 }
 
 #[derive(Debug, Deserialize)]
@@ -634,6 +656,59 @@ fn normalize_gateway_parameter(field: &str, value: &str) -> taskfence_core::Resu
     Ok(normalized)
 }
 
+fn normalize_gateway_api_base(value: &str) -> taskfence_core::Result<String> {
+    let normalized = value.trim().trim_end_matches('/').to_owned();
+    if normalized.is_empty() {
+        return Err(TaskFenceError::Config(
+            "gateway.tools.connector.api_base must not be empty".into(),
+        ));
+    }
+    if !normalized.starts_with("https://") {
+        return Err(TaskFenceError::Config(format!(
+            "gateway.tools.connector.api_base must use https: {normalized}"
+        )));
+    }
+    let without_scheme = normalized.trim_start_matches("https://");
+    if without_scheme.is_empty()
+        || without_scheme.contains('@')
+        || without_scheme.contains('?')
+        || without_scheme.contains('#')
+        || without_scheme.chars().any(char::is_whitespace)
+    {
+        return Err(TaskFenceError::Config(format!(
+            "gateway.tools.connector.api_base is not a safe HTTPS base URL: {normalized}"
+        )));
+    }
+    Ok(normalized)
+}
+
+fn normalize_github_repository(value: &str) -> taskfence_core::Result<String> {
+    let normalized = value.trim();
+    let Some((owner, repo)) = normalized.split_once('/') else {
+        return Err(TaskFenceError::Config(
+            "gateway.tools.connector.repository must be owner/repo".into(),
+        ));
+    };
+    if owner.is_empty()
+        || repo.is_empty()
+        || repo.contains('/')
+        || !is_safe_github_path_segment(owner)
+        || !is_safe_github_path_segment(repo)
+    {
+        return Err(TaskFenceError::Config(format!(
+            "gateway.tools.connector.repository must be a safe owner/repo value: {normalized}"
+        )));
+    }
+    Ok(format!("{owner}/{repo}"))
+}
+
+fn is_safe_github_path_segment(value: &str) -> bool {
+    !value.contains("..")
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -781,6 +856,59 @@ gateway:
     }
 
     #[test]
+    fn parses_gateway_github_rest_tools() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("repo")).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        let yaml = r#"
+goal: Test GitHub REST connector
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+gateway:
+  tools:
+    - protocol: mcp
+      tool: github
+      operation: read_issue
+      connector:
+        type: github_rest
+        repository: TaskFence/TaskFence
+      secret_refs:
+        - name: " GitHub_Token "
+          parameter: authorization
+          scope: github.read_issue
+    - protocol: http
+      tool: github
+      operation: comment_issue
+      connector:
+        type: github_rest
+        api_base: "https://api.github.example/"
+        repository: owner/repo
+"#;
+
+        let task = parse_task_file(&task_file, yaml).unwrap();
+
+        assert_eq!(task.gateway.tools.len(), 2);
+        assert!(matches!(
+            &task.gateway.tools[0].connector,
+            GatewayConnectorConfig::GitHubRest {
+                api_base,
+                repository,
+            } if api_base == "https://api.github.com" && repository == "TaskFence/TaskFence"
+        ));
+        assert_eq!(task.gateway.tools[0].secret_refs[0].name, "github_token");
+        assert!(matches!(
+            &task.gateway.tools[1].connector,
+            GatewayConnectorConfig::GitHubRest {
+                api_base,
+                repository,
+            } if api_base == "https://api.github.example" && repository == "owner/repo"
+        ));
+    }
+
+    #[test]
     fn rejects_unknown_fields() {
         let yaml = r#"
 goal: Test
@@ -897,6 +1025,100 @@ gateway:
             fs::create_dir(repo.join("fixtures")).unwrap();
             fs::write(repo.join("fixtures/github.json"), "{}").unwrap();
             fs::write(temp.path().join("outside.json"), "{}").unwrap();
+            let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+
+            assert!(parse_task_file(&task_file, yaml).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_gateway_github_rest_config() {
+        for yaml in [
+            r#"
+goal: Test
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+gateway:
+  tools:
+    - protocol: mcp
+      tool: github
+      operation: read_issue
+      connector:
+        type: github_rest
+        api_base: "http://api.github.example"
+        repository: owner/repo
+"#,
+            r#"
+goal: Test
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+gateway:
+  tools:
+    - protocol: mcp
+      tool: github
+      operation: read_issue
+      connector:
+        type: github_rest
+        api_base: "https://token@api.github.example"
+        repository: owner/repo
+"#,
+            r#"
+goal: Test
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+gateway:
+  tools:
+    - protocol: mcp
+      tool: github
+      operation: read_issue
+      connector:
+        type: github_rest
+        repository: owner
+"#,
+            r#"
+goal: Test
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+gateway:
+  tools:
+    - protocol: mcp
+      tool: github
+      operation: read_issue
+      connector:
+        type: github_rest
+        repository: owner/repo/extra
+"#,
+            r#"
+goal: Test
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+gateway:
+  tools:
+    - protocol: mcp
+      tool: github
+      operation: read_issue
+      connector:
+        type: github_rest
+        repository: ../repo
+"#,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            fs::create_dir(temp.path().join("repo")).unwrap();
             let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
 
             assert!(parse_task_file(&task_file, yaml).is_err());

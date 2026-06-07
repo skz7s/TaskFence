@@ -10,15 +10,15 @@ TaskFence is not another agent framework. It is the control layer around agents:
 agents decide what to do, TaskFence decides what they are allowed to access,
 records what happened, and creates evidence that can be reviewed later.
 
-> Status: local runner plus local fixture gateway foundation. The Rust
+> Status: local runner plus bounded gateway connector foundation. The Rust
 > workspace contains the first usable `taskfence run <task-file>` path for
 > generic commands in a local Docker sandbox, with structured audit events,
 > local artifacts, and Markdown reports. It also contains a CLI-owned
-> deterministic `taskfence gateway call` path for configured local fixture
-> tools, plus a bounded request/response gateway spool prototype for sandboxed
-> agents. These paths prove policy, approval, registry, redacted
-> secret-reference, audit, and report behavior without live credentials.
-> Production MCP/HTTP/GitHub execution, credential use, Web UI, replay,
+> `taskfence gateway call` path for configured local fixture tools and a
+> bounded GitHub REST connector, plus a request/response gateway spool
+> prototype for sandboxed agents. These paths prove policy, approval,
+> registry, gateway-side secret brokering, audit, and report behavior.
+> MCP/HTTP listener or proxy servers, SDK/webhook connectors, Web UI, replay,
 > team-server, and enterprise surfaces remain future work.
 
 ## Why TaskFence
@@ -59,10 +59,10 @@ execution isolation.
 
 TaskFence is designed around two complementary modes. The local Docker runner is
 implemented first. Gateway-enhanced execution is currently limited to a
-deterministic local fixture command plus typed contracts, configured tool policy
-decisions, optional approval mediation, known-tool registry checks, redacted
-secret references, MCP/HTTP request normalization stubs, structured evidence,
-and unsupported-action errors.
+deterministic local fixture command, a bounded GitHub REST connector for three
+operations, executor-backed MCP/HTTP adapter entry points, configured tool
+policy decisions, optional approval mediation, known-tool registry checks,
+redacted secret references, structured evidence, and unsupported-action errors.
 
 ### 1. Generic Sandbox Mode
 
@@ -111,13 +111,15 @@ This mode answers the stronger question:
 > GitHub, Slack, Feishu, a database, or another internal system?
 
 The current executable gateway surfaces are intentionally narrower than that
-future mode. `taskfence gateway call` executes only configured local fixture
-tools from the task file. `taskfence gateway spool process` processes one
-request from a task-local `gateway-spool/requests` directory and writes one
-typed response under `gateway-spool/responses`; the generated sandbox wrapper
-is only a thin request writer over that spool. These paths do not start a
-production MCP server, proxy HTTP traffic, call the GitHub API, or read a raw
-token.
+future mode. `taskfence gateway call` executes only configured task-file tools:
+deterministic local fixtures, or a bounded GitHub REST connector for
+`github.read_issue`, `github.create_pr`, and `github.comment_issue`.
+`taskfence gateway spool process` processes one request from a task-local
+`gateway-spool/requests` directory and writes one typed response under
+`gateway-spool/responses`; the generated sandbox wrapper is only a thin
+request writer over that spool. These paths do not start a production MCP
+server, proxy arbitrary HTTP traffic, implement SDK/webhook connectors, create
+branches or commits, or expose a raw token to the sandbox.
 
 ## Example Task
 
@@ -202,9 +204,18 @@ creating a real pull request:
 cargo run -p taskfence-cli -- gateway call examples/task.yaml github create_pr --approve --param title="Fixture proposal"
 ```
 
-The configured `github_token` is only a gateway-side redacted reference. The
-fixture does not read a raw token, does not expose one to the agent process, and
-does not send network traffic.
+The configured `github_token` is only a gateway-side redacted reference for the
+fixture. The fixture does not read a raw token, does not expose one to the
+agent process, and does not send network traffic.
+
+A task can opt into the bounded live GitHub REST connector with
+`connector.type: github_rest`. That connector currently supports
+`github.read_issue`, `github.create_pr`, and `github.comment_issue` only. Raw
+tokens are read by the gateway-side secret broker from
+`TASKFENCE_GATEWAY_SECRET_<NORMALIZED_SECRET_NAME>` after policy, registry, and
+approval checks; the token is not written to task files, sandbox parameters,
+audit events, reports, or artifacts. For the example secret name
+`github_token`, set `TASKFENCE_GATEWAY_SECRET_GITHUB_TOKEN`.
 
 The demo requires Docker and the configured image to be available locally. The
 runner uses `docker run --pull=never`, so it does not silently acquire images at
@@ -316,7 +327,11 @@ The first implementation currently includes:
     GitHub-shaped `github.read_issue` and `github.create_pr` fixture behavior
     with fail-closed policy, explicit approval, redacted secret references,
     structured audit events, local artifacts, and Markdown report evidence.
-11. An agent-facing gateway spool prototype: task artifact setup creates
+11. A bounded live GitHub REST connector for configured `github_rest` task-file
+    tools. It supports `github.read_issue`, `github.create_pr` against an
+    existing `head`/`base`, and `github.comment_issue`; it uses gateway-side
+    environment secrets only after policy, registry, and approval checks.
+12. An agent-facing gateway spool prototype: task artifact setup creates
     `gateway-spool/requests`, `gateway-spool/responses`, and a generated
     `taskfence-gateway-submit` wrapper; the Docker runner mounts only the
     dedicated spool path for tasks with configured gateway tools; the host-side
@@ -324,11 +339,12 @@ The first implementation currently includes:
     one mediated local fixture action, and writes typed success, denied,
     timeout, cancellation, malformed-request, unsupported-action, or failure
     responses with structured evidence.
-12. Task-file `permissions.tools` parsing and policy/audit/report evidence for
+13. Task-file `permissions.tools` parsing and policy/audit/report evidence for
     future gateway-mediated tool actions, including optional approval evidence,
     optional known-tool registry checks, redacted gateway secret references, and
-    MCP/HTTP request normalization stubs without production protocol execution
-    or credential use.
+    MCP/HTTP adapter requests that execute through the existing gateway
+    executor when explicitly configured. This is not a production MCP server or
+    HTTP proxy.
 
 ## Non-Goals
 

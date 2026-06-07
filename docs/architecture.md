@@ -42,14 +42,16 @@ task workspace. Task files can configure tool allow/approval/deny rules that
 feed typed gateway mediation, policy decisions, audit events, and report
 evidence, including optional approval request/resolution records for
 approval-required tool calls, known-tool registry checks, and redacted gateway
-secret references. The executable gateway surface is currently limited to the
-CLI-owned deterministic local fixture command `taskfence gateway call`, plus a
-bounded agent-facing request/response spool prototype processed by `taskfence
-gateway spool process`. The spool path is task-local, mounted separately into
-Docker only for tasks with configured gateway tools, and produces typed
-responses plus structured evidence. Production MCP/HTTP/GitHub execution, raw
-credential use, sidecar/listener, Web UI, replay, team-server, and enterprise
-control-plane behavior are not implemented yet.
+secret references. The executable gateway surface is currently limited to
+configured task-file tools through `taskfence gateway call`: deterministic
+local fixtures and a bounded GitHub REST connector for `github.read_issue`,
+`github.create_pr`, and `github.comment_issue`. A bounded agent-facing
+request/response spool prototype is processed by `taskfence gateway spool
+process`. The spool path is task-local, mounted separately into Docker only for
+tasks with configured gateway tools, and produces typed responses plus
+structured evidence. MCP/HTTP listener or proxy servers, SDK/webhook
+connectors, arbitrary HTTP proxying, branch/commit creation, Web UI, replay,
+team-server, and enterprise control-plane behavior are not implemented yet.
 
 ### CLI
 
@@ -204,23 +206,28 @@ Current implementation includes typed normalization and mediation contracts,
 configured `permissions.tools` policy decisions, structured `PolicyDecision`
 audit events, known-tool registry validation before policy evaluation,
 `ApprovalRequested` / `ApprovalResolved` events for approval-required tool
-calls, report evidence, redacted secret references, MCP/HTTP request
-normalization stubs, explicit unsupported-protocol errors, and a CLI-owned local
-fixture execution path. The local fixture path executes only configured
-task-file tools and currently models GitHub-shaped `github.read_issue` and
-`github.create_pr` behavior without network access or raw credentials. The
-agent-facing spool prototype creates `gateway-spool/requests`,
-`gateway-spool/responses`, and a generated `taskfence-gateway-submit` wrapper
-under the task evidence directory; Docker mounts only that dedicated spool path
-at `/taskfence/gateway-spool` when gateway tools are configured, rejecting
-broader permission mounts that would also expose it. The host-side spool
-processor validates request paths against the task spool root, rejects parent
-components and symlink escapes, executes one mediated local fixture action, and
-writes typed success, denied, timeout, cancellation, malformed-request,
-unsupported-action, or failure responses with structured evidence. When a
-registry is configured, unregistered tool actions fail before policy evaluation
-and record an audit error. It does not execute production MCP, HTTP, SDK,
-webhook, live GitHub, or raw secret-broker actions yet.
+calls, report evidence, redacted secret references, MCP/HTTP adapter entry
+points that execute through the existing gateway executor when explicitly
+configured, and a CLI-owned local fixture execution path. The local fixture path
+executes only configured task-file tools and currently models GitHub-shaped
+`github.read_issue` and `github.create_pr` behavior without network access or
+raw credentials. The live `github_rest` connector supports only
+`github.read_issue`, `github.create_pr`, and `github.comment_issue`; PR creation
+assumes the requested `head` and `base` already exist and does not create
+branches or commits. The agent-facing spool prototype creates
+`gateway-spool/requests`, `gateway-spool/responses`, and a generated
+`taskfence-gateway-submit` wrapper under the task evidence directory; Docker
+mounts only that dedicated spool path at `/taskfence/gateway-spool` when
+gateway tools are configured, rejecting broader permission mounts that would
+also expose it. The host-side spool processor validates request paths against
+the task spool root, rejects parent components and symlink escapes, executes one
+mediated configured action, and writes typed success, denied, timeout,
+cancellation, malformed-request, unsupported-action, or failure responses with
+structured evidence. When a registry is configured, unregistered tool actions
+fail before policy evaluation and record an audit error. It does not implement
+MCP/HTTP listener or proxy servers, SDK/webhook connectors, arbitrary HTTP
+proxying, branch/commit creation, Web UI, replay, team-server, or enterprise
+connector behavior yet.
 
 Supported gateway surfaces can include:
 
@@ -250,8 +257,13 @@ raw secrets.
 Current implementation defines the gateway-side broker trait and
 `SecretReference` contract. It can authorize a requested secret against
 `secrets.available_to_gateway` and attach a redacted parameter reference before
-local fixture adapter execution. The local fixture broker issues only redacted
-handles; it does not read, store, validate, or use a raw credential.
+adapter execution. The local fixture broker issues only redacted handles; it
+does not read, store, validate, or use a raw credential. The environment-backed
+broker is used for configured live GitHub REST tools and reads
+`TASKFENCE_GATEWAY_SECRET_<NORMALIZED_SECRET_NAME>` only inside the host gateway
+process after policy, registry, and approval checks. Raw token values are passed
+out-of-band to the connector client and are not written to task files, sandbox
+parameters, audit events, reports, or artifacts.
 
 ### Approval Engine
 

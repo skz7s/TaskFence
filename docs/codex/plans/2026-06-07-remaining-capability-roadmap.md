@@ -154,7 +154,7 @@ Completion evidence:
 
 ### Phase 2: Production Gateway Transports And First Real Connector
 
-Status: pending
+Status: done
 
 Scope:
 
@@ -178,7 +178,12 @@ cargo test -p taskfence-core -p taskfence-gateway -p taskfence-policy -p taskfen
 
 Completion evidence:
 
-- Pending.
+- Implemented bounded MCP/HTTP adapter execution through the existing gateway executor for explicitly configured tool actions, replacing normalization-only unsupported execution while keeping listener/proxy behavior unimplemented.
+- Added `github_rest` task-file connector parsing, typed core connector config, a GitHub REST adapter/client for `github.read_issue`, `github.create_pr`, and `github.comment_issue`, and CLI adapter selection for live connectors.
+- Kept raw GitHub credentials gateway-side through `EnvironmentSecretBroker`, which reads `TASKFENCE_GATEWAY_SECRET_<NORMALIZED_SECRET_NAME>` only after registry, policy, and approval checks; audit events, reports, task files, fixture artifacts, and sandbox parameters carry only redacted secret references.
+- Preserved deterministic local fixtures for offline demos/tests and documented unsupported SDK/webhook connectors, arbitrary HTTP proxying, MCP/HTTP listener servers, branch/commit creation, Web UI, replay, team-server, and enterprise connector behavior as future work.
+- Updated README, architecture, roadmap, runtime architecture, development design, `docs/decisions/2026-06-07-bounded-github-rest-connector.md`, `examples/github-rest-task.yaml`, and the report golden fixture to reflect the bounded implemented behavior.
+- Passed: `cargo fmt --all`; `cargo test -p taskfence-config -p taskfence-gateway`; `cargo test -p taskfence-cli gateway_call_github_rest_missing_env_secret_fails_closed_with_evidence`; `cargo test -p taskfence-core -p taskfence-gateway -p taskfence-policy -p taskfence-audit -p taskfence-report`; `cargo clippy --workspace --all-targets -- -D warnings`.
 
 ### Phase 3: Live Budget And Cost Metering
 
