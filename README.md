@@ -321,8 +321,10 @@ The first implementation currently includes:
    records/details.
 9. Task-file `permissions.budget.allow` parsing and built-in policy decisions
    for typed budget actions. Budget actions are denied by default unless a
-   matching kind and `max_amount` are explicitly configured; this is not live
-   token, cost, or provider metering.
+   matching kind and `max_amount` are explicitly configured. Gateway adapters
+   can now record planned or observed `BudgetUsageRecorded` audit evidence;
+   the bounded `github_rest` connector records one planned `gateway_calls`
+   usage before secret attachment or API execution.
 10. A local fixture gateway call path for configured task-file tools, including
     GitHub-shaped `github.read_issue` and `github.create_pr` fixture behavior
     with fail-closed policy, explicit approval, redacted secret references,
@@ -330,7 +332,8 @@ The first implementation currently includes:
 11. A bounded live GitHub REST connector for configured `github_rest` task-file
     tools. It supports `github.read_issue`, `github.create_pr` against an
     existing `head`/`base`, and `github.comment_issue`; it uses gateway-side
-    environment secrets only after policy, registry, and approval checks.
+    environment secrets only after policy, registry, approval, and planned
+    `gateway_calls` budget checks.
 12. An agent-facing gateway spool prototype: task artifact setup creates
     `gateway-spool/requests`, `gateway-spool/responses`, and a generated
     `taskfence-gateway-submit` wrapper; the Docker runner mounts only the

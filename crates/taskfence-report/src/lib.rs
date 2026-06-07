@@ -95,6 +95,21 @@ fn render_markdown(task: &ResolvedTask, artifacts: &ArtifactRefs, events: &[Audi
     ));
     md.push_str(&format!("- Denied decisions: {}\n\n", data.denied));
 
+    md.push_str("## Budget Usage\n\n");
+    push_table_or_none(
+        &mut md,
+        &data.budget_usage,
+        &[
+            "Kind",
+            "Amount",
+            "Limit",
+            "Provider",
+            "Model",
+            "Operation",
+            "Decision",
+        ],
+    );
+
     md.push_str("## Sandbox Summary\n\n");
     md.push_str(&format!(
         "- Sandbox kind: {}\n",
@@ -208,6 +223,7 @@ struct ReportData {
     commands: Vec<Vec<String>>,
     tool_calls: Vec<Vec<String>>,
     tool_executions: Vec<Vec<String>>,
+    budget_usage: Vec<Vec<String>>,
     approvals: Vec<Vec<String>>,
     denied_actions: Vec<String>,
     network: Vec<Vec<String>>,
@@ -332,6 +348,29 @@ impl ReportData {
                             .unwrap_or_else(|| "-".into()),
                         outcome,
                         summary,
+                    ]);
+                }
+                AuditEvent::BudgetUsageRecorded { at, record, .. } => {
+                    let (label, reason) = decision_parts(&record.decision);
+                    data.timeline.push((
+                        at.to_string(),
+                        format!(
+                            "budget usage {label}: {} amount {}",
+                            record.usage.kind, record.usage.amount
+                        ),
+                    ));
+                    data.budget_usage.push(vec![
+                        record.usage.kind.clone(),
+                        record.usage.amount.to_string(),
+                        record
+                            .limit
+                            .as_ref()
+                            .map(|limit| limit.max_amount.to_string())
+                            .unwrap_or_else(|| "-".into()),
+                        record.usage.provider.clone().unwrap_or_else(|| "-".into()),
+                        record.usage.model.clone().unwrap_or_else(|| "-".into()),
+                        record.usage.operation.clone().unwrap_or_else(|| "-".into()),
+                        format!("{label}: {reason}"),
                     ]);
                 }
                 AuditEvent::ApprovalRequested { record } => {

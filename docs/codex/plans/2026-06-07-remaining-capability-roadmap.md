@@ -187,7 +187,7 @@ Completion evidence:
 
 ### Phase 3: Live Budget And Cost Metering
 
-Status: pending
+Status: done
 
 Scope:
 
@@ -210,7 +210,27 @@ cargo test -p taskfence-core -p taskfence-policy -p taskfence-audit -p taskfence
 
 Completion evidence:
 
-- Pending.
+- Added shared `BudgetUsage` and `BudgetUsageRecord` contracts plus a
+  `BudgetUsageRecorded` audit event for planned and observed mediated gateway
+  usage. Usage records normalize kind/provider/model/operation metadata, require
+  positive amounts, preserve redacted metadata values, and carry the matched
+  `permissions.budget.allow` limit and policy decision.
+- Extended the gateway executor and adapter contract so planned usage is
+  checked before secret attachment and adapter execution, over-limit planned
+  usage fails closed with `BudgetExceeded`, observed over-limit usage records a
+  partial result plus a budget error, and `github_rest` records one planned
+  `gateway_calls` usage per configured operation.
+- Updated local event/state/report consumers so budget usage appears in
+  structured event summaries, task state reads, Markdown reports, and spool
+  denial status without rendering raw credentials.
+- Updated README, roadmap, architecture, runtime architecture, development
+  design, `docs/decisions/2026-06-07-bounded-gateway-budget-metering.md`,
+  `examples/github-rest-task.yaml`, and the report golden fixture to document
+  bounded gateway metering while keeping billing, team quota, chargeback, and
+  broad model-provider metering unclaimed.
+- Passed: `cargo fmt --all --check`; `cargo test -p taskfence-core -p
+  taskfence-policy -p taskfence-audit -p taskfence-report`; `cargo test -p
+  taskfence-gateway`; `git diff --check`.
 
 ### Phase 4: Local Review UI And Replay Foundation
 

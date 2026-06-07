@@ -35,6 +35,10 @@ permissions:
     approval_required:
       - "github.create_pr"
       - "github.comment_issue"
+  budget:
+    allow:
+      - kind: "gateway_calls"
+        max_amount: 1
 
 secrets:
   expose_to_agent: false

@@ -139,8 +139,13 @@ The current built-in budget policy evaluates typed `Action::Budget` values
 only. Task files can configure `permissions.budget.allow` entries with a
 normalized budget kind and positive `max_amount`. Budget actions with no
 matching kind, an empty kind, or an amount above the configured limit are
-denied. This is a policy boundary for mediated budget actions, not live
-token/cost metering or provider accounting.
+denied. Gateway adapters can attach planned or observed `BudgetUsage` records
+to mediated execution; the gateway executor evaluates each record through the
+same budget policy, writes `BudgetUsageRecorded` audit evidence with the matched
+limit and decision, and fails closed before secret attachment when planned usage
+is over limit. Observed over-limit usage is recorded with the partial tool
+result and a budget error. This is not billing, team quota, chargeback, or broad
+model-provider cost metering.
 
 The first implementation can use a built-in policy evaluator. Later versions can
 support OPA, Cedar, or custom plugins.

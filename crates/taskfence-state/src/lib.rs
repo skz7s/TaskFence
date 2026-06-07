@@ -498,6 +498,7 @@ fn audit_event_task_id(event: &AuditEvent) -> &TaskId {
         | AuditEvent::PolicyDecision { task_id, .. }
         | AuditEvent::ToolExecutionStarted { task_id, .. }
         | AuditEvent::ToolExecutionFinished { task_id, .. }
+        | AuditEvent::BudgetUsageRecorded { task_id, .. }
         | AuditEvent::Log { task_id, .. }
         | AuditEvent::RunnerExit { task_id, .. }
         | AuditEvent::Artifact { task_id, .. }

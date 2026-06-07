@@ -4,12 +4,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 
 use taskfence_core::{
-    Action, ActionDecision, ApprovalDecision, ApprovalEngine, ApprovalRecord, AuditEvent,
-    AuditLogger, GatewayConnectorConfig, GatewaySecretReferenceConfig, GatewayToolConfig,
-    PolicyEngine, RedactedValue, ResolvedTask, TaskFenceError, ToolAction, ToolAdapterIdentity,
-    ToolExecution, ToolExecutionContext, ToolExecutionError, ToolExecutionErrorKind, ToolRequest,
-    ToolResult, GATEWAY_SPOOL_DIR_NAME, GATEWAY_SPOOL_REQUESTS_DIR_NAME,
-    GATEWAY_SPOOL_RESPONSES_DIR_NAME,
+    budget_limit_for, Action, ActionDecision, ApprovalDecision, ApprovalEngine, ApprovalRecord,
+    AuditEvent, AuditLogger, BudgetUsage, BudgetUsageRecord, GatewayConnectorConfig,
+    GatewaySecretReferenceConfig, GatewayToolConfig, PolicyEngine, RedactedValue, ResolvedTask,
+    TaskFenceError, ToolAction, ToolAdapterIdentity, ToolExecution, ToolExecutionContext,
+    ToolExecutionError, ToolExecutionErrorKind, ToolRequest, ToolResult, GATEWAY_SPOOL_DIR_NAME,
+    GATEWAY_SPOOL_REQUESTS_DIR_NAME, GATEWAY_SPOOL_RESPONSES_DIR_NAME,
 };
 use time::OffsetDateTime;
 
@@ -104,7 +104,8 @@ impl GatewaySpoolResponse {
             None => GatewaySpoolResponseState::Succeeded,
             Some(
                 ToolExecutionErrorKind::PolicyDenied
-                | ToolExecutionErrorKind::ApprovalDeniedOrTimedOut,
+                | ToolExecutionErrorKind::ApprovalDeniedOrTimedOut
+                | ToolExecutionErrorKind::BudgetExceeded,
             ) => GatewaySpoolResponseState::Denied,
             Some(
                 ToolExecutionErrorKind::UnsupportedProtocol
@@ -549,6 +550,15 @@ pub trait ToolAdapter {
         context: &ToolExecutionContext,
     ) -> std::result::Result<ToolResult, ToolExecutionError>;
 
+    fn planned_budget_usage(
+        &self,
+        _task: &ResolvedTask,
+        _action: &ToolAction,
+        _context: &ToolExecutionContext,
+    ) -> std::result::Result<Vec<BudgetUsage>, ToolExecutionError> {
+        Ok(Vec::new())
+    }
+
     fn execute_with_secrets(
         &self,
         task: &ResolvedTask,
@@ -647,6 +657,34 @@ impl<'a> GatewayExecutor<'a> {
             ActionDecision::Allow { .. } | ActionDecision::RequireApproval { .. } => {}
         }
 
+        match self
+            .adapter
+            .planned_budget_usage(task, &request.action, &context)
+        {
+            Ok(usages) => {
+                if let Some(error) = self.record_budget_usages(task, usages)? {
+                    return self.record_finished(
+                        task,
+                        ToolExecution {
+                            request,
+                            result: None,
+                            error: Some(error),
+                        },
+                    );
+                }
+            }
+            Err(error) => {
+                return self.record_finished(
+                    task,
+                    ToolExecution {
+                        request,
+                        result: None,
+                        error: Some(error),
+                    },
+                );
+            }
+        }
+
         let (request, secret_bindings) =
             match self.attach_configured_secret_references(task, request.clone()) {
                 Ok(bound) => bound,
@@ -674,11 +712,14 @@ impl<'a> GatewayExecutor<'a> {
             &context,
             &secret_bindings,
         ) {
-            Ok(result) => ToolExecution {
-                request,
-                result: Some(result),
-                error: None,
-            },
+            Ok(result) => {
+                let budget_error = self.record_budget_usages(task, result.usage.clone())?;
+                ToolExecution {
+                    request,
+                    result: Some(result),
+                    error: budget_error,
+                }
+            }
             Err(error) => ToolExecution {
                 request,
                 result: None,
@@ -730,6 +771,54 @@ impl<'a> GatewayExecutor<'a> {
             },
             bindings,
         ))
+    }
+
+    fn record_budget_usages(
+        &self,
+        task: &ResolvedTask,
+        usages: Vec<BudgetUsage>,
+    ) -> taskfence_core::Result<Option<ToolExecutionError>> {
+        let mut denial = None;
+        for usage in usages {
+            let usage = match usage.normalized() {
+                Ok(usage) => usage,
+                Err(err) => {
+                    return Ok(Some(ToolExecutionError {
+                        kind: ToolExecutionErrorKind::BudgetExceeded,
+                        message: err.to_string(),
+                    }));
+                }
+            };
+            let action = Action::Budget {
+                kind: usage.kind.clone(),
+                amount: usage.amount,
+            };
+            let decision = self.mediator.policy.evaluate(task, &action)?;
+            self.audit.record(AuditEvent::PolicyDecision {
+                task_id: task.id.clone(),
+                at: OffsetDateTime::now_utc(),
+                action,
+                decision: decision.clone(),
+            })?;
+            let record = BudgetUsageRecord {
+                limit: budget_limit_for(task, &usage.kind),
+                usage,
+                decision: decision.clone(),
+            };
+            self.audit.record(AuditEvent::BudgetUsageRecorded {
+                task_id: task.id.clone(),
+                at: OffsetDateTime::now_utc(),
+                record,
+            })?;
+
+            if let ActionDecision::Deny { reason, .. } = decision {
+                denial.get_or_insert(ToolExecutionError {
+                    kind: ToolExecutionErrorKind::BudgetExceeded,
+                    message: reason,
+                });
+            }
+        }
+        Ok(denial)
     }
 
     fn record_finished(
@@ -945,6 +1034,25 @@ where
         self.execute_with_secrets(task, action, context, &[])
     }
 
+    fn planned_budget_usage(
+        &self,
+        _task: &ResolvedTask,
+        action: &ToolAction,
+        _context: &ToolExecutionContext,
+    ) -> std::result::Result<Vec<BudgetUsage>, ToolExecutionError> {
+        Ok(vec![BudgetUsage {
+            kind: "gateway_calls".into(),
+            amount: 1,
+            provider: Some("github".into()),
+            model: None,
+            operation: Some(format!("github.{}", action.operation)),
+            metadata: BTreeMap::from([(
+                "connector".into(),
+                RedactedValue::Plain("github_rest".into()),
+            )]),
+        }])
+    }
+
     fn execute_with_secrets(
         &self,
         _task: &ResolvedTask,
@@ -1022,6 +1130,7 @@ where
                         ),
                     ]),
                     artifacts: Vec::new(),
+                    usage: Vec::new(),
                 })
             }
             "create_pr" => {
@@ -1058,6 +1167,7 @@ where
                         ),
                     ]),
                     artifacts: Vec::new(),
+                    usage: Vec::new(),
                 })
             }
             "comment_issue" => {
@@ -1091,6 +1201,7 @@ where
                         ),
                     ]),
                     artifacts: Vec::new(),
+                    usage: Vec::new(),
                 })
             }
             _ => Err(ToolExecutionError {
@@ -1408,6 +1519,7 @@ fn execute_github_read_issue(
             ("body".into(), RedactedValue::Plain(body)),
         ]),
         artifacts: Vec::new(),
+        usage: Vec::new(),
     })
 }
 
@@ -1476,6 +1588,7 @@ fn execute_github_create_pr(
             ("head".into(), RedactedValue::Plain(head)),
         ]),
         artifacts: vec![path],
+        usage: Vec::new(),
     })
 }
 
@@ -1840,9 +1953,9 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
     use taskfence_core::{
-        AgentConfig, AgentKind, ApprovalConfig, ApprovalId, AuditConfig, LimitConfig,
-        PermissionConfig, SandboxConfig, SandboxKind, SecretConfig, SecretGrant, TaskId,
-        ToolPermissions,
+        AgentConfig, AgentKind, ApprovalConfig, ApprovalId, AuditConfig, BudgetLimit,
+        BudgetPermissions, LimitConfig, PermissionConfig, SandboxConfig, SandboxKind, SecretConfig,
+        SecretGrant, TaskId, ToolPermissions,
     };
     use taskfence_policy::BuiltInPolicyEngine;
 
@@ -2094,6 +2207,7 @@ mod tests {
     #[derive(Debug)]
     struct StaticToolAdapter {
         outcome: Mutex<std::result::Result<ToolResult, ToolExecutionError>>,
+        planned_usage: Mutex<std::result::Result<Vec<BudgetUsage>, ToolExecutionError>>,
         calls: Mutex<Vec<ToolAction>>,
         secret_refs: Vec<GatewaySecretReferenceConfig>,
     }
@@ -2108,7 +2222,9 @@ mod tests {
                         RedactedValue::Plain("fixture-ok".into()),
                     )]),
                     artifacts: Vec::new(),
+                    usage: Vec::new(),
                 })),
+                planned_usage: Mutex::new(Ok(Vec::new())),
                 calls: Mutex::new(Vec::new()),
                 secret_refs: Vec::new(),
             }
@@ -2120,9 +2236,22 @@ mod tests {
                     kind: ToolExecutionErrorKind::AdapterFailed,
                     message: message.into(),
                 })),
+                planned_usage: Mutex::new(Ok(Vec::new())),
                 calls: Mutex::new(Vec::new()),
                 secret_refs: Vec::new(),
             }
+        }
+
+        fn with_planned_usage(mut self, usage: Vec<BudgetUsage>) -> Self {
+            self.planned_usage = Mutex::new(Ok(usage));
+            self
+        }
+
+        fn with_result_usage(self, usage: Vec<BudgetUsage>) -> Self {
+            if let Ok(result) = self.outcome.lock().unwrap().as_mut() {
+                result.usage = usage;
+            }
+            self
         }
 
         fn with_secret_ref(mut self, secret_ref: GatewaySecretReferenceConfig) -> Self {
@@ -2145,6 +2274,15 @@ mod tests {
 
         fn secret_references(&self) -> &[GatewaySecretReferenceConfig] {
             &self.secret_refs
+        }
+
+        fn planned_budget_usage(
+            &self,
+            _task: &ResolvedTask,
+            _action: &ToolAction,
+            _context: &ToolExecutionContext,
+        ) -> std::result::Result<Vec<BudgetUsage>, ToolExecutionError> {
+            self.planned_usage.lock().unwrap().clone()
         }
 
         fn execute(
@@ -2195,6 +2333,18 @@ mod tests {
             gateway: Default::default(),
             audit: AuditConfig::default(),
         }
+    }
+
+    fn task_with_budget(kind: &str, max_amount: u64) -> ResolvedTask {
+        let mut task = task();
+        task.permissions.tools.allow = vec!["github.create_pr".into()];
+        task.permissions.budget = BudgetPermissions {
+            allow: vec![BudgetLimit {
+                kind: kind.into(),
+                max_amount,
+            }],
+        };
+        task
     }
 
     fn tool_action(protocol: &str) -> ToolAction {
@@ -2772,6 +2922,199 @@ mod tests {
     }
 
     #[test]
+    fn executor_records_allowed_planned_budget_usage_before_execution() {
+        let policy = BuiltInPolicyEngine;
+        let audit = RecordingAudit::default();
+        let adapter = StaticToolAdapter::succeeding("fixture read_issue complete")
+            .with_planned_usage(vec![BudgetUsage {
+                kind: " Tokens ".into(),
+                amount: 50,
+                provider: Some(" FixtureAI ".into()),
+                model: Some("demo-model".into()),
+                operation: Some("github.create_pr".into()),
+                metadata: BTreeMap::from([(
+                    " request_class ".into(),
+                    RedactedValue::Plain("planned".into()),
+                )]),
+            }]);
+        let mediator = GatewayMediator::new(&policy, &audit);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter);
+
+        let execution = executor
+            .execute_tool_action(
+                &task_with_budget("tokens", 100),
+                tool_action("mcp"),
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(execution.error.is_none());
+        assert_eq!(adapter.call_count(), 1);
+        let events = audit.events.lock().unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                AuditEvent::PolicyDecision {
+                    action: Action::ToolCall(_),
+                    decision: ActionDecision::Allow { .. },
+                    ..
+                },
+                AuditEvent::PolicyDecision {
+                    action: Action::Budget { kind, amount },
+                    decision: ActionDecision::Allow { .. },
+                    ..
+                },
+                AuditEvent::BudgetUsageRecorded { record, .. },
+                AuditEvent::ToolExecutionStarted { .. },
+                AuditEvent::ToolExecutionFinished { execution, .. },
+            ] if kind == "tokens"
+                && *amount == 50
+                && record.usage.kind == "tokens"
+                && record.usage.amount == 50
+                && record.usage.provider.as_deref() == Some("FixtureAI")
+                && record.limit.as_ref().map(|limit| limit.max_amount) == Some(100)
+                && matches!(record.decision, ActionDecision::Allow { .. })
+                && execution.error.is_none()
+        ));
+    }
+
+    #[test]
+    fn executor_denies_planned_budget_usage_before_secret_or_adapter_execution() {
+        let policy = BuiltInPolicyEngine;
+        let audit = RecordingAudit::default();
+        let adapter = StaticToolAdapter::succeeding("must not run")
+            .with_planned_usage(vec![BudgetUsage {
+                kind: "gateway_calls".into(),
+                amount: 2,
+                provider: Some("github".into()),
+                model: None,
+                operation: Some("github.create_pr".into()),
+                metadata: BTreeMap::new(),
+            }])
+            .with_secret_ref(GatewaySecretReferenceConfig {
+                name: "github_token".into(),
+                parameter: "authorization".into(),
+                scope: "github.create_pr".into(),
+            });
+        let broker = StaticSecretBroker::default();
+        let mediator = GatewayMediator::new(&policy, &audit);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
+        let mut task = task_with_gateway_secret();
+        task.permissions.tools.allow = vec!["github.create_pr".into()];
+        task.permissions.budget = BudgetPermissions {
+            allow: vec![BudgetLimit {
+                kind: "gateway_calls".into(),
+                max_amount: 1,
+            }],
+        };
+
+        let execution = executor
+            .execute_tool_action(&task, tool_action("mcp"), ToolExecutionContext::default())
+            .unwrap();
+
+        assert!(matches!(
+            execution.error,
+            Some(ToolExecutionError {
+                kind: ToolExecutionErrorKind::BudgetExceeded,
+                message,
+            }) if message == "budget amount exceeds configured limit"
+        ));
+        assert_eq!(adapter.call_count(), 0);
+        assert!(broker.issued.lock().unwrap().is_empty());
+        let events = audit.events.lock().unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                AuditEvent::PolicyDecision {
+                    action: Action::ToolCall(_),
+                    decision: ActionDecision::Allow { .. },
+                    ..
+                },
+                AuditEvent::PolicyDecision {
+                    action: Action::Budget { kind, amount },
+                    decision: ActionDecision::Deny { .. },
+                    ..
+                },
+                AuditEvent::BudgetUsageRecorded { record, .. },
+                AuditEvent::ToolExecutionFinished { execution, .. },
+            ] if kind == "gateway_calls"
+                && *amount == 2
+                && record.usage.operation.as_deref() == Some("github.create_pr")
+                && matches!(record.decision, ActionDecision::Deny { .. })
+                && matches!(
+                    execution.error,
+                    Some(ToolExecutionError {
+                        kind: ToolExecutionErrorKind::BudgetExceeded,
+                        ..
+                    })
+                )
+        ));
+    }
+
+    #[test]
+    fn executor_records_result_budget_usage_and_marks_over_limit_partial_result() {
+        let policy = BuiltInPolicyEngine;
+        let audit = RecordingAudit::default();
+        let adapter = StaticToolAdapter::succeeding("fixture completed with observed usage")
+            .with_result_usage(vec![BudgetUsage {
+                kind: "usd_cents".into(),
+                amount: 25,
+                provider: Some("fixture-provider".into()),
+                model: None,
+                operation: Some("fixture.complete".into()),
+                metadata: BTreeMap::new(),
+            }]);
+        let mediator = GatewayMediator::new(&policy, &audit);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter);
+
+        let execution = executor
+            .execute_tool_action(
+                &task_with_budget("usd_cents", 10),
+                tool_action("mcp"),
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(execution.result.is_some());
+        assert!(matches!(
+            execution.error,
+            Some(ToolExecutionError {
+                kind: ToolExecutionErrorKind::BudgetExceeded,
+                ..
+            })
+        ));
+        let events = audit.events.lock().unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                AuditEvent::PolicyDecision {
+                    action: Action::ToolCall(_),
+                    decision: ActionDecision::Allow { .. },
+                    ..
+                },
+                AuditEvent::ToolExecutionStarted { .. },
+                AuditEvent::PolicyDecision {
+                    action: Action::Budget { kind, amount },
+                    decision: ActionDecision::Deny { .. },
+                    ..
+                },
+                AuditEvent::BudgetUsageRecorded { record, .. },
+                AuditEvent::ToolExecutionFinished { execution, .. },
+            ] if kind == "usd_cents"
+                && *amount == 25
+                && record.limit.as_ref().map(|limit| limit.max_amount) == Some(10)
+                && execution.result.is_some()
+                && matches!(
+                    execution.error,
+                    Some(ToolExecutionError {
+                        kind: ToolExecutionErrorKind::BudgetExceeded,
+                        ..
+                    })
+                )
+        ));
+    }
+
+    #[test]
     fn executor_attaches_redacted_secret_reference_after_approval_before_execution() {
         let policy = BuiltInPolicyEngine;
         let approval = StaticApproval::new(ApprovalDecision::Approved);
@@ -3022,6 +3365,12 @@ mod tests {
         let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
         let mut task = task_with_gateway_secret_scope("github.read_issue");
         task.permissions.tools.allow = vec!["github.read_issue".into()];
+        task.permissions.budget = BudgetPermissions {
+            allow: vec![BudgetLimit {
+                kind: "gateway_calls".into(),
+                max_amount: 1,
+            }],
+        };
 
         let execution = executor
             .execute_tool_action(
@@ -3095,6 +3444,12 @@ mod tests {
         let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
         let mut task = task_with_gateway_secret();
         task.permissions.tools.approval_required = vec!["github.create_pr".into()];
+        task.permissions.budget = BudgetPermissions {
+            allow: vec![BudgetLimit {
+                kind: "gateway_calls".into(),
+                max_amount: 1,
+            }],
+        };
 
         let execution = executor
             .execute_tool_action(
@@ -3159,9 +3514,18 @@ mod tests {
                 },
                 AuditEvent::ApprovalRequested { .. },
                 AuditEvent::ApprovalResolved { record },
+                AuditEvent::PolicyDecision {
+                    action: Action::Budget { kind, amount },
+                    decision: ActionDecision::Allow { .. },
+                    ..
+                },
+                AuditEvent::BudgetUsageRecorded { record: budget, .. },
                 AuditEvent::ToolExecutionStarted { request, .. },
                 AuditEvent::ToolExecutionFinished { execution, .. },
             ] if record.decision == Some(ApprovalDecision::Approved)
+                && kind == "gateway_calls"
+                && *amount == 1
+                && budget.usage.provider.as_deref() == Some("github")
                 && matches!(
                     request.action.parameters.get("authorization"),
                     Some(RedactedValue::Redacted { .. })
@@ -3186,6 +3550,12 @@ mod tests {
         let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
         let mut task = task_with_gateway_secret_scope("github.comment_issue");
         task.permissions.tools.allow = vec!["github.comment_issue".into()];
+        task.permissions.budget = BudgetPermissions {
+            allow: vec![BudgetLimit {
+                kind: "gateway_calls".into(),
+                max_amount: 1,
+            }],
+        };
 
         let execution = executor
             .execute_tool_action(
@@ -3241,6 +3611,12 @@ mod tests {
         let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
         let mut task = task_with_gateway_secret_scope("github.close_issue");
         task.permissions.tools.allow = vec!["github.close_issue".into()];
+        task.permissions.budget = BudgetPermissions {
+            allow: vec![BudgetLimit {
+                kind: "gateway_calls".into(),
+                max_amount: 1,
+            }],
+        };
 
         let execution = executor
             .execute_tool_action(
@@ -3283,6 +3659,12 @@ mod tests {
         let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
         let mut task = task_with_gateway_secret_scope("github.read_issue");
         task.permissions.tools.allow = vec!["github.read_issue".into()];
+        task.permissions.budget = BudgetPermissions {
+            allow: vec![BudgetLimit {
+                kind: "gateway_calls".into(),
+                max_amount: 1,
+            }],
+        };
 
         let execution = executor
             .execute_tool_action(

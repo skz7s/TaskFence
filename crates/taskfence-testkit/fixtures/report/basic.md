@@ -26,6 +26,10 @@
 - Approval-required decisions: 0
 - Denied decisions: 0
 
+## Budget Usage
+
+None recorded.
+
 ## Sandbox Summary
 
 - Sandbox kind: `Docker`

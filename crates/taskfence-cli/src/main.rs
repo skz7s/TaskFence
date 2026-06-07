@@ -704,6 +704,7 @@ fn event_kind(event: &AuditEvent) -> &'static str {
         AuditEvent::PolicyDecision { .. } => "policy",
         AuditEvent::ToolExecutionStarted { .. } => "tool-started",
         AuditEvent::ToolExecutionFinished { .. } => "tool-finished",
+        AuditEvent::BudgetUsageRecorded { .. } => "budget-usage",
         AuditEvent::ApprovalRequested { .. } => "approval-requested",
         AuditEvent::ApprovalResolved { .. } => "approval-resolved",
         AuditEvent::Log { .. } => "log",
@@ -720,6 +721,7 @@ fn event_time(event: &AuditEvent) -> String {
         | AuditEvent::PolicyDecision { at, .. }
         | AuditEvent::ToolExecutionStarted { at, .. }
         | AuditEvent::ToolExecutionFinished { at, .. }
+        | AuditEvent::BudgetUsageRecorded { at, .. }
         | AuditEvent::RunnerExit { at, .. }
         | AuditEvent::Artifact { at, .. }
         | AuditEvent::Error { at, .. } => at.to_string(),
@@ -767,6 +769,20 @@ fn event_summary(event: &AuditEvent) -> String {
                     tool_action_summary(action)
                 ),
             }
+        }
+        AuditEvent::BudgetUsageRecorded { record, .. } => {
+            let limit = record
+                .limit
+                .as_ref()
+                .map(|limit| limit.max_amount.to_string())
+                .unwrap_or_else(|| "-".into());
+            format!(
+                "budget usage {} amount {} limit {} => {}",
+                record.usage.kind,
+                record.usage.amount,
+                limit,
+                approval_policy_summary(&record.decision)
+            )
         }
         AuditEvent::ApprovalRequested { record } => format!(
             "approval {} requested for {}; {}",
@@ -1646,7 +1662,8 @@ fn gateway_execution_status(execution: &ToolExecution) -> TaskStatus {
     match execution.error.as_ref().map(|error| &error.kind) {
         None => TaskStatus::Succeeded,
         Some(ToolExecutionErrorKind::PolicyDenied)
-        | Some(ToolExecutionErrorKind::ApprovalDeniedOrTimedOut) => TaskStatus::Denied,
+        | Some(ToolExecutionErrorKind::ApprovalDeniedOrTimedOut)
+        | Some(ToolExecutionErrorKind::BudgetExceeded) => TaskStatus::Denied,
         Some(
             ToolExecutionErrorKind::UnsupportedProtocol
             | ToolExecutionErrorKind::UnsupportedTool

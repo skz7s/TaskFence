@@ -575,6 +575,10 @@ Validation rules:
 - Task-file `permissions.budget.allow` entries normalize budget kinds to
   lower-case and require positive `max_amount`; missing budget configuration
   means typed budget actions deny by default.
+- Gateway adapters may emit planned or observed `BudgetUsage` records. The
+  executor evaluates each record through the budget policy, writes structured
+  `BudgetUsageRecorded` audit evidence with the matched limit and decision, and
+  fails closed before secret attachment for over-limit planned usage.
 
 ## Concurrency Strategy
 

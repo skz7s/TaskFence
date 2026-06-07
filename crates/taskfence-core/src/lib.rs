@@ -385,6 +385,81 @@ pub enum Action {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BudgetUsage {
+    pub kind: String,
+    pub amount: u64,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub operation: Option<String>,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, RedactedValue>,
+}
+
+impl BudgetUsage {
+    pub fn normalized(mut self) -> Result<Self> {
+        self.kind = normalize_budget_usage_text("budget usage kind", self.kind)?;
+        if self.amount == 0 {
+            return Err(TaskFenceError::Policy(
+                "budget usage amount must be positive".into(),
+            ));
+        }
+        self.provider = normalize_optional_budget_usage_text(self.provider);
+        self.model = normalize_optional_budget_usage_text(self.model);
+        self.operation = normalize_optional_budget_usage_text(self.operation);
+
+        let mut metadata = BTreeMap::new();
+        for (key, value) in self.metadata {
+            let key = key.trim().to_owned();
+            if key.is_empty() {
+                return Err(TaskFenceError::Policy(
+                    "budget usage metadata key must not be empty".into(),
+                ));
+            }
+            metadata.insert(key, value);
+        }
+        self.metadata = metadata;
+        Ok(self)
+    }
+}
+
+fn normalize_budget_usage_text(field: &str, value: String) -> Result<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Err(TaskFenceError::Policy(format!("{field} must not be empty")));
+    }
+    Ok(normalized)
+}
+
+fn normalize_optional_budget_usage_text(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BudgetUsageRecord {
+    pub usage: BudgetUsage,
+    #[serde(default)]
+    pub limit: Option<BudgetLimit>,
+    pub decision: ActionDecision,
+}
+
+pub fn budget_limit_for(task: &ResolvedTask, kind: &str) -> Option<BudgetLimit> {
+    let normalized = kind.trim().to_ascii_lowercase();
+    task.permissions
+        .budget
+        .allow
+        .iter()
+        .find(|limit| limit.kind == normalized)
+        .cloned()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandAction {
     pub executable: String,
     pub args: Vec<String>,
@@ -487,6 +562,8 @@ pub struct ToolResult {
     pub values: BTreeMap<String, RedactedValue>,
     #[serde(default)]
     pub artifacts: Vec<Utf8PathBuf>,
+    #[serde(default)]
+    pub usage: Vec<BudgetUsage>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -497,6 +574,7 @@ pub enum ToolExecutionErrorKind {
     InvalidParameters,
     PolicyDenied,
     ApprovalDeniedOrTimedOut,
+    BudgetExceeded,
     AdapterFailed,
     SecretUnavailable,
 }
@@ -690,6 +768,11 @@ pub enum AuditEvent {
         task_id: TaskId,
         at: OffsetDateTime,
         execution: ToolExecution,
+    },
+    BudgetUsageRecorded {
+        task_id: TaskId,
+        at: OffsetDateTime,
+        record: BudgetUsageRecord,
     },
     ApprovalRequested {
         record: ApprovalRecord,
