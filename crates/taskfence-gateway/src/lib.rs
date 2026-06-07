@@ -49,6 +49,84 @@ pub struct UnsupportedToolExecution {
     pub action: ToolAction,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ToolKey {
+    pub protocol: String,
+    pub tool: String,
+    pub operation: String,
+}
+
+impl ToolKey {
+    pub fn new(
+        protocol: impl Into<String>,
+        tool: impl Into<String>,
+        operation: impl Into<String>,
+    ) -> taskfence_core::Result<Self> {
+        Ok(Self {
+            protocol: normalize_required_segment("protocol", protocol.into())?,
+            tool: normalize_required_segment("tool", tool.into())?,
+            operation: normalize_required_segment("operation", operation.into())?,
+        })
+    }
+
+    pub fn from_action(action: &ToolAction) -> taskfence_core::Result<Self> {
+        Self::new(
+            action.protocol.clone(),
+            action.tool.clone(),
+            action.operation.clone(),
+        )
+    }
+
+    pub fn display_name(&self) -> String {
+        format!("{} {}.{}", self.protocol, self.tool, self.operation)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegisteredTool {
+    pub key: ToolKey,
+}
+
+impl RegisteredTool {
+    pub fn new(
+        protocol: impl Into<String>,
+        tool: impl Into<String>,
+        operation: impl Into<String>,
+    ) -> taskfence_core::Result<Self> {
+        Ok(Self {
+            key: ToolKey::new(protocol, tool, operation)?,
+        })
+    }
+}
+
+pub trait ToolRegistry {
+    fn contains(&self, action: &ToolAction) -> taskfence_core::Result<bool>;
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InMemoryToolRegistry {
+    tools: BTreeSet<ToolKey>,
+}
+
+impl InMemoryToolRegistry {
+    pub fn new(tools: impl IntoIterator<Item = RegisteredTool>) -> Self {
+        Self {
+            tools: tools.into_iter().map(|tool| tool.key).collect(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty()
+    }
+}
+
+impl ToolRegistry for InMemoryToolRegistry {
+    fn contains(&self, action: &ToolAction) -> taskfence_core::Result<bool> {
+        let key = ToolKey::from_action(action)?;
+        Ok(self.tools.contains(&key))
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct McpGatewayAdapter;
 
@@ -110,6 +188,7 @@ pub struct GatewayMediator<'a> {
     policy: &'a dyn PolicyEngine,
     audit: &'a dyn AuditLogger,
     approval: Option<&'a dyn ApprovalEngine>,
+    registry: Option<&'a dyn ToolRegistry>,
     supported_protocols: BTreeSet<String>,
 }
 
@@ -119,12 +198,18 @@ impl<'a> GatewayMediator<'a> {
             policy,
             audit,
             approval: None,
+            registry: None,
             supported_protocols: BTreeSet::from(["mcp".into()]),
         }
     }
 
     pub fn with_approval(mut self, approval: &'a dyn ApprovalEngine) -> Self {
         self.approval = Some(approval);
+        self
+    }
+
+    pub fn with_tool_registry(mut self, registry: &'a dyn ToolRegistry) -> Self {
+        self.registry = Some(registry);
         self
     }
 
@@ -155,6 +240,22 @@ impl<'a> GatewayMediator<'a> {
                 message: message.clone(),
             })?;
             return Err(TaskFenceError::Unsupported(message));
+        }
+
+        if let Some(registry) = self.registry {
+            if !registry.contains(&action)? {
+                let key = ToolKey::from_action(&action)?;
+                let message = format!(
+                    "gateway tool action is not registered: {}",
+                    key.display_name()
+                );
+                self.audit.record(AuditEvent::Error {
+                    task_id: task.id.clone(),
+                    at: OffsetDateTime::now_utc(),
+                    message: message.clone(),
+                })?;
+                return Err(TaskFenceError::Gateway(message));
+            }
         }
 
         let wrapped = Action::ToolCall(action.clone());
@@ -559,6 +660,40 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn registered_tool_normalizes_key_segments() {
+        let tool = RegisteredTool::new(" MCP ", " GitHub ", " Read_Issue ").unwrap();
+
+        assert_eq!(tool.key.protocol, "mcp");
+        assert_eq!(tool.key.tool, "github");
+        assert_eq!(tool.key.operation, "read_issue");
+        assert_eq!(tool.key.display_name(), "mcp github.read_issue");
+    }
+
+    #[test]
+    fn registered_tool_rejects_empty_segments() {
+        let err = RegisteredTool::new("mcp", " ", "read_issue").unwrap_err();
+
+        assert!(matches!(err, TaskFenceError::Gateway(message) if message.contains("tool")));
+    }
+
+    #[test]
+    fn in_memory_registry_matches_normalized_actions() {
+        let registry =
+            InMemoryToolRegistry::new([RegisteredTool::new("mcp", "github", "create_pr").unwrap()]);
+
+        assert!(!registry.is_empty());
+        assert!(registry.contains(&tool_action(" MCP ")).unwrap());
+        assert!(!registry
+            .contains(&ToolAction {
+                protocol: "mcp".into(),
+                tool: "github".into(),
+                operation: "delete_repo".into(),
+                parameters: BTreeMap::new(),
+            })
+            .unwrap());
+    }
+
     fn task_with_gateway_secret() -> ResolvedTask {
         let mut task = task();
         task.secrets.available_to_gateway = vec![SecretGrant {
@@ -597,6 +732,58 @@ mod tests {
         assert!(matches!(
             events.first(),
             Some(AuditEvent::PolicyDecision { .. })
+        ));
+    }
+
+    #[test]
+    fn registered_gateway_tool_continues_to_policy_evaluation() {
+        let policy = StaticPolicy::new(allow());
+        let audit = RecordingAudit::default();
+        let registry =
+            InMemoryToolRegistry::new([RegisteredTool::new("mcp", "github", "create_pr").unwrap()]);
+        let mediator = GatewayMediator::new(&policy, &audit).with_tool_registry(&registry);
+
+        let result = mediator
+            .mediate_tool_action(&task(), tool_action("mcp"))
+            .unwrap();
+
+        assert!(matches!(result.decision, ActionDecision::Allow { .. }));
+        assert_eq!(policy.seen_actions.lock().unwrap().len(), 1);
+        let events = audit.events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events.first(),
+            Some(AuditEvent::PolicyDecision { .. })
+        ));
+    }
+
+    #[test]
+    fn unregistered_gateway_tool_fails_before_policy_evaluation() {
+        let policy = StaticPolicy::new(allow());
+        let audit = RecordingAudit::default();
+        let registry =
+            InMemoryToolRegistry::new(
+                [RegisteredTool::new("mcp", "github", "read_issue").unwrap()],
+            );
+        let mediator = GatewayMediator::new(&policy, &audit).with_tool_registry(&registry);
+
+        let err = mediator
+            .mediate_tool_action(&task(), tool_action("mcp"))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            TaskFenceError::Gateway(message)
+                if message.contains("not registered")
+                    && message.contains("mcp github.create_pr")
+        ));
+        assert!(policy.seen_actions.lock().unwrap().is_empty());
+        let events = audit.events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events.first(),
+            Some(AuditEvent::Error { message, .. })
+                if message.contains("mcp github.create_pr")
         ));
     }
 

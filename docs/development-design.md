@@ -418,6 +418,8 @@ Responsibilities:
 
 - Normalize protocol-specific requests into `Action::ToolCall`.
 - Evaluate tool actions with policy.
+- Optionally validate normalized tool actions against a gateway-owned registry
+  before policy evaluation.
 - Request approval for high-risk tool actions when an approval engine is
   explicitly attached.
 - Define secret broker references without exposing raw secrets to the agent.
@@ -935,8 +937,9 @@ The first usable version is complete when:
   of arbitrary in-container shell commands remains future gateway or wrapper
   work. Task-file `permissions.tools` values are already parsed into policy,
   and typed gateway mediation can record configured tool-call decisions plus
-  optional approval request/resolution evidence and redacted secret references
-  into audit/report output without executing the external tool.
+  optional known-tool registry checks, approval request/resolution evidence, and
+  redacted secret references into audit/report output without executing the
+  external tool.
 - Approval-required actions fail closed by default in local mode. Operators can
   opt into in-process terminal approval with `taskfence run --interactive-approval`
   or explicitly wait for workspace-local external approval with

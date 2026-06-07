@@ -14,10 +14,11 @@ records what happened, and creates evidence that can be reviewed later.
 > first usable `taskfence run <task-file>` path for generic commands in a local
 > Docker sandbox, with structured audit events, local artifacts, and Markdown
 > reports. Task files can configure tool allow/approval/deny policy for typed
-> gateway mediation evidence, including optional approval request/resolution
-> records for approval-required tool calls and redacted gateway secret
-> references, but real gateway/tool execution, credential use, Web UI, replay,
-> team-server, and enterprise surfaces remain future work.
+> gateway mediation evidence, including optional known-tool registry checks,
+> approval request/resolution records for approval-required tool calls, and
+> redacted gateway secret references, but real gateway/tool execution,
+> credential use, Web UI, replay, team-server, and enterprise surfaces remain
+> future work.
 
 ## Why TaskFence
 
@@ -58,8 +59,9 @@ execution isolation.
 TaskFence is designed around two complementary modes. The local Docker runner is
 implemented first; gateway-enhanced execution is intentionally still limited to
 typed contracts, configured tool policy decisions, optional approval mediation,
-redacted secret references, MCP/HTTP request normalization stubs, structured
-evidence, and unsupported-action errors.
+optional known-tool registry checks, redacted secret references, MCP/HTTP
+request normalization stubs, structured evidence, and unsupported-action
+errors.
 
 ### 1. Generic Sandbox Mode
 
@@ -278,8 +280,9 @@ The first implementation currently includes:
    token, cost, or provider metering.
 10. Task-file `permissions.tools` parsing and policy/audit/report evidence for
    future gateway-mediated tool actions, including optional approval evidence,
-   redacted gateway secret references, and MCP/HTTP request normalization
-   stubs without real tool execution or credential use.
+   optional known-tool registry checks, redacted gateway secret references, and
+   MCP/HTTP request normalization stubs without real tool execution or
+   credential use.
 
 ## Non-Goals
 

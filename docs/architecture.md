@@ -41,9 +41,9 @@ commands in Docker, and generated local reports/logs can be read back from the
 task workspace. Task files can configure tool allow/approval/deny rules that
 feed typed gateway mediation, policy decisions, audit events, and report
 evidence, including optional approval request/resolution records for
-approval-required tool calls and redacted gateway secret references. Gateway
-execution, credential use, Web UI, replay, team-server, and enterprise
-control-plane behavior are not implemented yet.
+approval-required tool calls, optional known-tool registry checks, and redacted
+gateway secret references. Gateway execution, credential use, Web UI, replay,
+team-server, and enterprise control-plane behavior are not implemented yet.
 
 ### CLI
 
@@ -191,11 +191,13 @@ The gateway mediates tool calls for integrated agents.
 
 Current implementation is limited to typed normalization and mediation
 contracts, configured `permissions.tools` policy decisions, structured
-`PolicyDecision` audit events, optional `ApprovalRequested` /
-`ApprovalResolved` events for approval-required tool calls, report evidence,
-redacted secret references, MCP/HTTP request normalization stubs, and explicit
-unsupported-protocol errors. It does not execute MCP, HTTP, CLI wrapper, SDK,
-webhook, or secret-broker actions yet.
+`PolicyDecision` audit events, optional known-tool registry validation before
+policy evaluation, optional `ApprovalRequested` / `ApprovalResolved` events for
+approval-required tool calls, report evidence, redacted secret references,
+MCP/HTTP request normalization stubs, and explicit unsupported-protocol errors.
+When a registry is configured, unregistered tool actions fail before policy
+evaluation and record an audit error. It does not execute MCP, HTTP, CLI
+wrapper, SDK, webhook, or secret-broker actions yet.
 
 Supported gateway surfaces can include:
 
