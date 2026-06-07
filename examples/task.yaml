@@ -53,6 +53,27 @@ secrets:
       use_for:
         - "github.create_pr"
 
+gateway:
+  tools:
+    - protocol: "mcp"
+      tool: "github"
+      operation: "read_issue"
+      connector:
+        type: "local_fixture"
+        kind: "github"
+        path: "./repo/fixtures/github.json"
+    - protocol: "mcp"
+      tool: "github"
+      operation: "create_pr"
+      connector:
+        type: "local_fixture"
+        kind: "github"
+        path: "./repo/fixtures/github.json"
+      secret_refs:
+        - name: "github_token"
+          parameter: "authorization"
+          scope: "github.create_pr"
+
 approval:
   require_for:
     - "git_push"

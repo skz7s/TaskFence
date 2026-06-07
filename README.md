@@ -10,15 +10,15 @@ TaskFence is not another agent framework. It is the control layer around agents:
 agents decide what to do, TaskFence decides what they are allowed to access,
 records what happened, and creates evidence that can be reviewed later.
 
-> Status: local runner implementation. The Rust workspace now contains the
-> first usable `taskfence run <task-file>` path for generic commands in a local
-> Docker sandbox, with structured audit events, local artifacts, and Markdown
-> reports. Task files can configure tool allow/approval/deny policy for typed
-> gateway mediation evidence, including optional known-tool registry checks,
-> approval request/resolution records for approval-required tool calls, and
-> redacted gateway secret references, but real gateway/tool execution,
-> credential use, Web UI, replay, team-server, and enterprise surfaces remain
-> future work.
+> Status: local runner plus local fixture gateway foundation. The Rust
+> workspace contains the first usable `taskfence run <task-file>` path for
+> generic commands in a local Docker sandbox, with structured audit events,
+> local artifacts, and Markdown reports. It also contains a CLI-owned
+> deterministic `taskfence gateway call` path for configured local fixture
+> tools, proving policy, approval, registry, redacted secret-reference, audit,
+> and report behavior without live credentials. Production MCP/HTTP/GitHub
+> execution, credential use, Web UI, replay, team-server, and enterprise
+> surfaces remain future work.
 
 ## Why TaskFence
 
@@ -57,11 +57,11 @@ execution isolation.
 ## Execution Modes
 
 TaskFence is designed around two complementary modes. The local Docker runner is
-implemented first; gateway-enhanced execution is intentionally still limited to
-typed contracts, configured tool policy decisions, optional approval mediation,
-optional known-tool registry checks, redacted secret references, MCP/HTTP
-request normalization stubs, structured evidence, and unsupported-action
-errors.
+implemented first. Gateway-enhanced execution is currently limited to a
+deterministic local fixture command plus typed contracts, configured tool policy
+decisions, optional approval mediation, known-tool registry checks, redacted
+secret references, MCP/HTTP request normalization stubs, structured evidence,
+and unsupported-action errors.
 
 ### 1. Generic Sandbox Mode
 
@@ -108,6 +108,11 @@ This mode answers the stronger question:
 
 > Can I understand and approve the agent's high-risk actions before they reach
 > GitHub, Slack, Feishu, a database, or another internal system?
+
+The current executable gateway demo is intentionally narrower than that future
+mode: `taskfence gateway call` executes only configured local fixture tools from
+the task file. It does not start a production MCP server, proxy HTTP traffic,
+call the GitHub API, or read a raw token.
 
 ## Example Task
 
@@ -171,6 +176,30 @@ cargo run -p taskfence-cli -- validate examples/task.yaml
 Validation resolves the task file, checks the planned agent command against
 policy, and builds the local Docker run plan without starting Docker or writing
 task artifacts.
+
+You can also exercise the deterministic GitHub-shaped local fixture gateway
+without Docker or a real GitHub token:
+
+```bash
+cargo run -p taskfence-cli -- gateway call examples/task.yaml github read_issue --param number=1
+```
+
+That command reads `examples/repo/fixtures/github.json`, mediates
+`github.read_issue` through the configured tool registry and policy, and writes
+structured evidence under `examples/repo/.taskfence/tasks/local-demo/`.
+
+Approval-required fixture actions fail closed unless approval is explicitly
+selected. For the local deterministic demo, `--approve` resolves the approval
+inside the CLI process and produces a PR-shaped proposal artifact instead of
+creating a real pull request:
+
+```bash
+cargo run -p taskfence-cli -- gateway call examples/task.yaml github create_pr --approve --param title="Fixture proposal"
+```
+
+The configured `github_token` is only a gateway-side redacted reference. The
+fixture does not read a raw token, does not expose one to the agent process, and
+does not send network traffic.
 
 The demo requires Docker and the configured image to be available locally. The
 runner uses `docker run --pull=never`, so it does not silently acquire images at
@@ -278,11 +307,15 @@ The first implementation currently includes:
    for typed budget actions. Budget actions are denied by default unless a
    matching kind and `max_amount` are explicitly configured; this is not live
    token, cost, or provider metering.
-10. Task-file `permissions.tools` parsing and policy/audit/report evidence for
-   future gateway-mediated tool actions, including optional approval evidence,
-   optional known-tool registry checks, redacted gateway secret references, and
-   MCP/HTTP request normalization stubs without real tool execution or
-   credential use.
+10. A local fixture gateway call path for configured task-file tools, including
+    GitHub-shaped `github.read_issue` and `github.create_pr` fixture behavior
+    with fail-closed policy, explicit approval, redacted secret references,
+    structured audit events, local artifacts, and Markdown report evidence.
+11. Task-file `permissions.tools` parsing and policy/audit/report evidence for
+    future gateway-mediated tool actions, including optional approval evidence,
+    optional known-tool registry checks, redacted gateway secret references, and
+    MCP/HTTP request normalization stubs without production protocol execution
+    or credential use.
 
 ## Non-Goals
 

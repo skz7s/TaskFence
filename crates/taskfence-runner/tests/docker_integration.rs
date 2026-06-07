@@ -146,6 +146,7 @@ fn docker_task(
         },
         secrets: SecretConfig::default(),
         approval: ApprovalConfig::default(),
+        gateway: Default::default(),
         audit: AuditConfig::default(),
     };
     (temp, task)

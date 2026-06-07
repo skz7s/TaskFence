@@ -496,6 +496,8 @@ fn audit_event_task_id(event: &AuditEvent) -> &TaskId {
         AuditEvent::TaskCreated { task_id, .. }
         | AuditEvent::TaskStatusChanged { task_id, .. }
         | AuditEvent::PolicyDecision { task_id, .. }
+        | AuditEvent::ToolExecutionStarted { task_id, .. }
+        | AuditEvent::ToolExecutionFinished { task_id, .. }
         | AuditEvent::Log { task_id, .. }
         | AuditEvent::RunnerExit { task_id, .. }
         | AuditEvent::Artifact { task_id, .. }
@@ -1329,6 +1331,7 @@ mod tests {
             permissions: PermissionConfig::default(),
             secrets: Default::default(),
             approval: ApprovalConfig::default(),
+            gateway: Default::default(),
             audit: AuditConfig::default(),
         }
     }

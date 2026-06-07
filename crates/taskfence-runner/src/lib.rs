@@ -823,6 +823,7 @@ mod tests {
             },
             secrets: SecretConfig::default(),
             approval: ApprovalConfig::default(),
+            gateway: Default::default(),
             audit: AuditConfig::default(),
         }
     }

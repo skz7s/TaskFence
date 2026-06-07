@@ -78,7 +78,11 @@ impl AuditSanitizer {
             Value::Object(map) => {
                 for (key, child) in map.iter_mut() {
                     if is_secret_key(key) {
-                        *child = Value::String(REDACTION_MARKER.into());
+                        if is_redacted_value_shape(child) {
+                            *child = redacted_value_marker();
+                        } else {
+                            *child = Value::String(REDACTION_MARKER.into());
+                        }
                     } else {
                         self.sanitize_json_value(child);
                     }
@@ -117,6 +121,22 @@ fn is_secret_key(key: &str) -> bool {
         || key.contains("api_key")
         || key.contains("apikey")
         || key.contains("authorization")
+}
+
+fn is_redacted_value_shape(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::Object(map)
+            if map.len() == 1 && (map.contains_key("Plain") || map.contains_key("Redacted"))
+    )
+}
+
+fn redacted_value_marker() -> Value {
+    serde_json::json!({
+        "Redacted": {
+            "reason": "audit sanitizer redacted secret-like field"
+        }
+    })
 }
 
 fn sanitize_text(input: &str, max_bytes: usize) -> String {
@@ -229,8 +249,12 @@ fn truncate_utf8(input: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::fs;
-    use taskfence_core::{AuditEvent, LogChunk, LogStream};
+    use taskfence_core::{
+        AuditEvent, LogChunk, LogStream, RedactedValue, ToolAction, ToolAdapterIdentity,
+        ToolRequest,
+    };
     use taskfence_testkit::sample_task;
     use time::macros::datetime;
 
@@ -279,6 +303,49 @@ mod tests {
         assert!(!contents.contains("hunter2"));
         assert!(!contents.contains('\x1b'));
         assert!(contents.contains(REDACTION_MARKER));
+    }
+
+    #[test]
+    fn preserves_redacted_value_shape_for_secret_like_tool_parameters() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("events.jsonl")).unwrap();
+        let task = sample_task();
+        let logger = LocalJsonlAuditLogger::new(path.clone()).unwrap();
+
+        logger
+            .record(AuditEvent::ToolExecutionStarted {
+                task_id: task.id,
+                at: datetime!(2024-01-01 00:00 UTC),
+                request: ToolRequest {
+                    action: ToolAction {
+                        protocol: "mcp".into(),
+                        tool: "github".into(),
+                        operation: "create_pr".into(),
+                        parameters: BTreeMap::from([(
+                            "authorization".into(),
+                            RedactedValue::Plain("Bearer ghp_secret_should_not_survive".into()),
+                        )]),
+                    },
+                    adapter: Some(ToolAdapterIdentity {
+                        kind: "local_fixture".into(),
+                        name: "github".into(),
+                    }),
+                },
+            })
+            .unwrap();
+
+        let contents = fs::read_to_string(path).unwrap();
+        assert!(!contents.contains("ghp_secret_should_not_survive"));
+        let event: AuditEvent = serde_json::from_str(contents.lines().next().unwrap()).unwrap();
+        assert!(matches!(
+            event,
+            AuditEvent::ToolExecutionStarted { request, .. }
+                if matches!(
+                    request.action.parameters.get("authorization"),
+                    Some(RedactedValue::Redacted { reason })
+                        if reason.contains("audit sanitizer")
+                )
+        ));
     }
 
     #[test]

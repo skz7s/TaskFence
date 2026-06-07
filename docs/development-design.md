@@ -425,11 +425,14 @@ Responsibilities:
 - Define secret broker references without exposing raw secrets to the agent.
 - Normalize MCP/HTTP-shaped adapter stub requests into tool actions and return
   explicit unsupported execution errors until real protocol transports exist.
+- Execute configured deterministic local fixture adapters through typed request,
+  result, failure, approval, redaction, audit, artifact, and report contracts.
 - Emit structured audit events.
 
-This crate can start mostly as contracts and a local stub, but the contracts
-must be aligned with Phase 3 from day one so policy and audit are not limited to
-shell commands.
+This crate can start with contracts and deterministic local fixtures, but the
+contracts must stay aligned with Phase 3 so policy and audit are not limited to
+shell commands. Production MCP/HTTP transports, live GitHub integration,
+agent-facing wrapper/spool, and sidecar/listener behavior need separate plans.
 
 ### `taskfence-report`
 
@@ -739,11 +742,14 @@ Tasks:
 - Define secret broker trait and redacted secret references.
 - Keep MCP/HTTP adapter stubs returning explicit unsupported errors aligned with
   the normalized tool action model.
+- Add a deterministic local fixture adapter path for GitHub-shaped
+  `read_issue` and `create_pr` behavior without live credentials.
 - Add tests proving gateway actions route through policy and audit traits.
 
 Acceptance:
 
-- No production gateway behavior is claimed as implemented.
+- No production gateway behavior is claimed as implemented; local fixture
+  execution is documented as deterministic and non-networked.
 - Contracts are usable by policy and audit without protocol-specific coupling.
 
 ### Sequential Gate 1: Compile and Contract Integration
@@ -935,11 +941,12 @@ The first usable version is complete when:
 - The agent runs inside the Docker runner with controlled mounts and env.
 - Policy decisions are recorded for planned command/tool actions. Observation
   of arbitrary in-container shell commands remains future gateway or wrapper
-  work. Task-file `permissions.tools` values are already parsed into policy,
-  and typed gateway mediation can record configured tool-call decisions plus
-  optional known-tool registry checks, approval request/resolution evidence, and
-  redacted secret references into audit/report output without executing the
-  external tool.
+  work. Task-file `permissions.tools` values are already parsed into policy.
+  Typed gateway mediation can record configured tool-call decisions plus
+  known-tool registry checks, approval request/resolution evidence, and
+  redacted secret references into audit/report output. The current executable
+  path is limited to `taskfence gateway call` against deterministic local
+  fixture adapters, not external tool execution.
 - Approval-required actions fail closed by default in local mode. Operators can
   opt into in-process terminal approval with `taskfence run --interactive-approval`
   or explicitly wait for workspace-local external approval with
@@ -952,5 +959,6 @@ The first usable version is complete when:
 - Tests cover the main success path and the important failure branches.
 
 Current unsupported surfaces must remain explicit in docs and errors: Docker
-domain allowlists without an enforcing proxy, gateway protocol execution, Web
-UI, replay, team server, and enterprise behavior.
+domain allowlists without an enforcing proxy, production gateway protocol
+transports, live GitHub/API execution, agent-facing wrapper/spool/sidecar,
+Web UI, replay, team server, and enterprise behavior.

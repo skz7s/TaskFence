@@ -41,6 +41,7 @@ pub fn sample_task() -> ResolvedTask {
         },
         secrets: SecretConfig::default(),
         approval: ApprovalConfig::default(),
+        gateway: Default::default(),
         audit: AuditConfig::default(),
     }
 }

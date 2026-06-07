@@ -575,6 +575,7 @@ dependencies = [
  "taskfence-audit",
  "taskfence-config",
  "taskfence-core",
+ "taskfence-gateway",
  "taskfence-policy",
  "taskfence-report",
  "taskfence-runner",
@@ -611,6 +612,8 @@ dependencies = [
 name = "taskfence-gateway"
 version = "0.1.0"
 dependencies = [
+ "camino",
+ "serde_json",
  "taskfence-core",
  "taskfence-policy",
  "time",

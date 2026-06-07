@@ -1,10 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 
 use taskfence_core::{
     Action, ActionDecision, ApprovalDecision, ApprovalEngine, ApprovalRecord, AuditEvent,
-    AuditLogger, PolicyEngine, RedactedValue, ResolvedTask, TaskFenceError, ToolAction,
+    AuditLogger, GatewayConnectorConfig, GatewaySecretReferenceConfig, GatewayToolConfig,
+    PolicyEngine, RedactedValue, ResolvedTask, TaskFenceError, ToolAction, ToolAdapterIdentity,
+    ToolExecution, ToolExecutionContext, ToolExecutionError, ToolExecutionErrorKind, ToolRequest,
+    ToolResult,
 };
 use time::OffsetDateTime;
+
+const REDACTION_MARKER: &str = "[redacted]";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SecretReference {
@@ -190,6 +196,599 @@ pub struct GatewayMediator<'a> {
     approval: Option<&'a dyn ApprovalEngine>,
     registry: Option<&'a dyn ToolRegistry>,
     supported_protocols: BTreeSet<String>,
+}
+
+pub trait ToolAdapter {
+    fn identity(&self) -> ToolAdapterIdentity;
+
+    fn secret_references(&self) -> &[GatewaySecretReferenceConfig] {
+        &[]
+    }
+
+    fn execute(
+        &self,
+        task: &ResolvedTask,
+        action: &ToolAction,
+        context: &ToolExecutionContext,
+    ) -> std::result::Result<ToolResult, ToolExecutionError>;
+}
+
+pub struct GatewayExecutor<'a> {
+    mediator: GatewayMediator<'a>,
+    audit: &'a dyn AuditLogger,
+    adapter: &'a dyn ToolAdapter,
+    secret_broker: Option<&'a dyn SecretBroker>,
+}
+
+impl<'a> GatewayExecutor<'a> {
+    pub fn new(
+        mediator: GatewayMediator<'a>,
+        audit: &'a dyn AuditLogger,
+        adapter: &'a dyn ToolAdapter,
+    ) -> Self {
+        Self {
+            mediator,
+            audit,
+            adapter,
+            secret_broker: None,
+        }
+    }
+
+    pub fn with_secret_broker(mut self, broker: &'a dyn SecretBroker) -> Self {
+        self.secret_broker = Some(broker);
+        self
+    }
+
+    pub fn execute_tool_action(
+        &self,
+        task: &ResolvedTask,
+        action: ToolAction,
+        context: ToolExecutionContext,
+    ) -> taskfence_core::Result<ToolExecution> {
+        let raw_request = self.request(action);
+        let mediation = match self
+            .mediator
+            .mediate_tool_action(task, raw_request.action.clone())
+        {
+            Ok(mediation) => mediation,
+            Err(err) => {
+                return self.record_finished(
+                    task,
+                    ToolExecution {
+                        request: raw_request,
+                        result: None,
+                        error: Some(tool_execution_error_from_taskfence(&err)),
+                    },
+                );
+            }
+        };
+
+        let request = self.request(mediation.action.clone());
+        match &mediation.decision {
+            ActionDecision::Deny { reason, .. } => {
+                return self.record_finished(
+                    task,
+                    ToolExecution {
+                        request,
+                        result: None,
+                        error: Some(ToolExecutionError {
+                            kind: ToolExecutionErrorKind::PolicyDenied,
+                            message: reason.clone(),
+                        }),
+                    },
+                );
+            }
+            ActionDecision::RequireApproval { .. } if mediation.approval.is_none() => {
+                return self.record_finished(
+                    task,
+                    ToolExecution {
+                        request,
+                        result: None,
+                        error: Some(ToolExecutionError {
+                            kind: ToolExecutionErrorKind::ApprovalDeniedOrTimedOut,
+                            message: "gateway approval engine is not configured".into(),
+                        }),
+                    },
+                );
+            }
+            ActionDecision::Allow { .. } | ActionDecision::RequireApproval { .. } => {}
+        }
+
+        let request = match self.attach_configured_secret_references(task, request.clone()) {
+            Ok(request) => request,
+            Err(error) => {
+                return self.record_finished(
+                    task,
+                    ToolExecution {
+                        request,
+                        result: None,
+                        error: Some(error),
+                    },
+                );
+            }
+        };
+
+        self.audit.record(AuditEvent::ToolExecutionStarted {
+            task_id: task.id.clone(),
+            at: OffsetDateTime::now_utc(),
+            request: request.clone(),
+        })?;
+
+        let execution = match self.adapter.execute(task, &request.action, &context) {
+            Ok(result) => ToolExecution {
+                request,
+                result: Some(result),
+                error: None,
+            },
+            Err(error) => ToolExecution {
+                request,
+                result: None,
+                error: Some(error),
+            },
+        };
+        self.record_finished(task, execution)
+    }
+
+    fn request(&self, action: ToolAction) -> ToolRequest {
+        ToolRequest {
+            action,
+            adapter: Some(self.adapter.identity()),
+        }
+    }
+
+    fn attach_configured_secret_references(
+        &self,
+        task: &ResolvedTask,
+        request: ToolRequest,
+    ) -> std::result::Result<ToolRequest, ToolExecutionError> {
+        if self.adapter.secret_references().is_empty() {
+            return Ok(request);
+        }
+
+        let broker = self.secret_broker.ok_or_else(|| ToolExecutionError {
+            kind: ToolExecutionErrorKind::SecretUnavailable,
+            message: "gateway secret reference broker is not configured".into(),
+        })?;
+
+        let mut action = request.action;
+        for secret_ref in self.adapter.secret_references() {
+            let reference =
+                gateway_secret_reference(task, broker, &secret_ref.name, &secret_ref.scope)
+                    .map_err(|err| tool_execution_error_from_taskfence(&err))?;
+            action = attach_secret_reference(action, &secret_ref.parameter, &reference)
+                .map_err(|err| tool_execution_error_from_taskfence(&err))?;
+        }
+
+        Ok(ToolRequest {
+            action,
+            adapter: request.adapter,
+        })
+    }
+
+    fn record_finished(
+        &self,
+        task: &ResolvedTask,
+        execution: ToolExecution,
+    ) -> taskfence_core::Result<ToolExecution> {
+        self.audit.record(AuditEvent::ToolExecutionFinished {
+            task_id: task.id.clone(),
+            at: OffsetDateTime::now_utc(),
+            execution: execution.clone(),
+        })?;
+        Ok(execution)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnsupportedGatewayAdapter {
+    identity: ToolAdapterIdentity,
+}
+
+impl UnsupportedGatewayAdapter {
+    pub fn new(kind: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            identity: ToolAdapterIdentity {
+                kind: kind.into(),
+                name: name.into(),
+            },
+        }
+    }
+}
+
+impl ToolAdapter for UnsupportedGatewayAdapter {
+    fn identity(&self) -> ToolAdapterIdentity {
+        self.identity.clone()
+    }
+
+    fn execute(
+        &self,
+        _task: &ResolvedTask,
+        action: &ToolAction,
+        _context: &ToolExecutionContext,
+    ) -> std::result::Result<ToolResult, ToolExecutionError> {
+        Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::UnsupportedTool,
+            message: format!(
+                "{} adapter does not support {}.{}",
+                self.identity.name, action.tool, action.operation
+            ),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalFixtureToolAdapter {
+    tool: GatewayToolConfig,
+}
+
+impl LocalFixtureToolAdapter {
+    pub fn new(tool: GatewayToolConfig) -> Self {
+        Self { tool }
+    }
+}
+
+impl ToolAdapter for LocalFixtureToolAdapter {
+    fn identity(&self) -> ToolAdapterIdentity {
+        match &self.tool.connector {
+            GatewayConnectorConfig::LocalFixture { kind, .. } => ToolAdapterIdentity {
+                kind: "local_fixture".into(),
+                name: kind.clone(),
+            },
+            GatewayConnectorConfig::Unsupported { kind } => ToolAdapterIdentity {
+                kind: "unsupported".into(),
+                name: kind.clone(),
+            },
+        }
+    }
+
+    fn secret_references(&self) -> &[GatewaySecretReferenceConfig] {
+        &self.tool.secret_refs
+    }
+
+    fn execute(
+        &self,
+        _task: &ResolvedTask,
+        action: &ToolAction,
+        context: &ToolExecutionContext,
+    ) -> std::result::Result<ToolResult, ToolExecutionError> {
+        if self.tool.protocol != action.protocol
+            || self.tool.tool != action.tool
+            || self.tool.operation != action.operation
+        {
+            return Err(ToolExecutionError {
+                kind: ToolExecutionErrorKind::UnsupportedTool,
+                message: format!(
+                    "fixture adapter {}.{} cannot execute {}.{}",
+                    self.tool.tool, self.tool.operation, action.tool, action.operation
+                ),
+            });
+        }
+
+        let GatewayConnectorConfig::LocalFixture { kind, path } = &self.tool.connector else {
+            return Err(ToolExecutionError {
+                kind: ToolExecutionErrorKind::UnsupportedTool,
+                message: "gateway connector is not a local fixture".into(),
+            });
+        };
+
+        match (
+            kind.as_str(),
+            action.tool.as_str(),
+            action.operation.as_str(),
+        ) {
+            ("github", "github", "read_issue") => execute_github_read_issue(path, action),
+            ("github", "github", "create_pr") => execute_github_create_pr(path, action, context),
+            _ => Err(ToolExecutionError {
+                kind: ToolExecutionErrorKind::UnsupportedTool,
+                message: format!(
+                    "local fixture connector {kind} does not support {}.{}",
+                    action.tool, action.operation
+                ),
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct LocalRedactedSecretBroker;
+
+impl SecretBroker for LocalRedactedSecretBroker {
+    fn issue_reference(
+        &self,
+        task: &ResolvedTask,
+        name: &str,
+        scope: &str,
+    ) -> taskfence_core::Result<SecretReference> {
+        Ok(SecretReference {
+            name: name.into(),
+            scope: scope.into(),
+            handle: format!("taskfence://gateway/{}/{name}/{scope}", task.id.0),
+        })
+    }
+}
+
+fn tool_execution_error_from_taskfence(err: &TaskFenceError) -> ToolExecutionError {
+    let message = err.to_string();
+    let kind = match err {
+        TaskFenceError::Unsupported(_) => ToolExecutionErrorKind::UnsupportedProtocol,
+        TaskFenceError::Approval(_) => ToolExecutionErrorKind::ApprovalDeniedOrTimedOut,
+        TaskFenceError::Policy(_) => ToolExecutionErrorKind::PolicyDenied,
+        TaskFenceError::Gateway(inner) if inner.contains("not registered") => {
+            ToolExecutionErrorKind::UnregisteredTool
+        }
+        TaskFenceError::Gateway(inner)
+            if inner.contains("must not be empty") || inner.contains("parameter") =>
+        {
+            ToolExecutionErrorKind::InvalidParameters
+        }
+        TaskFenceError::Gateway(inner) if inner.contains("secret") => {
+            ToolExecutionErrorKind::SecretUnavailable
+        }
+        TaskFenceError::Gateway(_) => ToolExecutionErrorKind::AdapterFailed,
+        TaskFenceError::Config(_)
+        | TaskFenceError::Runner(_)
+        | TaskFenceError::Audit(_)
+        | TaskFenceError::Artifact(_)
+        | TaskFenceError::Report(_)
+        | TaskFenceError::State(_) => ToolExecutionErrorKind::AdapterFailed,
+    };
+    ToolExecutionError { kind, message }
+}
+
+fn execute_github_read_issue(
+    path: &camino::Utf8Path,
+    action: &ToolAction,
+) -> std::result::Result<ToolResult, ToolExecutionError> {
+    let fixture = read_fixture_json(path)?;
+    let repository = fixture
+        .get("repository")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown/repository")
+        .to_owned();
+    let repository = redact_secret_like_text(&repository);
+    let number = plain_u64_parameter(action, "number")?;
+    let issue = fixture
+        .get("issues")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|issues| {
+            issues.iter().find(|issue| {
+                issue.get("number").and_then(serde_json::Value::as_u64) == Some(number)
+            })
+        })
+        .ok_or_else(|| ToolExecutionError {
+            kind: ToolExecutionErrorKind::InvalidParameters,
+            message: format!("fixture issue number {number} was not found"),
+        })?;
+    let title = redact_secret_like_text(&json_string_field(issue, "title"));
+    let state = redact_secret_like_text(&json_string_field(issue, "state"));
+    let body = redact_secret_like_text(&json_string_field(issue, "body"));
+
+    Ok(ToolResult {
+        summary: format!("read fixture issue #{number} from {repository}"),
+        values: BTreeMap::from([
+            ("repository".into(), RedactedValue::Plain(repository)),
+            ("number".into(), RedactedValue::Plain(number.to_string())),
+            ("title".into(), RedactedValue::Plain(title)),
+            ("state".into(), RedactedValue::Plain(state)),
+            ("body".into(), RedactedValue::Plain(body)),
+        ]),
+        artifacts: Vec::new(),
+    })
+}
+
+fn execute_github_create_pr(
+    path: &camino::Utf8Path,
+    action: &ToolAction,
+    context: &ToolExecutionContext,
+) -> std::result::Result<ToolResult, ToolExecutionError> {
+    let fixture = read_fixture_json(path)?;
+    let repository = fixture
+        .get("repository")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown/repository")
+        .to_owned();
+    let repository = redact_secret_like_text(&repository);
+    let base = plain_optional_parameter(action, "base").unwrap_or_else(|| {
+        fixture
+            .get("default_branch")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("main")
+            .to_owned()
+    });
+    let head = plain_optional_parameter(action, "head")
+        .unwrap_or_else(|| "taskfence/local-fixture".into());
+    let base = redact_secret_like_text(&base);
+    let head = redact_secret_like_text(&head);
+    let title = redact_secret_like_text(plain_required_parameter(action, "title")?);
+    let body =
+        redact_secret_like_text(&plain_optional_parameter(action, "body").unwrap_or_default());
+    let artifact_dir = context
+        .artifact_dir
+        .as_ref()
+        .ok_or_else(|| ToolExecutionError {
+            kind: ToolExecutionErrorKind::AdapterFailed,
+            message: "local fixture create_pr requires an artifact directory".into(),
+        })?;
+    fs::create_dir_all(artifact_dir.as_std_path()).map_err(|err| ToolExecutionError {
+        kind: ToolExecutionErrorKind::AdapterFailed,
+        message: format!("failed to create fixture artifact directory {artifact_dir}: {err}"),
+    })?;
+    let path = artifact_dir.join("github-pr-proposal.json");
+    let proposal = serde_json::json!({
+        "fixture": true,
+        "provider": "github",
+        "repository": repository,
+        "title": title,
+        "body": body,
+        "base": base,
+        "head": head,
+    });
+    let bytes = serde_json::to_vec_pretty(&proposal).map_err(|err| ToolExecutionError {
+        kind: ToolExecutionErrorKind::AdapterFailed,
+        message: format!("failed to serialize fixture PR proposal: {err}"),
+    })?;
+    fs::write(path.as_std_path(), bytes).map_err(|err| ToolExecutionError {
+        kind: ToolExecutionErrorKind::AdapterFailed,
+        message: format!("failed to write fixture PR proposal {path}: {err}"),
+    })?;
+
+    Ok(ToolResult {
+        summary: format!("wrote local GitHub PR proposal for {repository}"),
+        values: BTreeMap::from([
+            ("repository".into(), RedactedValue::Plain(repository)),
+            ("title".into(), RedactedValue::Plain(title)),
+            ("base".into(), RedactedValue::Plain(base)),
+            ("head".into(), RedactedValue::Plain(head)),
+        ]),
+        artifacts: vec![path],
+    })
+}
+
+fn read_fixture_json(
+    path: &camino::Utf8Path,
+) -> std::result::Result<serde_json::Value, ToolExecutionError> {
+    let contents = fs::read_to_string(path.as_std_path()).map_err(|err| ToolExecutionError {
+        kind: ToolExecutionErrorKind::AdapterFailed,
+        message: format!("failed to read fixture {path}: {err}"),
+    })?;
+    serde_json::from_str(&contents).map_err(|err| ToolExecutionError {
+        kind: ToolExecutionErrorKind::AdapterFailed,
+        message: format!("failed to parse fixture {path}: {err}"),
+    })
+}
+
+fn plain_u64_parameter(
+    action: &ToolAction,
+    key: &str,
+) -> std::result::Result<u64, ToolExecutionError> {
+    let value = plain_required_parameter(action, key)?;
+    value.parse::<u64>().map_err(|err| ToolExecutionError {
+        kind: ToolExecutionErrorKind::InvalidParameters,
+        message: format!("parameter {key} must be an integer: {err}"),
+    })
+}
+
+fn plain_required_parameter<'a>(
+    action: &'a ToolAction,
+    key: &str,
+) -> std::result::Result<&'a str, ToolExecutionError> {
+    match action.parameters.get(key) {
+        Some(RedactedValue::Plain(value)) if !value.trim().is_empty() => Ok(value.trim()),
+        Some(RedactedValue::Plain(_)) => Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::InvalidParameters,
+            message: format!("parameter {key} must not be empty"),
+        }),
+        Some(RedactedValue::Redacted { .. }) => Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::InvalidParameters,
+            message: format!("parameter {key} cannot be redacted"),
+        }),
+        None => Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::InvalidParameters,
+            message: format!("missing required parameter {key}"),
+        }),
+    }
+}
+
+fn plain_optional_parameter(action: &ToolAction, key: &str) -> Option<String> {
+    match action.parameters.get(key) {
+        Some(RedactedValue::Plain(value)) if !value.trim().is_empty() => {
+            Some(value.trim().to_owned())
+        }
+        _ => None,
+    }
+}
+
+fn json_string_field(value: &serde_json::Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_owned()
+}
+
+fn redact_secret_like_text(input: &str) -> String {
+    let mut output = strip_terminal_controls(input);
+    for prefix in ["sk-", "ghp_", "github_pat_", "xoxb-", "xoxp-"] {
+        output = redact_token_prefix(&output, prefix);
+    }
+    for marker in [
+        "token=",
+        "token:",
+        "password=",
+        "password:",
+        "secret=",
+        "secret:",
+        "api_key=",
+        "api_key:",
+        "authorization=",
+        "authorization:",
+        "bearer ",
+    ] {
+        output = redact_after_marker_case_insensitive(&output, marker);
+    }
+    output
+}
+
+fn strip_terminal_controls(input: &str) -> String {
+    input
+        .chars()
+        .map(|ch| {
+            if ch.is_control() && !matches!(ch, '\n' | '\r' | '\t') {
+                ' '
+            } else {
+                ch
+            }
+        })
+        .collect()
+}
+
+fn redact_token_prefix(input: &str, prefix: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut cursor = 0;
+
+    while let Some(relative_start) = input[cursor..].find(prefix) {
+        let start = cursor + relative_start;
+        output.push_str(&input[cursor..start]);
+        output.push_str(REDACTION_MARKER);
+
+        let mut end = start + prefix.len();
+        for (offset, ch) in input[end..].char_indices() {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
+                end = start + prefix.len() + offset + ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        cursor = end;
+    }
+
+    output.push_str(&input[cursor..]);
+    output
+}
+
+fn redact_after_marker_case_insensitive(input: &str, marker: &str) -> String {
+    let lower = input.to_ascii_lowercase();
+    let mut output = String::with_capacity(input.len());
+    let mut cursor = 0;
+
+    while let Some(relative_start) = lower[cursor..].find(marker) {
+        let marker_start = cursor + relative_start;
+        let value_start = marker_start + marker.len();
+        output.push_str(&input[cursor..value_start]);
+        output.push_str(REDACTION_MARKER);
+
+        let mut value_end = value_start;
+        for (offset, ch) in input[value_start..].char_indices() {
+            if ch.is_whitespace() || matches!(ch, ',' | ';') {
+                break;
+            }
+            value_end = value_start + offset + ch.len_utf8();
+        }
+        cursor = value_end;
+    }
+
+    output.push_str(&input[cursor..]);
+    output
 }
 
 impl<'a> GatewayMediator<'a> {
@@ -520,6 +1119,73 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct StaticToolAdapter {
+        outcome: Mutex<std::result::Result<ToolResult, ToolExecutionError>>,
+        calls: Mutex<Vec<ToolAction>>,
+        secret_refs: Vec<GatewaySecretReferenceConfig>,
+    }
+
+    impl StaticToolAdapter {
+        fn succeeding(summary: &str) -> Self {
+            Self {
+                outcome: Mutex::new(Ok(ToolResult {
+                    summary: summary.into(),
+                    values: BTreeMap::from([(
+                        "status".into(),
+                        RedactedValue::Plain("fixture-ok".into()),
+                    )]),
+                    artifacts: Vec::new(),
+                })),
+                calls: Mutex::new(Vec::new()),
+                secret_refs: Vec::new(),
+            }
+        }
+
+        fn failing(message: &str) -> Self {
+            Self {
+                outcome: Mutex::new(Err(ToolExecutionError {
+                    kind: ToolExecutionErrorKind::AdapterFailed,
+                    message: message.into(),
+                })),
+                calls: Mutex::new(Vec::new()),
+                secret_refs: Vec::new(),
+            }
+        }
+
+        fn with_secret_ref(mut self, secret_ref: GatewaySecretReferenceConfig) -> Self {
+            self.secret_refs.push(secret_ref);
+            self
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.lock().unwrap().len()
+        }
+    }
+
+    impl ToolAdapter for StaticToolAdapter {
+        fn identity(&self) -> ToolAdapterIdentity {
+            ToolAdapterIdentity {
+                kind: "local_fixture".into(),
+                name: "static-test".into(),
+            }
+        }
+
+        fn secret_references(&self) -> &[GatewaySecretReferenceConfig] {
+            &self.secret_refs
+        }
+
+        fn execute(
+            &self,
+            _task: &ResolvedTask,
+            action: &ToolAction,
+            _context: &ToolExecutionContext,
+        ) -> std::result::Result<ToolResult, ToolExecutionError> {
+            self.calls.lock().unwrap().push(action.clone());
+            self.outcome.lock().unwrap().clone()
+        }
+    }
+
     fn allow() -> ActionDecision {
         ActionDecision::Allow {
             rule_id: Some("tools.allow".into()),
@@ -554,6 +1220,7 @@ mod tests {
             permissions: PermissionConfig::default(),
             secrets: SecretConfig::default(),
             approval: ApprovalConfig::default(),
+            gateway: Default::default(),
             audit: AuditConfig::default(),
         }
     }
@@ -1033,5 +1700,280 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(err, TaskFenceError::Gateway(message) if message.contains("tool")));
+    }
+
+    #[test]
+    fn executor_records_started_and_finished_events_for_allowed_execution() {
+        let policy = StaticPolicy::new(allow());
+        let audit = RecordingAudit::default();
+        let adapter = StaticToolAdapter::succeeding("fixture read_issue complete");
+        let mediator = GatewayMediator::new(&policy, &audit);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter);
+
+        let execution = executor
+            .execute_tool_action(&task(), tool_action("mcp"), ToolExecutionContext::default())
+            .unwrap();
+
+        assert!(matches!(
+            execution.result,
+            Some(ToolResult { summary, .. }) if summary == "fixture read_issue complete"
+        ));
+        assert!(execution.error.is_none());
+        assert_eq!(adapter.call_count(), 1);
+
+        let events = audit.events.lock().unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(matches!(events[0], AuditEvent::PolicyDecision { .. }));
+        assert!(matches!(
+            &events[1],
+            AuditEvent::ToolExecutionStarted { request, .. }
+                if request.action.tool == "github"
+                    && request.action.operation == "create_pr"
+                    && matches!(
+                        request.adapter.as_ref(),
+                        Some(ToolAdapterIdentity { kind, name })
+                            if kind == "local_fixture" && name == "static-test"
+                    )
+        ));
+        assert!(matches!(
+            &events[2],
+            AuditEvent::ToolExecutionFinished { execution, .. }
+                if execution.result.is_some() && execution.error.is_none()
+        ));
+    }
+
+    #[test]
+    fn executor_attaches_redacted_secret_reference_after_approval_before_execution() {
+        let policy = BuiltInPolicyEngine;
+        let approval = StaticApproval::new(ApprovalDecision::Approved);
+        let audit = RecordingAudit::default();
+        let adapter = StaticToolAdapter::succeeding("fixture create_pr complete").with_secret_ref(
+            GatewaySecretReferenceConfig {
+                name: "github_token".into(),
+                parameter: "authorization".into(),
+                scope: "github.create_pr".into(),
+            },
+        );
+        let broker = StaticSecretBroker::default();
+        let mut task = task_with_gateway_secret();
+        task.permissions.tools.approval_required = vec!["github.create_pr".into()];
+        let mediator = GatewayMediator::new(&policy, &audit).with_approval(&approval);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
+
+        let execution = executor
+            .execute_tool_action(&task, tool_action("mcp"), ToolExecutionContext::default())
+            .unwrap();
+
+        assert!(execution.error.is_none());
+        assert_eq!(
+            broker.issued.lock().unwrap().as_slice(),
+            &[("github_token".into(), "github.create_pr".into())]
+        );
+        let calls = adapter.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(matches!(
+            calls[0].parameters.get("authorization"),
+            Some(RedactedValue::Redacted { reason })
+                if reason == "gateway secret reference for github_token"
+        ));
+        drop(calls);
+
+        let events = audit.events.lock().unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                AuditEvent::PolicyDecision {
+                    action: Action::ToolCall(policy_action),
+                    decision: ActionDecision::RequireApproval { .. },
+                    ..
+                },
+                AuditEvent::ApprovalRequested { .. },
+                AuditEvent::ApprovalResolved { record },
+                AuditEvent::ToolExecutionStarted { request, .. },
+                AuditEvent::ToolExecutionFinished { execution, .. },
+            ] if !policy_action.parameters.contains_key("authorization")
+                && record.decision == Some(ApprovalDecision::Approved)
+                && matches!(
+                    request.action.parameters.get("authorization"),
+                    Some(RedactedValue::Redacted { reason })
+                        if reason == "gateway secret reference for github_token"
+                )
+                && execution.error.is_none()
+        ));
+    }
+
+    #[test]
+    fn executor_denied_approval_does_not_attach_secret_or_execute_adapter() {
+        let policy = BuiltInPolicyEngine;
+        let approval = StaticApproval::new(ApprovalDecision::Denied);
+        let audit = RecordingAudit::default();
+        let adapter = StaticToolAdapter::succeeding("must not run").with_secret_ref(
+            GatewaySecretReferenceConfig {
+                name: "github_token".into(),
+                parameter: "authorization".into(),
+                scope: "github.create_pr".into(),
+            },
+        );
+        let broker = StaticSecretBroker::default();
+        let mut task = task_with_gateway_secret();
+        task.permissions.tools.approval_required = vec!["github.create_pr".into()];
+        let mediator = GatewayMediator::new(&policy, &audit).with_approval(&approval);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
+
+        let execution = executor
+            .execute_tool_action(&task, tool_action("mcp"), ToolExecutionContext::default())
+            .unwrap();
+
+        assert!(matches!(
+            execution.error,
+            Some(ToolExecutionError {
+                kind: ToolExecutionErrorKind::ApprovalDeniedOrTimedOut,
+                ..
+            })
+        ));
+        assert_eq!(adapter.call_count(), 0);
+        assert!(broker.issued.lock().unwrap().is_empty());
+        let events = audit.events.lock().unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                AuditEvent::PolicyDecision { .. },
+                AuditEvent::ApprovalRequested { .. },
+                AuditEvent::ApprovalResolved { record },
+                AuditEvent::ToolExecutionFinished { execution, .. },
+            ] if record.decision == Some(ApprovalDecision::Denied)
+                && matches!(
+                    execution.error,
+                    Some(ToolExecutionError {
+                        kind: ToolExecutionErrorKind::ApprovalDeniedOrTimedOut,
+                        ..
+                    })
+                )
+        ));
+    }
+
+    #[test]
+    fn executor_turns_policy_denial_into_structured_failure_without_adapter_call() {
+        let policy = StaticPolicy::new(deny());
+        let audit = RecordingAudit::default();
+        let adapter = StaticToolAdapter::succeeding("must not run");
+        let mediator = GatewayMediator::new(&policy, &audit);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter);
+
+        let execution = executor
+            .execute_tool_action(&task(), tool_action("mcp"), ToolExecutionContext::default())
+            .unwrap();
+
+        assert!(matches!(
+            execution.error,
+            Some(ToolExecutionError {
+                kind: ToolExecutionErrorKind::PolicyDenied,
+                ..
+            })
+        ));
+        assert_eq!(adapter.call_count(), 0);
+        let events = audit.events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], AuditEvent::PolicyDecision { .. }));
+        assert!(matches!(
+            events[1],
+            AuditEvent::ToolExecutionFinished { .. }
+        ));
+    }
+
+    #[test]
+    fn executor_turns_unregistered_tool_into_structured_failure() {
+        let policy = StaticPolicy::new(allow());
+        let audit = RecordingAudit::default();
+        let adapter = StaticToolAdapter::succeeding("must not run");
+        let registry =
+            InMemoryToolRegistry::new(
+                [RegisteredTool::new("mcp", "github", "read_issue").unwrap()],
+            );
+        let mediator = GatewayMediator::new(&policy, &audit).with_tool_registry(&registry);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter);
+
+        let execution = executor
+            .execute_tool_action(&task(), tool_action("mcp"), ToolExecutionContext::default())
+            .unwrap();
+
+        assert!(matches!(
+            execution.error,
+            Some(ToolExecutionError {
+                kind: ToolExecutionErrorKind::UnregisteredTool,
+                ..
+            })
+        ));
+        assert_eq!(adapter.call_count(), 0);
+        let events = audit.events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], AuditEvent::Error { .. }));
+        assert!(matches!(
+            events[1],
+            AuditEvent::ToolExecutionFinished { .. }
+        ));
+    }
+
+    #[test]
+    fn executor_turns_unsupported_protocol_into_structured_failure() {
+        let policy = StaticPolicy::new(allow());
+        let audit = RecordingAudit::default();
+        let adapter = StaticToolAdapter::succeeding("must not run");
+        let mediator = GatewayMediator::new(&policy, &audit);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter);
+
+        let execution = executor
+            .execute_tool_action(
+                &task(),
+                tool_action("http"),
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            execution.error,
+            Some(ToolExecutionError {
+                kind: ToolExecutionErrorKind::UnsupportedProtocol,
+                ..
+            })
+        ));
+        assert_eq!(adapter.call_count(), 0);
+    }
+
+    #[test]
+    fn executor_records_adapter_failure_as_finished_execution() {
+        let policy = StaticPolicy::new(allow());
+        let audit = RecordingAudit::default();
+        let adapter = StaticToolAdapter::failing("fixture failed");
+        let mediator = GatewayMediator::new(&policy, &audit);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter);
+
+        let execution = executor
+            .execute_tool_action(&task(), tool_action("mcp"), ToolExecutionContext::default())
+            .unwrap();
+
+        assert!(matches!(
+            execution.error,
+            Some(ToolExecutionError {
+                kind: ToolExecutionErrorKind::AdapterFailed,
+                message,
+            }) if message == "fixture failed"
+        ));
+        assert_eq!(adapter.call_count(), 1);
+        let events = audit.events.lock().unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                AuditEvent::PolicyDecision { .. },
+                AuditEvent::ToolExecutionStarted { .. },
+                AuditEvent::ToolExecutionFinished { execution, .. },
+            ] if matches!(
+                execution.error,
+                Some(ToolExecutionError {
+                    kind: ToolExecutionErrorKind::AdapterFailed,
+                    ..
+                })
+            )
+        ));
     }
 }

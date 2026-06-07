@@ -13,12 +13,14 @@ path = "src/main.rs"
 [dependencies]
 camino.workspace = true
 clap.workspace = true
+time.workspace = true
 taskfence-agent.workspace = true
 taskfence-approval.workspace = true
 taskfence-artifacts.workspace = true
 taskfence-audit.workspace = true
 taskfence-config.workspace = true
 taskfence-core.workspace = true
+taskfence-gateway.workspace = true
 taskfence-policy.workspace = true
 taskfence-report.workspace = true
 taskfence-runner.workspace = true

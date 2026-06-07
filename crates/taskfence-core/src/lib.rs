@@ -108,6 +108,8 @@ pub struct TaskDefinition {
     pub permissions: PermissionConfig,
     pub secrets: SecretConfig,
     pub approval: ApprovalConfig,
+    #[serde(default)]
+    pub gateway: GatewayConfig,
     pub audit: AuditConfig,
 }
 
@@ -123,6 +125,8 @@ pub struct ResolvedTask {
     pub permissions: PermissionConfig,
     pub secrets: SecretConfig,
     pub approval: ApprovalConfig,
+    #[serde(default)]
+    pub gateway: GatewayConfig,
     pub audit: AuditConfig,
 }
 
@@ -259,6 +263,39 @@ impl Default for ApprovalConfig {
             timeout_minutes: Some(60),
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GatewayConfig {
+    #[serde(default)]
+    pub tools: Vec<GatewayToolConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GatewayToolConfig {
+    pub protocol: String,
+    pub tool: String,
+    pub operation: String,
+    pub connector: GatewayConnectorConfig,
+    #[serde(default)]
+    pub secret_refs: Vec<GatewaySecretReferenceConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum GatewayConnectorConfig {
+    LocalFixture { kind: String, path: Utf8PathBuf },
+    Unsupported { kind: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GatewaySecretReferenceConfig {
+    pub name: String,
+    pub parameter: String,
+    pub scope: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -403,6 +440,64 @@ pub struct ToolAction {
 pub enum RedactedValue {
     Plain(String),
     Redacted { reason: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolAdapterIdentity {
+    pub kind: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolRequest {
+    pub action: ToolAction,
+    pub adapter: Option<ToolAdapterIdentity>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolExecutionContext {
+    pub task_dir: Option<Utf8PathBuf>,
+    pub artifact_dir: Option<Utf8PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolResult {
+    pub summary: String,
+    #[serde(default)]
+    pub values: BTreeMap<String, RedactedValue>,
+    #[serde(default)]
+    pub artifacts: Vec<Utf8PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolExecutionErrorKind {
+    UnsupportedProtocol,
+    UnsupportedTool,
+    UnregisteredTool,
+    InvalidParameters,
+    PolicyDenied,
+    ApprovalDeniedOrTimedOut,
+    AdapterFailed,
+    SecretUnavailable,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolExecutionError {
+    pub kind: ToolExecutionErrorKind,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolExecution {
+    pub request: ToolRequest,
+    pub result: Option<ToolResult>,
+    pub error: Option<ToolExecutionError>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -568,6 +663,16 @@ pub enum AuditEvent {
         at: OffsetDateTime,
         action: Action,
         decision: ActionDecision,
+    },
+    ToolExecutionStarted {
+        task_id: TaskId,
+        at: OffsetDateTime,
+        request: ToolRequest,
+    },
+    ToolExecutionFinished {
+        task_id: TaskId,
+        at: OffsetDateTime,
+        execution: ToolExecution,
     },
     ApprovalRequested {
         record: ApprovalRecord,
@@ -1319,6 +1424,7 @@ mod tests {
             },
             secrets: SecretConfig::default(),
             approval: ApprovalConfig::default(),
+            gateway: Default::default(),
             audit: AuditConfig::default(),
         }
     }

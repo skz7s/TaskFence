@@ -149,32 +149,46 @@ Deliverables:
 - secret broker for GitHub token usage
 - structured tool call audit logs
 
-Current contract coverage before production gateway execution:
+Current implemented coverage before production gateway transports:
 
 - task files can configure `permissions.tools.allow`,
   `permissions.tools.approval_required`, and `permissions.tools.deny`
 - typed gateway mediation normalizes supported `mcp` tool actions, evaluates
   policy, and writes structured `PolicyDecision` audit events
 - typed registered-tool keys normalize protocol, tool, and operation segments;
-  when a registry is explicitly attached, unregistered tool actions fail before
-  policy evaluation and write an audit error
-- when an approval engine is explicitly attached, approval-required tool calls
-  write `ApprovalRequested` / `ApprovalResolved` audit events and fail closed
-  on denial or timeout
+  the local executable path builds a registry from `gateway.tools`, and
+  unregistered tool actions fail before policy evaluation with audit evidence
+- approval-required executable fixture tool calls write `ApprovalRequested` /
+  `ApprovalResolved` audit events and fail closed on denial or timeout before
+  any adapter execution
 - gateway secret broker contracts can authorize configured
   `secrets.available_to_gateway` grants and attach redacted secret references
-  to tool parameters without reading or using raw credentials
+  to tool parameters after policy, registry, and approval checks without reading
+  or using raw credentials
+- `taskfence gateway call` can execute deterministic local fixture tools from a
+  task file and write structured `.taskfence/tasks/<task-id>/` evidence and a
+  Markdown report
+- the GitHub-shaped fixture supports `github.read_issue` from local JSON and
+  `github.create_pr` as a PR proposal artifact after explicit approval; it does
+  not call live GitHub or use a real token
 - MCP and HTTP adapter stubs normalize protocol-shaped requests into
   `ToolAction` values and return explicit unsupported execution errors
-- reports render tool-call decisions, approvals, and denied tool actions from
-  structured audit events without rendering raw parameter values
+- reports render tool-call decisions, approvals, local fixture executions, and
+  denied tool actions from structured audit events without rendering raw
+  parameter values
+- agent-facing wrapper, request/response spool, sidecar/listener, production
+  MCP/HTTP/GitHub execution, Web UI, replay, team-server, and enterprise gateway
+  surfaces remain future work
 
-Minimum demo:
+Current local fixture demo:
 
-- agent reads a GitHub issue through TaskFence
-- agent proposes a pull request
-- TaskFence requires approval before creating the pull request
-- raw GitHub token is not exposed to the agent process
+- `taskfence gateway call examples/task.yaml github read_issue --param number=1`
+  reads a GitHub-shaped issue fixture through TaskFence
+- `taskfence gateway call examples/task.yaml github create_pr --approve --param
+  title="Fixture proposal"` writes a local PR proposal artifact after explicit
+  approval
+- raw GitHub token values are not read, used, logged, reported, or exposed to
+  the agent process
 
 ## Phase 4: Web UI and Replay
 

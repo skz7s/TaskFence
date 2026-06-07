@@ -51,6 +51,10 @@
 
 None recorded.
 
+## Tool Executions
+
+None recorded.
+
 ## Approvals
 
 None recorded.

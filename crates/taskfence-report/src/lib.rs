@@ -138,6 +138,13 @@ fn render_markdown(task: &ResolvedTask, artifacts: &ArtifactRefs, events: &[Audi
         &["Tool", "Operation", "Decision"],
     );
 
+    md.push_str("## Tool Executions\n\n");
+    push_table_or_none(
+        &mut md,
+        &data.tool_executions,
+        &["Tool", "Adapter", "Outcome", "Summary"],
+    );
+
     md.push_str("## Approvals\n\n");
     push_table_or_none(
         &mut md,
@@ -200,6 +207,7 @@ struct ReportData {
     timeline: Vec<(String, String)>,
     commands: Vec<Vec<String>>,
     tool_calls: Vec<Vec<String>>,
+    tool_executions: Vec<Vec<String>>,
     approvals: Vec<Vec<String>>,
     denied_actions: Vec<String>,
     network: Vec<Vec<String>>,
@@ -270,6 +278,61 @@ impl ReportData {
                         | Action::SecretAccess { .. }
                         | Action::Budget { .. } => {}
                     }
+                }
+                AuditEvent::ToolExecutionStarted { at, request, .. } => {
+                    data.timeline.push((
+                        at.to_string(),
+                        format!(
+                            "tool execution started: {}",
+                            tool_action_summary(&request.action)
+                        ),
+                    ));
+                    data.tool_executions.push(vec![
+                        tool_action_summary(&request.action),
+                        request
+                            .adapter
+                            .as_ref()
+                            .map(adapter_summary)
+                            .unwrap_or_else(|| "-".into()),
+                        "started".into(),
+                        "-".into(),
+                    ]);
+                }
+                AuditEvent::ToolExecutionFinished { at, execution, .. } => {
+                    let action = &execution.request.action;
+                    let (outcome, summary) = match (&execution.result, &execution.error) {
+                        (Some(result), None) => ("succeeded".to_owned(), result.summary.clone()),
+                        (None, Some(error)) => (
+                            "failed".to_owned(),
+                            format!("{:?}: {}", error.kind, error.message),
+                        ),
+                        (Some(result), Some(error)) => (
+                            "failed".to_owned(),
+                            format!(
+                                "{:?}: {}; partial result: {}",
+                                error.kind, error.message, result.summary
+                            ),
+                        ),
+                        (None, None) => (
+                            "unknown".to_owned(),
+                            "no result or error recorded".to_owned(),
+                        ),
+                    };
+                    data.timeline.push((
+                        at.to_string(),
+                        format!("tool execution {outcome}: {}", tool_action_summary(action)),
+                    ));
+                    data.tool_executions.push(vec![
+                        tool_action_summary(action),
+                        execution
+                            .request
+                            .adapter
+                            .as_ref()
+                            .map(adapter_summary)
+                            .unwrap_or_else(|| "-".into()),
+                        outcome,
+                        summary,
+                    ]);
                 }
                 AuditEvent::ApprovalRequested { record } => {
                     data.approvals.push(vec![
@@ -348,9 +411,17 @@ fn action_summary(action: &Action) -> String {
         Action::SecretAccess { name, scope } => {
             format!("secret access {name} for {scope}")
         }
-        Action::ToolCall(tool) => format!("tool call {}.{}", tool.tool, tool.operation),
+        Action::ToolCall(tool) => format!("tool call {}", tool_action_summary(tool)),
         Action::Budget { kind, amount } => format!("budget {kind} {amount}"),
     }
+}
+
+fn tool_action_summary(tool: &taskfence_core::ToolAction) -> String {
+    format!("{} {}.{}", tool.protocol, tool.tool, tool.operation)
+}
+
+fn adapter_summary(adapter: &taskfence_core::ToolAdapterIdentity) -> String {
+    format!("{}:{}", adapter.kind, adapter.name)
 }
 
 fn artifact_rows(artifacts: &ArtifactRefs, recorded: &[(String, Utf8PathBuf)]) -> Vec<Vec<String>> {
@@ -821,9 +892,8 @@ mod tests {
         assert!(contents.contains("| mcp:github | create_pr | approval required |"));
         assert!(contents.contains("Denied decisions: 1"));
         assert!(contents.contains("Approval-required decisions: 1"));
-        assert!(
-            contents.contains("tool call github.delete_repo denied: tool call matched deny rule")
-        );
+        assert!(contents
+            .contains("tool call mcp github.delete_repo denied: tool call matched deny rule"));
         assert!(contents.contains("| approval-tool-1 | gateway | approved |"));
         assert!(!contents.contains("ghp_secret_should_not_render"));
         assert!(!contents.contains("sk-secret-should-not-render"));

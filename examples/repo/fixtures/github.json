@@ -1,0 +1,12 @@
+{
+  "repository": "taskfence/example",
+  "default_branch": "main",
+  "issues": [
+    {
+      "number": 1,
+      "title": "Document local gateway fixture behavior",
+      "state": "open",
+      "body": "Use TaskFence's local fixture connector to demonstrate gateway policy, approval, audit, and report behavior without live GitHub credentials."
+    }
+  ]
+}

@@ -10,8 +10,14 @@ use taskfence_audit::LocalJsonlAuditLogger;
 use taskfence_config::load_task_file;
 use taskfence_core::{
     validate_task_for_run, Action, ActionDecision, ApprovalDecision, ApprovalEngine, ApprovalId,
-    ApprovalRecord, AuditEvent, ExitStatus, LogStream, NetworkDefault, Orchestrator, ResolvedTask,
-    RiskLevel, Runner, TaskFenceError, TaskId, TaskStatus, TaskValidation,
+    ApprovalRecord, ArtifactRefs, ArtifactStore, AuditEvent, AuditLogger, ExitStatus, LogStream,
+    NetworkDefault, Orchestrator, RedactedValue, ReportGenerator, ResolvedTask, RiskLevel, Runner,
+    StateStore, TaskFenceError, TaskId, TaskStatus, TaskValidation, ToolAction, ToolExecution,
+    ToolExecutionContext, ToolExecutionErrorKind,
+};
+use taskfence_gateway::{
+    normalize_tool_action, GatewayExecutor, InMemoryToolRegistry, LocalFixtureToolAdapter,
+    LocalRedactedSecretBroker, RegisteredTool, ToolAdapter, UnsupportedGatewayAdapter,
 };
 use taskfence_policy::BuiltInPolicyEngine;
 use taskfence_report::MarkdownReportGenerator;
@@ -53,6 +59,11 @@ enum Command {
         external_approval: bool,
         /// TaskFence YAML task file.
         task_file: Utf8PathBuf,
+    },
+    /// Execute a configured local gateway fixture call.
+    Gateway {
+        #[command(subcommand)]
+        command: GatewayCommand,
     },
     /// Show logs for a task.
     Logs {
@@ -166,6 +177,31 @@ enum Command {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum GatewayCommand {
+    /// Mediate and execute one configured local gateway tool call.
+    Call {
+        /// TaskFence YAML task file.
+        task_file: Utf8PathBuf,
+        /// Tool name, for example github.
+        tool: String,
+        /// Operation name, for example read_issue.
+        operation: String,
+        /// Gateway protocol shape.
+        #[arg(long, default_value = "mcp")]
+        protocol: String,
+        /// Plain parameter in KEY=VALUE form. Values are redacted in summaries.
+        #[arg(long = "param", value_name = "KEY=VALUE")]
+        params: Vec<String>,
+        /// Resolve approval-required fixture calls with a local approved decision.
+        #[arg(long)]
+        approve: bool,
+        /// Wait for taskfence approve/deny to resolve approval-required fixture calls.
+        #[arg(long)]
+        external_approval: bool,
+    },
+}
+
 fn main() -> ExitCode {
     match execute(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
@@ -200,6 +236,31 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
             let runner = DockerRunner::new();
             run_task_with_runner(task_file, &runner, approval_mode)
         }
+        Command::Gateway { command } => match command {
+            GatewayCommand::Call {
+                task_file,
+                protocol,
+                tool,
+                operation,
+                params,
+                approve,
+                external_approval,
+            } => {
+                if approve && external_approval {
+                    return Err(TaskFenceError::Config(
+                        "--approve and --external-approval cannot be used together".into(),
+                    ));
+                }
+                let approval_mode = if approve {
+                    GatewayApprovalMode::Approved
+                } else if external_approval {
+                    GatewayApprovalMode::External
+                } else {
+                    GatewayApprovalMode::FailClosed
+                };
+                run_gateway_call(task_file, protocol, tool, operation, params, approval_mode)
+            }
+        },
         Command::Logs { task_id, workspace } => show_logs(workspace, task_id),
         Command::Diff { task_id, workspace } => show_diff(workspace, task_id),
         Command::Tasks { workspace } => show_tasks(workspace),
@@ -273,6 +334,13 @@ audit:
 enum RunApprovalMode {
     FailClosed,
     Interactive,
+    External,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GatewayApprovalMode {
+    FailClosed,
+    Approved,
     External,
 }
 
@@ -585,6 +653,8 @@ fn event_kind(event: &AuditEvent) -> &'static str {
         AuditEvent::TaskCreated { .. } => "task-created",
         AuditEvent::TaskStatusChanged { .. } => "status",
         AuditEvent::PolicyDecision { .. } => "policy",
+        AuditEvent::ToolExecutionStarted { .. } => "tool-started",
+        AuditEvent::ToolExecutionFinished { .. } => "tool-finished",
         AuditEvent::ApprovalRequested { .. } => "approval-requested",
         AuditEvent::ApprovalResolved { .. } => "approval-resolved",
         AuditEvent::Log { .. } => "log",
@@ -599,6 +669,8 @@ fn event_time(event: &AuditEvent) -> String {
         AuditEvent::TaskCreated { at, .. }
         | AuditEvent::TaskStatusChanged { at, .. }
         | AuditEvent::PolicyDecision { at, .. }
+        | AuditEvent::ToolExecutionStarted { at, .. }
+        | AuditEvent::ToolExecutionFinished { at, .. }
         | AuditEvent::RunnerExit { at, .. }
         | AuditEvent::Artifact { at, .. }
         | AuditEvent::Error { at, .. } => at.to_string(),
@@ -623,6 +695,30 @@ fn event_summary(event: &AuditEvent) -> String {
             approval_action_summary(action),
             approval_policy_summary(decision)
         ),
+        AuditEvent::ToolExecutionStarted { request, .. } => format!(
+            "tool execution started for {}",
+            tool_action_summary(&request.action)
+        ),
+        AuditEvent::ToolExecutionFinished { execution, .. } => {
+            let action = &execution.request.action;
+            match (&execution.result, &execution.error) {
+                (Some(result), None) => format!(
+                    "tool execution succeeded for {}; {}",
+                    tool_action_summary(action),
+                    compact_cell(&result.summary)
+                ),
+                (_, Some(error)) => format!(
+                    "tool execution failed for {}; {:?}: {}",
+                    tool_action_summary(action),
+                    error.kind,
+                    compact_cell(&error.message)
+                ),
+                (None, None) => format!(
+                    "tool execution finished for {}; no result or error recorded",
+                    tool_action_summary(action)
+                ),
+            }
+        }
         AuditEvent::ApprovalRequested { record } => format!(
             "approval {} requested for {}; {}",
             record.id.0,
@@ -788,14 +884,16 @@ fn approval_action_summary(action: &Action) -> String {
             format!("secret access {name} for scope {scope}")
         }
         Action::ToolCall(tool) => format!(
-            "tool call {} {}.{} with {} parameter(s)",
-            tool.protocol,
-            tool.tool,
-            tool.operation,
+            "tool call {} with {} parameter(s)",
+            tool_action_summary(tool),
             tool.parameters.len()
         ),
         Action::Budget { kind, amount } => format!("budget {kind} amount {amount}"),
     }
+}
+
+fn tool_action_summary(tool: &taskfence_core::ToolAction) -> String {
+    format!("{} {}.{}", tool.protocol, tool.tool, tool.operation)
 }
 
 fn render_task_summaries(tasks: &[TaskSummary]) -> String {
@@ -996,6 +1094,316 @@ fn compact_cell(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn run_gateway_call(
+    task_file: Utf8PathBuf,
+    protocol: String,
+    tool: String,
+    operation: String,
+    params: Vec<String>,
+    approval_mode: GatewayApprovalMode,
+) -> taskfence_core::Result<()> {
+    let task = load_task_file(&task_file)?;
+    let action = normalize_tool_action(ToolAction {
+        protocol,
+        tool,
+        operation,
+        parameters: parse_gateway_params(params)?,
+    })?;
+    let artifacts = LocalArtifactStore::in_workspace();
+    let artifact_refs = artifacts.create_task_dir(&task)?;
+    artifacts.write_resolved_task(&task)?;
+    let events_path = artifact_refs
+        .events
+        .clone()
+        .unwrap_or_else(|| artifact_refs.task_dir.join("events.jsonl"));
+    let jsonl = LocalJsonlAuditLogger::new(events_path)?;
+    let audit = CollectingAuditLogger::new(&jsonl);
+    let state = InMemoryStateStore::new();
+
+    gateway_transition(&audit, &state, &task.id, TaskStatus::Created)?;
+    audit.record(AuditEvent::TaskCreated {
+        task_id: task.id.clone(),
+        at: time::OffsetDateTime::now_utc(),
+        goal: task.goal.clone(),
+    })?;
+    gateway_transition(&audit, &state, &task.id, TaskStatus::Validating)?;
+
+    let registry = gateway_tool_registry(&task)?;
+    let supported_protocols = task
+        .gateway
+        .tools
+        .iter()
+        .map(|tool| tool.protocol.clone())
+        .collect::<Vec<_>>();
+    let policy = BuiltInPolicyEngine;
+    let adapter = gateway_adapter_for(&task, &action);
+    let secret_broker = LocalRedactedSecretBroker;
+
+    gateway_transition(&audit, &state, &task.id, TaskStatus::Preparing)?;
+    gateway_transition(&audit, &state, &task.id, TaskStatus::Running)?;
+    let context = ToolExecutionContext {
+        task_dir: Some(artifact_refs.task_dir.clone()),
+        artifact_dir: Some(artifact_refs.task_dir.join("artifacts")),
+    };
+    let execution = match approval_mode {
+        GatewayApprovalMode::FailClosed => {
+            let approval = LocalApprovalEngine::fail_closed()
+                .with_actor("gateway")
+                .with_source("local-fail-closed");
+            execute_gateway_action(
+                &task,
+                action,
+                context,
+                &policy,
+                &audit,
+                &registry,
+                supported_protocols,
+                &approval,
+                adapter.as_ref(),
+                &secret_broker,
+            )?
+        }
+        GatewayApprovalMode::Approved => {
+            let approval = LocalApprovalEngine::preconfigured(ApprovalDecision::Approved)
+                .with_actor("gateway")
+                .with_source("local-approved");
+            execute_gateway_action(
+                &task,
+                action,
+                context,
+                &policy,
+                &audit,
+                &registry,
+                supported_protocols,
+                &approval,
+                adapter.as_ref(),
+                &secret_broker,
+            )?
+        }
+        GatewayApprovalMode::External => {
+            let approval = LocalExternalApprovalEngine::new(task.workspace_host_path.clone())
+                .with_actor("gateway");
+            execute_gateway_action(
+                &task,
+                action,
+                context,
+                &policy,
+                &audit,
+                &registry,
+                supported_protocols,
+                &approval,
+                adapter.as_ref(),
+                &secret_broker,
+            )?
+        }
+    };
+
+    gateway_transition(&audit, &state, &task.id, TaskStatus::CollectingArtifacts)?;
+    record_gateway_artifacts(&audit, &task, &execution)?;
+
+    let final_status = gateway_execution_status(&execution);
+    gateway_transition(&audit, &state, &task.id, TaskStatus::Reporting)?;
+    gateway_transition(&audit, &state, &task.id, final_status.clone())?;
+
+    let report = MarkdownReportGenerator::new();
+    let report_path = report.generate(&task, &artifact_refs, &audit.events()?)?;
+    audit.record(AuditEvent::Artifact {
+        task_id: task.id.clone(),
+        at: time::OffsetDateTime::now_utc(),
+        kind: "report".into(),
+        path: report_path.clone(),
+    })?;
+
+    print_gateway_call_summary(
+        &task,
+        &artifact_refs,
+        &execution,
+        &final_status,
+        &report_path,
+    );
+
+    match final_status {
+        TaskStatus::Succeeded => Ok(()),
+        status => Err(TaskFenceError::Gateway(format!(
+            "gateway call {} finished with status {status:?}",
+            task.id.0
+        ))),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_gateway_action(
+    task: &ResolvedTask,
+    action: ToolAction,
+    context: ToolExecutionContext,
+    policy: &BuiltInPolicyEngine,
+    audit: &dyn AuditLogger,
+    registry: &InMemoryToolRegistry,
+    supported_protocols: Vec<String>,
+    approval: &dyn ApprovalEngine,
+    adapter: &dyn ToolAdapter,
+    secret_broker: &LocalRedactedSecretBroker,
+) -> taskfence_core::Result<ToolExecution> {
+    let mediator = GatewayExecutor::new(
+        taskfence_gateway::GatewayMediator::new(policy, audit)
+            .with_tool_registry(registry)
+            .with_supported_protocols(supported_protocols)
+            .with_approval(approval),
+        audit,
+        adapter,
+    )
+    .with_secret_broker(secret_broker);
+
+    mediator.execute_tool_action(task, action, context)
+}
+
+fn parse_gateway_params(
+    params: Vec<String>,
+) -> taskfence_core::Result<std::collections::BTreeMap<String, RedactedValue>> {
+    let mut parsed = std::collections::BTreeMap::new();
+    for param in params {
+        let (key, value) = param.split_once('=').ok_or_else(|| {
+            TaskFenceError::Config(format!("gateway parameter must be KEY=VALUE: {param}"))
+        })?;
+        let key = key.trim().to_owned();
+        if key.is_empty() {
+            return Err(TaskFenceError::Config(
+                "gateway parameter key must not be empty".into(),
+            ));
+        }
+        parsed.insert(key, RedactedValue::Plain(value.to_owned()));
+    }
+    Ok(parsed)
+}
+
+fn gateway_tool_registry(task: &ResolvedTask) -> taskfence_core::Result<InMemoryToolRegistry> {
+    let tools = task
+        .gateway
+        .tools
+        .iter()
+        .map(|tool| RegisteredTool::new(&tool.protocol, &tool.tool, &tool.operation))
+        .collect::<taskfence_core::Result<Vec<_>>>()?;
+    Ok(InMemoryToolRegistry::new(tools))
+}
+
+fn gateway_adapter_for(task: &ResolvedTask, action: &ToolAction) -> Box<dyn ToolAdapter> {
+    task.gateway
+        .tools
+        .iter()
+        .find(|tool| {
+            tool.protocol == action.protocol
+                && tool.tool == action.tool
+                && tool.operation == action.operation
+        })
+        .map(|tool| Box::new(LocalFixtureToolAdapter::new(tool.clone())) as Box<dyn ToolAdapter>)
+        .unwrap_or_else(|| {
+            Box::new(UnsupportedGatewayAdapter::new(
+                "unregistered",
+                "unregistered",
+            ))
+        })
+}
+
+fn gateway_transition(
+    audit: &CollectingAuditLogger<'_>,
+    state: &dyn StateStore,
+    task_id: &TaskId,
+    status: TaskStatus,
+) -> taskfence_core::Result<()> {
+    state.set_status(task_id, status.clone())?;
+    audit.record(AuditEvent::TaskStatusChanged {
+        task_id: task_id.clone(),
+        at: time::OffsetDateTime::now_utc(),
+        status,
+    })
+}
+
+fn record_gateway_artifacts(
+    audit: &CollectingAuditLogger<'_>,
+    task: &ResolvedTask,
+    execution: &ToolExecution,
+) -> taskfence_core::Result<()> {
+    let Some(result) = &execution.result else {
+        return Ok(());
+    };
+    for path in &result.artifacts {
+        audit.record(AuditEvent::Artifact {
+            task_id: task.id.clone(),
+            at: time::OffsetDateTime::now_utc(),
+            kind: "gateway_fixture".into(),
+            path: path.clone(),
+        })?;
+    }
+    Ok(())
+}
+
+fn gateway_execution_status(execution: &ToolExecution) -> TaskStatus {
+    match execution.error.as_ref().map(|error| &error.kind) {
+        None => TaskStatus::Succeeded,
+        Some(ToolExecutionErrorKind::PolicyDenied)
+        | Some(ToolExecutionErrorKind::ApprovalDeniedOrTimedOut) => TaskStatus::Denied,
+        Some(
+            ToolExecutionErrorKind::UnsupportedProtocol
+            | ToolExecutionErrorKind::UnsupportedTool
+            | ToolExecutionErrorKind::UnregisteredTool
+            | ToolExecutionErrorKind::InvalidParameters
+            | ToolExecutionErrorKind::AdapterFailed
+            | ToolExecutionErrorKind::SecretUnavailable,
+        ) => TaskStatus::Failed,
+    }
+}
+
+fn print_gateway_call_summary(
+    task: &ResolvedTask,
+    artifacts: &ArtifactRefs,
+    execution: &ToolExecution,
+    status: &TaskStatus,
+    report_path: &Utf8PathBuf,
+) {
+    println!("Gateway call finished");
+    println!("  task: {}", task.id.0);
+    println!("  status: {status:?}");
+    println!("  artifacts: {}", artifacts.task_dir);
+    println!("  report: {report_path}");
+    match (&execution.result, &execution.error) {
+        (Some(result), None) => println!("  result: {}", result.summary),
+        (_, Some(error)) => println!("  error: {:?}: {}", error.kind, error.message),
+        (None, None) => println!("  result: no result or error recorded"),
+    }
+}
+
+struct CollectingAuditLogger<'a> {
+    inner: &'a dyn AuditLogger,
+    events: std::sync::Mutex<Vec<AuditEvent>>,
+}
+
+impl<'a> CollectingAuditLogger<'a> {
+    fn new(inner: &'a dyn AuditLogger) -> Self {
+        Self {
+            inner,
+            events: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn events(&self) -> taskfence_core::Result<Vec<AuditEvent>> {
+        self.events
+            .lock()
+            .map(|events| events.clone())
+            .map_err(|_| TaskFenceError::Audit("audit event collection lock poisoned".into()))
+    }
+}
+
+impl AuditLogger for CollectingAuditLogger<'_> {
+    fn record(&self, event: AuditEvent) -> taskfence_core::Result<()> {
+        self.inner.record(event.clone())?;
+        self.events
+            .lock()
+            .map_err(|_| TaskFenceError::Audit("audit event collection lock poisoned".into()))?
+            .push(event);
+        Ok(())
+    }
+}
+
 fn run_task_with_runner(
     task_file: Utf8PathBuf,
     runner: &dyn Runner,
@@ -1179,6 +1587,47 @@ mod tests {
                 assert!(external_approval);
             }
             other => panic!("expected run command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_gateway_call() {
+        let cli = Cli::try_parse_from([
+            "taskfence",
+            "gateway",
+            "call",
+            "task.yaml",
+            "github",
+            "read_issue",
+            "--protocol",
+            "mcp",
+            "--param",
+            "number=42",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Gateway {
+                command:
+                    GatewayCommand::Call {
+                        task_file,
+                        protocol,
+                        tool,
+                        operation,
+                        params,
+                        approve,
+                        external_approval,
+                    },
+            } => {
+                assert_eq!(task_file, Utf8PathBuf::from("task.yaml"));
+                assert_eq!(protocol, "mcp");
+                assert_eq!(tool, "github");
+                assert_eq!(operation, "read_issue");
+                assert_eq!(params, vec!["number=42"]);
+                assert!(!approve);
+                assert!(!external_approval);
+            }
+            other => panic!("expected gateway call command, got {other:?}"),
         }
     }
 
@@ -2026,6 +2475,413 @@ mod tests {
     }
 
     #[test]
+    fn gateway_call_writes_allowed_execution_evidence() {
+        let (temp, workspace, task_file) = gateway_fixture_task("gateway-allowed");
+
+        run_gateway_call(
+            task_file,
+            "mcp".into(),
+            "github".into(),
+            "read_issue".into(),
+            vec!["number=42".into()],
+            GatewayApprovalMode::FailClosed,
+        )
+        .unwrap();
+
+        let task_id = TaskId("gateway-allowed".into());
+        let events = LocalTaskEvidenceStore::new(workspace.clone())
+            .read_events(&task_id)
+            .unwrap();
+        assert!(
+            events.events.iter().any(|event| {
+                matches!(
+                    event,
+                    AuditEvent::ToolExecutionStarted { request, .. }
+                        if request.action.tool == "github"
+                            && request.action.operation == "read_issue"
+                            && matches!(
+                                request.action.parameters.get("number"),
+                                Some(RedactedValue::Plain(number)) if number == "42"
+                            )
+                )
+            }),
+            "missing read_issue start event in {:#?}",
+            events.events
+        );
+        assert!(events.events.iter().any(|event| {
+            matches!(
+                event,
+                AuditEvent::ToolExecutionFinished {
+                    execution:
+                        ToolExecution {
+                            result: Some(result),
+                            error: None,
+                            ..
+                        },
+                    ..
+                } if result.summary.contains("read fixture issue #42")
+            )
+        }));
+
+        let event_text = events_text(workspace.clone(), &task_id).unwrap();
+        assert!(event_text.contains("tool-started\t"));
+        assert!(event_text.contains("tool-finished\t"));
+        assert!(event_text.contains("tool execution succeeded"));
+        assert!(!event_text.contains("Ship the fixture gateway"));
+
+        let status = status_text(workspace.clone(), &task_id).unwrap();
+        assert!(status.contains("  status: Succeeded\n"));
+
+        let report = report_text(workspace.clone(), &task_id).unwrap();
+        assert!(report.contains("Tool Executions"));
+        assert!(report.contains("read fixture issue #42"));
+        assert!(!report.contains("Ship the fixture gateway"));
+
+        let artifacts = artifacts_text(workspace, &task_id).unwrap();
+        assert!(artifacts.contains("task.resolved.json"));
+        assert!(artifacts.contains("events.jsonl"));
+        assert!(artifacts.contains("report.md"));
+        drop(temp);
+    }
+
+    #[test]
+    fn gateway_call_denied_by_policy_writes_failure_evidence_without_artifact() {
+        let (_temp, workspace, task_file) = gateway_fixture_task("gateway-denied");
+
+        let err = run_gateway_call(
+            task_file,
+            "mcp".into(),
+            "github".into(),
+            "delete_repo".into(),
+            Vec::new(),
+            GatewayApprovalMode::FailClosed,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Gateway(message) if message.contains("status Denied"))
+        );
+        let task_id = TaskId("gateway-denied".into());
+        let events = LocalTaskEvidenceStore::new(workspace.clone())
+            .read_events(&task_id)
+            .unwrap();
+        assert!(events.events.iter().any(|event| {
+            matches!(
+                event,
+                AuditEvent::PolicyDecision {
+                    decision: ActionDecision::Deny { .. },
+                    ..
+                }
+            )
+        }));
+        assert!(events.events.iter().any(|event| {
+            matches!(
+                event,
+                AuditEvent::ToolExecutionFinished {
+                    execution:
+                        ToolExecution {
+                            result: None,
+                            error: Some(error),
+                            ..
+                        },
+                    ..
+                } if error.kind == ToolExecutionErrorKind::PolicyDenied
+            )
+        }));
+        assert!(!workspace
+            .join(".taskfence/tasks/gateway-denied/artifacts/github-pr-proposal.json")
+            .exists());
+        assert!(report_text(workspace, &task_id)
+            .unwrap()
+            .contains("PolicyDenied"));
+    }
+
+    #[test]
+    fn gateway_call_unsupported_protocol_fails_closed_with_evidence() {
+        let (_temp, workspace, task_file) = gateway_fixture_task("gateway-http");
+
+        let err = run_gateway_call(
+            task_file,
+            "http".into(),
+            "github".into(),
+            "read_issue".into(),
+            vec!["number=42".into()],
+            GatewayApprovalMode::FailClosed,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Gateway(message) if message.contains("status Failed"))
+        );
+        let task_id = TaskId("gateway-http".into());
+        let events = LocalTaskEvidenceStore::new(workspace.clone())
+            .read_events(&task_id)
+            .unwrap();
+        assert!(events.events.iter().any(|event| {
+            matches!(
+                event,
+                AuditEvent::Error { message, .. }
+                    if message.contains("protocol 'http' is not supported")
+            )
+        }));
+        assert!(events.events.iter().any(|event| {
+            matches!(
+                event,
+                AuditEvent::ToolExecutionFinished {
+                    execution:
+                        ToolExecution {
+                            error: Some(error),
+                            ..
+                        },
+                    ..
+                } if error.kind == ToolExecutionErrorKind::UnsupportedProtocol
+            )
+        }));
+        assert!(status_text(workspace, &task_id)
+            .unwrap()
+            .contains("  status: Failed\n"));
+    }
+
+    #[test]
+    fn gateway_call_unregistered_tool_fails_closed_with_evidence() {
+        let (_temp, workspace, task_file) = gateway_fixture_task("gateway-unregistered");
+
+        let err = run_gateway_call(
+            task_file,
+            "mcp".into(),
+            "github".into(),
+            "close_issue".into(),
+            vec!["number=42".into()],
+            GatewayApprovalMode::FailClosed,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Gateway(message) if message.contains("status Failed"))
+        );
+        let task_id = TaskId("gateway-unregistered".into());
+        let events = LocalTaskEvidenceStore::new(workspace.clone())
+            .read_events(&task_id)
+            .unwrap();
+        assert!(events.events.iter().any(|event| {
+            matches!(
+                event,
+                AuditEvent::Error { message, .. }
+                    if message.contains("not registered")
+                        && message.contains("mcp github.close_issue")
+            )
+        }));
+        assert!(events.events.iter().any(|event| {
+            matches!(
+                event,
+                AuditEvent::ToolExecutionFinished {
+                    execution:
+                        ToolExecution {
+                            error: Some(error),
+                            ..
+                        },
+                    ..
+                } if error.kind == ToolExecutionErrorKind::UnregisteredTool
+            )
+        }));
+        assert!(events_text(workspace, &task_id)
+            .unwrap()
+            .contains("UnregisteredTool"));
+    }
+
+    #[test]
+    fn gateway_call_invalid_adapter_parameters_fail_closed_with_evidence() {
+        let (_temp, workspace, task_file) = gateway_fixture_task("gateway-invalid-params");
+
+        let err = run_gateway_call(
+            task_file,
+            "mcp".into(),
+            "github".into(),
+            "read_issue".into(),
+            Vec::new(),
+            GatewayApprovalMode::FailClosed,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Gateway(message) if message.contains("status Failed"))
+        );
+        let task_id = TaskId("gateway-invalid-params".into());
+        let events = LocalTaskEvidenceStore::new(workspace.clone())
+            .read_events(&task_id)
+            .unwrap();
+        assert!(events.events.iter().any(|event| {
+            matches!(
+                event,
+                AuditEvent::ToolExecutionStarted { request, .. }
+                    if request.action.operation == "read_issue"
+            )
+        }));
+        assert!(events.events.iter().any(|event| {
+            matches!(
+                event,
+                AuditEvent::ToolExecutionFinished {
+                    execution:
+                        ToolExecution {
+                            error: Some(error),
+                            ..
+                        },
+                    ..
+                } if error.kind == ToolExecutionErrorKind::InvalidParameters
+                    && error.message.contains("missing required parameter number")
+            )
+        }));
+        assert!(report_text(workspace, &task_id)
+            .unwrap()
+            .contains("InvalidParameters"));
+    }
+
+    #[test]
+    fn gateway_call_default_approval_fails_closed_before_adapter_execution() {
+        let (_temp, workspace, task_file) = gateway_fixture_task("gateway-approval-default");
+
+        let err = run_gateway_call(
+            task_file,
+            "mcp".into(),
+            "github".into(),
+            "create_pr".into(),
+            vec!["title=Needs approval".into()],
+            GatewayApprovalMode::FailClosed,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Gateway(message) if message.contains("status Denied"))
+        );
+        let task_id = TaskId("gateway-approval-default".into());
+        let events = LocalTaskEvidenceStore::new(workspace.clone())
+            .read_events(&task_id)
+            .unwrap();
+        assert!(events.events.iter().any(|event| {
+            matches!(
+                event,
+                AuditEvent::ApprovalRequested { record }
+                    if record.action
+                        == Action::ToolCall(ToolAction {
+                            protocol: "mcp".into(),
+                            tool: "github".into(),
+                            operation: "create_pr".into(),
+                            parameters: BTreeMap::from([(
+                                "title".into(),
+                                RedactedValue::Plain("Needs approval".into()),
+                            )]),
+                        })
+            )
+        }));
+        assert!(events.events.iter().any(|event| {
+            matches!(
+                event,
+                AuditEvent::ApprovalResolved { record }
+                    if record.decision == Some(ApprovalDecision::Denied)
+            )
+        }));
+        assert!(events.events.iter().any(|event| {
+            matches!(
+                event,
+                AuditEvent::ToolExecutionFinished {
+                    execution:
+                        ToolExecution {
+                            error: Some(error),
+                            ..
+                        },
+                    ..
+                } if error.kind == ToolExecutionErrorKind::ApprovalDeniedOrTimedOut
+            )
+        }));
+        assert!(!events
+            .events
+            .iter()
+            .any(|event| { matches!(event, AuditEvent::ToolExecutionStarted { .. }) }));
+        assert!(!workspace
+            .join(".taskfence/tasks/gateway-approval-default/artifacts/github-pr-proposal.json")
+            .exists());
+    }
+
+    #[test]
+    fn gateway_call_approved_create_pr_redacts_secret_references_and_fixture_output() {
+        let (_temp, workspace, task_file) = gateway_fixture_task("gateway-secret-redaction");
+        let raw_secret = "ghp_phase4rawsecret";
+
+        run_gateway_call(
+            task_file,
+            "mcp".into(),
+            "github".into(),
+            "create_pr".into(),
+            vec![
+                "title=Fixture PR".into(),
+                format!("body=token={raw_secret}"),
+            ],
+            GatewayApprovalMode::Approved,
+        )
+        .unwrap();
+
+        let task_id = TaskId("gateway-secret-redaction".into());
+        let events = LocalTaskEvidenceStore::new(workspace.clone())
+            .read_events(&task_id)
+            .unwrap();
+        assert!(events.events.iter().any(|event| {
+            matches!(
+                event,
+                AuditEvent::ApprovalResolved { record }
+                    if record.decision == Some(ApprovalDecision::Approved)
+            )
+        }));
+        assert!(
+            events.events.iter().any(|event| {
+                matches!(
+                    event,
+                    AuditEvent::ToolExecutionStarted { request, .. }
+                        if matches!(
+                            request.action.parameters.get("authorization"),
+                            Some(RedactedValue::Redacted { .. })
+                        )
+                )
+            }),
+            "missing redacted authorization start event in {:#?}",
+            events.events
+        );
+        assert!(events.events.iter().any(|event| {
+            matches!(
+                event,
+                AuditEvent::ToolExecutionFinished {
+                    execution:
+                        ToolExecution {
+                            result: Some(result),
+                            error: None,
+                            ..
+                        },
+                    ..
+                } if result
+                    .artifacts
+                    .iter()
+                    .any(|path| path.ends_with("github-pr-proposal.json"))
+            )
+        }));
+
+        let events_path = workspace.join(".taskfence/tasks/gateway-secret-redaction/events.jsonl");
+        let events_jsonl = fs::read_to_string(events_path).unwrap();
+        assert!(!events_jsonl.contains(raw_secret));
+        assert!(!events_text(workspace.clone(), &task_id)
+            .unwrap()
+            .contains(raw_secret));
+        assert!(!report_text(workspace.clone(), &task_id)
+            .unwrap()
+            .contains(raw_secret));
+
+        let proposal_path = workspace
+            .join(".taskfence/tasks/gateway-secret-redaction/artifacts/github-pr-proposal.json");
+        let proposal = fs::read_to_string(proposal_path).unwrap();
+        assert!(proposal.contains("[redacted]"));
+        assert!(!proposal.contains(raw_secret));
+        assert!(!proposal.contains("github_token"));
+    }
+
+    #[test]
     fn approvals_command_reads_local_approval_list() {
         let temp = tempfile::tempdir().unwrap();
         let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
@@ -2391,6 +3247,104 @@ mod tests {
         assert!(workspace
             .join(".taskfence/tasks/approval-external-denied/report.md")
             .is_file());
+    }
+
+    fn gateway_fixture_task(id: &str) -> (tempfile::TempDir, Utf8PathBuf, Utf8PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let fixtures_dir = workspace.join("fixtures");
+        fs::create_dir(&fixtures_dir).unwrap();
+        let fixture_path = fixtures_dir.join("github.json");
+        fs::write(
+            &fixture_path,
+            r#"{
+  "repository": "taskfence/example",
+  "default_branch": "main",
+  "issues": [
+    {
+      "number": 42,
+      "title": "Ship the fixture gateway",
+      "state": "open",
+      "body": "Use local evidence only"
+    }
+  ]
+}
+"#,
+        )
+        .unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(&task_file, gateway_task_yaml(id, &workspace, &fixture_path)).unwrap();
+
+        (temp, workspace, task_file)
+    }
+
+    fn gateway_task_yaml(id: &str, workspace: &Utf8PathBuf, fixture_path: &Utf8PathBuf) -> String {
+        format!(
+            r#"id: "{id}"
+goal: "Gateway CLI test"
+workspace: "{workspace}"
+agent:
+  type: "generic"
+  command: "echo"
+  args:
+    - "ok"
+sandbox:
+  type: "docker"
+  image: "taskfence/runner:latest"
+permissions:
+  paths:
+    read:
+      - "{workspace}"
+    write:
+      - "{workspace}"
+  commands:
+    allow:
+      - "echo"
+  network:
+    default: "disabled"
+  tools:
+    allow:
+      - "github.read_issue"
+    approval_required:
+      - "github.create_pr"
+    deny:
+      - "github.delete_repo"
+secrets:
+  expose_to_agent: false
+  available_to_gateway:
+    - name: "github_token"
+      use_for:
+        - "github.create_pr"
+gateway:
+  tools:
+    - protocol: "mcp"
+      tool: "github"
+      operation: "read_issue"
+      connector:
+        type: "local_fixture"
+        kind: "github"
+        path: "{fixture_path}"
+    - protocol: "mcp"
+      tool: "github"
+      operation: "create_pr"
+      connector:
+        type: "local_fixture"
+        kind: "github"
+        path: "{fixture_path}"
+      secret_refs:
+        - name: "github_token"
+          parameter: "authorization"
+          scope: "github.create_pr"
+    - protocol: "mcp"
+      tool: "github"
+      operation: "delete_repo"
+      connector:
+        type: "local_fixture"
+        kind: "github"
+        path: "{fixture_path}"
+"#
+        )
     }
 
     fn task_yaml(id: &str, workspace: &Utf8PathBuf, allowed_command: &str) -> String {

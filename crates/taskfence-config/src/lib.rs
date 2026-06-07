@@ -4,7 +4,8 @@ use std::fs;
 use std::io;
 use taskfence_core::{
     AgentConfig, AgentKind, ApprovalConfig, AuditConfig, BudgetLimit, BudgetPermissions,
-    CaptureConfig, CommandPermissions, EnvPermissions, LimitConfig, NetworkDefault,
+    CaptureConfig, CommandPermissions, EnvPermissions, GatewayConfig, GatewayConnectorConfig,
+    GatewaySecretReferenceConfig, GatewayToolConfig, LimitConfig, NetworkDefault,
     NetworkPermissions, PathPermissions, PermissionConfig, ReportConfig, ReportFormat,
     ResolvedTask, SandboxConfig, SandboxKind, SecretConfig, SecretGrant, TaskFenceError, TaskId,
     ToolPermissions,
@@ -42,6 +43,8 @@ struct RawTask {
     #[serde(default)]
     approval: RawApproval,
     #[serde(default)]
+    gateway: RawGateway,
+    #[serde(default)]
     audit: RawAudit,
 }
 
@@ -67,6 +70,8 @@ impl RawTask {
             ));
         }
 
+        let gateway = self.gateway.resolve(base_dir, &workspace)?;
+
         Ok(ResolvedTask {
             id: self.id.map(TaskId).unwrap_or_else(|| TaskId::new("task")),
             task_file: task_file.to_path_buf(),
@@ -78,6 +83,7 @@ impl RawTask {
             permissions,
             secrets: self.secrets.resolve(),
             approval: self.approval.resolve()?,
+            gateway,
             audit: self.audit.resolve()?,
         })
     }
@@ -318,6 +324,136 @@ impl RawApproval {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct RawGateway {
+    #[serde(default)]
+    tools: Vec<RawGatewayTool>,
+}
+
+impl RawGateway {
+    fn resolve(
+        self,
+        base_dir: &Utf8Path,
+        workspace: &Utf8Path,
+    ) -> taskfence_core::Result<GatewayConfig> {
+        Ok(GatewayConfig {
+            tools: self
+                .tools
+                .into_iter()
+                .map(|tool| tool.resolve(base_dir, workspace))
+                .collect::<taskfence_core::Result<Vec<_>>>()?,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawGatewayTool {
+    protocol: String,
+    tool: String,
+    operation: String,
+    connector: RawGatewayConnector,
+    #[serde(default)]
+    secret_refs: Vec<RawGatewaySecretReference>,
+}
+
+impl RawGatewayTool {
+    fn resolve(
+        self,
+        base_dir: &Utf8Path,
+        workspace: &Utf8Path,
+    ) -> taskfence_core::Result<GatewayToolConfig> {
+        Ok(GatewayToolConfig {
+            protocol: normalize_gateway_segment("gateway.tools.protocol", &self.protocol)?,
+            tool: normalize_gateway_segment("gateway.tools.tool", &self.tool)?,
+            operation: normalize_gateway_segment("gateway.tools.operation", &self.operation)?,
+            connector: self.connector.resolve(base_dir, workspace)?,
+            secret_refs: self
+                .secret_refs
+                .into_iter()
+                .map(RawGatewaySecretReference::resolve)
+                .collect::<taskfence_core::Result<Vec<_>>>()?,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum RawGatewayConnector {
+    LocalFixture { kind: String, path: Utf8PathBuf },
+    Unsupported { kind: String },
+}
+
+impl RawGatewayConnector {
+    fn resolve(
+        self,
+        base_dir: &Utf8Path,
+        workspace: &Utf8Path,
+    ) -> taskfence_core::Result<GatewayConnectorConfig> {
+        match self {
+            Self::LocalFixture { kind, path } => {
+                let kind = normalize_gateway_segment("gateway.tools.connector.kind", &kind)?;
+                if path.as_str().trim().is_empty() {
+                    return Err(TaskFenceError::Config(
+                        "gateway.tools.connector.path must not be empty".into(),
+                    ));
+                }
+                if escapes_with_parent(&path) {
+                    return Err(TaskFenceError::Config(format!(
+                        "gateway fixture path must not contain '..': {path}"
+                    )));
+                }
+                let resolved = resolve_relative_path(base_dir, &path)?;
+                let canonical = fs::canonicalize(resolved.as_std_path()).map_err(|err| {
+                    TaskFenceError::Config(format!(
+                        "failed to resolve gateway fixture {path}: {err}"
+                    ))
+                })?;
+                let canonical = Utf8PathBuf::from_path_buf(canonical).map_err(|path| {
+                    TaskFenceError::Config(format!(
+                        "gateway fixture path is not valid UTF-8: {}",
+                        path.display()
+                    ))
+                })?;
+                if !canonical.starts_with(workspace) {
+                    return Err(TaskFenceError::Config(format!(
+                        "gateway fixture path must stay inside workspace {workspace}: {canonical}"
+                    )));
+                }
+                Ok(GatewayConnectorConfig::LocalFixture {
+                    kind,
+                    path: canonical,
+                })
+            }
+            Self::Unsupported { kind } => Ok(GatewayConnectorConfig::Unsupported {
+                kind: normalize_gateway_segment("gateway.tools.connector.kind", &kind)?,
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawGatewaySecretReference {
+    name: String,
+    parameter: String,
+    scope: String,
+}
+
+impl RawGatewaySecretReference {
+    fn resolve(self) -> taskfence_core::Result<GatewaySecretReferenceConfig> {
+        Ok(GatewaySecretReferenceConfig {
+            name: normalize_gateway_segment("gateway.tools.secret_refs.name", &self.name)?,
+            parameter: normalize_gateway_parameter(
+                "gateway.tools.secret_refs.parameter",
+                &self.parameter,
+            )?,
+            scope: normalize_gateway_segment("gateway.tools.secret_refs.scope", &self.scope)?,
+        })
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawAudit {
     #[serde(default)]
     report: RawReport,
@@ -482,6 +618,22 @@ fn normalize_budget_kind(kind: &str) -> taskfence_core::Result<String> {
     Ok(normalized)
 }
 
+fn normalize_gateway_segment(field: &str, value: &str) -> taskfence_core::Result<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Err(TaskFenceError::Config(format!("{field} must not be empty")));
+    }
+    Ok(normalized)
+}
+
+fn normalize_gateway_parameter(field: &str, value: &str) -> taskfence_core::Result<String> {
+    let normalized = value.trim().to_owned();
+    if normalized.is_empty() {
+        return Err(TaskFenceError::Config(format!("{field} must not be empty")));
+    }
+    Ok(normalized)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -570,6 +722,65 @@ permissions:
     }
 
     #[test]
+    fn parses_gateway_local_fixture_tools() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        fs::create_dir(repo.join("fixtures")).unwrap();
+        fs::write(repo.join("fixtures/github.json"), "{}").unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        let yaml = r#"
+goal: Test gateway fixture
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+gateway:
+  tools:
+    - protocol: " MCP "
+      tool: " GitHub "
+      operation: " Read_Issue "
+      connector:
+        type: local_fixture
+        kind: " GitHub "
+        path: "./repo/fixtures/github.json"
+    - protocol: mcp
+      tool: github
+      operation: create_pr
+      connector:
+        type: local_fixture
+        kind: github
+        path: "./repo/fixtures/github.json"
+      secret_refs:
+        - name: " GitHub_Token "
+          parameter: " authorization "
+          scope: " GitHub.Create_Pr "
+"#;
+
+        let task = parse_task_file(&task_file, yaml).unwrap();
+
+        assert_eq!(task.gateway.tools.len(), 2);
+        assert_eq!(task.gateway.tools[0].protocol, "mcp");
+        assert_eq!(task.gateway.tools[0].tool, "github");
+        assert_eq!(task.gateway.tools[0].operation, "read_issue");
+        assert!(matches!(
+            &task.gateway.tools[0].connector,
+            GatewayConnectorConfig::LocalFixture { kind, path }
+                if kind == "github" && path.ends_with("fixtures/github.json")
+        ));
+        assert_eq!(task.gateway.tools[1].secret_refs[0].name, "github_token");
+        assert_eq!(
+            task.gateway.tools[1].secret_refs[0].parameter,
+            "authorization"
+        );
+        assert_eq!(
+            task.gateway.tools[1].secret_refs[0].scope,
+            "github.create_pr"
+        );
+    }
+
+    #[test]
     fn rejects_unknown_fields() {
         let yaml = r#"
 goal: Test
@@ -602,6 +813,94 @@ permissions:
 "#;
 
         assert!(parse_task_file(&task_file, yaml).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_gateway_fixture_config() {
+        for yaml in [
+            r#"
+goal: Test
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+gateway:
+  tools:
+    - protocol: " "
+      tool: github
+      operation: read_issue
+      connector:
+        type: local_fixture
+        kind: github
+        path: ./repo/fixtures/github.json
+"#,
+            r#"
+goal: Test
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+gateway:
+  tools:
+    - protocol: mcp
+      tool: github
+      operation: read_issue
+      connector:
+        type: local_fixture
+        kind: github
+        path: ../outside.json
+"#,
+            r#"
+goal: Test
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+gateway:
+  tools:
+    - protocol: mcp
+      tool: github
+      operation: read_issue
+      connector:
+        type: local_fixture
+        kind: github
+        path: ./outside.json
+"#,
+            r#"
+goal: Test
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+gateway:
+  tools:
+    - protocol: mcp
+      tool: github
+      operation: read_issue
+      connector:
+        type: local_fixture
+        kind: github
+        path: ./repo/fixtures/github.json
+      secret_refs:
+        - name: github_token
+          parameter: " "
+          scope: github.read_issue
+"#,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let repo = temp.path().join("repo");
+            fs::create_dir(&repo).unwrap();
+            fs::create_dir(repo.join("fixtures")).unwrap();
+            fs::write(repo.join("fixtures/github.json"), "{}").unwrap();
+            fs::write(temp.path().join("outside.json"), "{}").unwrap();
+            let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+
+            assert!(parse_task_file(&task_file, yaml).is_err());
+        }
     }
 
     #[test]
