@@ -168,6 +168,17 @@ Current implemented coverage before production gateway transports:
 - `taskfence gateway call` can execute deterministic local fixture tools from a
   task file and write structured `.taskfence/tasks/<task-id>/` evidence and a
   Markdown report
+- task artifact setup creates a task-local `gateway-spool/requests`,
+  `gateway-spool/responses`, and generated `taskfence-gateway-submit` wrapper
+  for configured gateway tasks
+- the Docker runner mounts only the dedicated gateway spool path at
+  `/taskfence/gateway-spool` when gateway tools are configured, and rejects
+  broader read/write mounts that would also expose that spool
+- `taskfence gateway spool process <task-file> <request-file>` validates one
+  request file under the task spool, executes one mediated local fixture action,
+  writes one typed response, and records structured evidence for success,
+  denied, timeout, cancellation, malformed request, unsupported action, and
+  adapter/policy/approval failures
 - the GitHub-shaped fixture supports `github.read_issue` from local JSON and
   `github.create_pr` as a PR proposal artifact after explicit approval; it does
   not call live GitHub or use a real token
@@ -176,9 +187,9 @@ Current implemented coverage before production gateway transports:
 - reports render tool-call decisions, approvals, local fixture executions, and
   denied tool actions from structured audit events without rendering raw
   parameter values
-- agent-facing wrapper, request/response spool, sidecar/listener, production
-  MCP/HTTP/GitHub execution, Web UI, replay, team-server, and enterprise gateway
-  surfaces remain future work
+- sidecar/listener, production MCP/HTTP/GitHub execution, live credentials,
+  Web UI, replay, team-server, and enterprise gateway surfaces remain future
+  work
 
 Current local fixture demo:
 
@@ -187,6 +198,10 @@ Current local fixture demo:
 - `taskfence gateway call examples/task.yaml github create_pr --approve --param
   title="Fixture proposal"` writes a local PR proposal artifact after explicit
   approval
+- a sandbox-visible `taskfence-gateway-submit` wrapper can write request files
+  into the mounted spool; the host-side `taskfence gateway spool process`
+  command processes one request file and writes its response under the same task
+  evidence root
 - raw GitHub token values are not read, used, logged, reported, or exposed to
   the agent process
 

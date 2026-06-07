@@ -4,7 +4,10 @@ use std::io::Write;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use taskfence_core::{
-    ArtifactRefs, ArtifactStore, LogStream, ResolvedTask, Result, TaskFenceError, WorkspaceBaseline,
+    ArtifactRefs, ArtifactStore, LogStream, ResolvedTask, Result, TaskFenceError,
+    WorkspaceBaseline, GATEWAY_SPOOL_CONTAINER_PATH, GATEWAY_SPOOL_DIR_NAME,
+    GATEWAY_SPOOL_REQUESTS_DIR_NAME, GATEWAY_SPOOL_RESPONSES_DIR_NAME,
+    GATEWAY_SPOOL_WRAPPER_FILE_NAME,
 };
 
 const TASKS_DIR: &str = "tasks";
@@ -52,6 +55,7 @@ impl LocalArtifactStore {
             stderr: Some(task_dir.join(STDERR_FILE)),
             diff: Some(task_dir.join(DIFF_FILE)),
             report: Some(task_dir.join(REPORT_FILE)),
+            gateway_spool: Some(task_dir.join(GATEWAY_SPOOL_DIR_NAME)),
             task_dir,
         })
     }
@@ -61,6 +65,13 @@ impl ArtifactStore for LocalArtifactStore {
     fn create_task_dir(&self, task: &ResolvedTask) -> Result<ArtifactRefs> {
         let refs = self.artifact_refs(task)?;
         fs::create_dir_all(refs.task_dir.join(ARTIFACTS_DIR)).map_err(artifact_io_error)?;
+        if let Some(spool) = &refs.gateway_spool {
+            fs::create_dir_all(spool.join(GATEWAY_SPOOL_REQUESTS_DIR_NAME))
+                .map_err(artifact_io_error)?;
+            fs::create_dir_all(spool.join(GATEWAY_SPOOL_RESPONSES_DIR_NAME))
+                .map_err(artifact_io_error)?;
+            write_gateway_wrapper(spool)?;
+        }
         Ok(refs)
     }
 
@@ -378,6 +389,47 @@ fn validate_task_id_component(value: &str) -> Result<()> {
             "task id is not a safe artifact path component: {value:?}"
         )));
     }
+    Ok(())
+}
+
+fn write_gateway_wrapper(spool: &Utf8Path) -> Result<()> {
+    let wrapper_path = spool.join(GATEWAY_SPOOL_WRAPPER_FILE_NAME);
+    let contents = format!(
+        r#"#!/bin/sh
+set -eu
+if [ "$#" -ne 1 ]; then
+  echo "usage: {wrapper} REQUEST_JSON" >&2
+  exit 64
+fi
+request_id="$(date +%s)-$$"
+request_path="{requests}/$request_id.json"
+response_path="{responses}/$request_id.json"
+printf '%s\n' "$1" > "$request_path"
+echo "$response_path"
+"#,
+        wrapper = GATEWAY_SPOOL_WRAPPER_FILE_NAME,
+        requests =
+            Utf8PathBuf::from(GATEWAY_SPOOL_CONTAINER_PATH).join(GATEWAY_SPOOL_REQUESTS_DIR_NAME),
+        responses =
+            Utf8PathBuf::from(GATEWAY_SPOOL_CONTAINER_PATH).join(GATEWAY_SPOOL_RESPONSES_DIR_NAME),
+    );
+    atomic_write(&wrapper_path, contents.as_bytes())?;
+    make_executable(&wrapper_path)
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Utf8Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path.as_std_path())
+        .map_err(artifact_io_error)?
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path.as_std_path(), permissions).map_err(artifact_io_error)
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &Utf8Path) -> Result<()> {
     Ok(())
 }
 

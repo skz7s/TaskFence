@@ -17,14 +17,24 @@ Three candidate integration shapes were considered for sandboxed agents:
 
 ## Decision
 
-Do not promote a long-lived agent-facing gateway interface in this wave.
+Promote a bounded request/response spool prototype as the first agent-facing
+gateway interface, without treating it as a production MCP/HTTP transport or a
+long-lived listener.
 
-The next implementation should prefer a request/response spool prototype before
-a sidecar service. A spool can keep raw credentials gateway-side, keep Docker
-networking disabled, and make request, approval wait, resolution, response, and
-failure evidence inspectable as files under the task evidence boundary. It also
-keeps path validation and artifact ownership close to the existing runner and
-artifact-store model.
+The prototype keeps raw credentials gateway-side, keeps Docker networking
+disabled-compatible, and makes request, approval wait, resolution, response,
+and failure evidence inspectable as files under the task evidence boundary. It
+also keeps path validation and artifact ownership close to the existing runner
+and artifact-store model.
+
+Task artifact setup now creates `gateway-spool/requests`,
+`gateway-spool/responses`, and a generated `taskfence-gateway-submit` wrapper
+under `.taskfence/tasks/<task-id>/`. The Docker runner mounts only that
+dedicated spool path at `/taskfence/gateway-spool` for tasks with configured
+gateway tools and rejects broader read/write mounts that would also expose the
+spool. The host-side `taskfence gateway spool process <task-file>
+<request-file>` command validates one request path under the task spool,
+executes one mediated local fixture action, and writes one typed response.
 
 A generated CLI wrapper remains useful as the agent-visible command surface, but
 it should be a thin client over the spool rather than a direct host gateway
@@ -41,23 +51,27 @@ timeouts, and denial behavior.
 
 - The current `taskfence gateway call` command remains a local demo and
   operator/test surface, not the production agent-facing gateway interface.
-- Future spool work must validate request and response paths against the task
-  artifact root, reject symlink escapes, reject unknown operation files, and
-  fail closed on missing approvals, timeouts, malformed requests, or unsupported
-  actions.
+- The spool prototype validates request and response paths against the task
+  artifact root, rejects parent components and symlink escapes, rejects unknown
+  request files, and fails closed on missing approvals, timeouts, cancellations,
+  malformed requests, unsupported actions, denied actions, unavailable secrets,
+  and adapter failures.
 - Raw gateway credentials still must not enter the sandbox, task parameters,
   audit logs, reports, or fixture artifacts.
-- Wrapper, spool, and sidecar support must not be documented as implemented
-  until the request lifecycle and failure behavior are testable.
+- Wrapper and spool support may be documented only as this bounded local
+  prototype. Sidecar/listener support, production MCP/HTTP/GitHub execution,
+  SDK/webhook execution, and raw secret-broker actions remain unimplemented.
 
 ## Validation And Rollback
 
-Validation for this bounded spike is documentation plus the existing runtime
-surface tests:
+Validation for this bounded prototype is documentation plus runtime surface
+tests:
 
-- `cargo test -p taskfence-runner -p taskfence-gateway -p taskfence-core`
+- `cargo test -p taskfence-core -p taskfence-gateway -p taskfence-runner -p taskfence-cli`
 
-Rollback is to remove this decision record and leave the local gateway
-foundation as CLI-only fixture execution. Any future spool or sidecar
+Rollback is to remove the generated wrapper creation, dedicated Docker spool
+mount, spool request/response types, and `taskfence gateway spool process`
+command, leaving the local gateway foundation as CLI-only fixture execution.
+Any future sidecar, listener, production MCP/HTTP transport, or live GitHub
 implementation should create a new durable plan before changing runner or
 gateway process boundaries.

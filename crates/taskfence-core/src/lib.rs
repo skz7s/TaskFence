@@ -7,6 +7,12 @@ use uuid::Uuid;
 
 pub type Result<T> = std::result::Result<T, TaskFenceError>;
 
+pub const GATEWAY_SPOOL_DIR_NAME: &str = "gateway-spool";
+pub const GATEWAY_SPOOL_REQUESTS_DIR_NAME: &str = "requests";
+pub const GATEWAY_SPOOL_RESPONSES_DIR_NAME: &str = "responses";
+pub const GATEWAY_SPOOL_WRAPPER_FILE_NAME: &str = "taskfence-gateway-submit";
+pub const GATEWAY_SPOOL_CONTAINER_PATH: &str = "/taskfence/gateway-spool";
+
 #[derive(Debug, Error)]
 pub enum TaskFenceError {
     #[error("configuration error: {0}")]
@@ -629,6 +635,7 @@ pub struct ArtifactRefs {
     pub stderr: Option<Utf8PathBuf>,
     pub diff: Option<Utf8PathBuf>,
     pub report: Option<Utf8PathBuf>,
+    pub gateway_spool: Option<Utf8PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1540,6 +1547,7 @@ mod tests {
                 stderr: Some("/tmp/taskfence-test/stderr.log".into()),
                 diff: Some("/tmp/taskfence-test/diff.patch".into()),
                 report: Some("/tmp/taskfence-test/report.md".into()),
+                gateway_spool: Some("/tmp/taskfence-test/gateway-spool".into()),
             })
         }
 

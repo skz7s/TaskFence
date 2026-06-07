@@ -15,10 +15,11 @@ records what happened, and creates evidence that can be reviewed later.
 > generic commands in a local Docker sandbox, with structured audit events,
 > local artifacts, and Markdown reports. It also contains a CLI-owned
 > deterministic `taskfence gateway call` path for configured local fixture
-> tools, proving policy, approval, registry, redacted secret-reference, audit,
-> and report behavior without live credentials. Production MCP/HTTP/GitHub
-> execution, credential use, Web UI, replay, team-server, and enterprise
-> surfaces remain future work.
+> tools, plus a bounded request/response gateway spool prototype for sandboxed
+> agents. These paths prove policy, approval, registry, redacted
+> secret-reference, audit, and report behavior without live credentials.
+> Production MCP/HTTP/GitHub execution, credential use, Web UI, replay,
+> team-server, and enterprise surfaces remain future work.
 
 ## Why TaskFence
 
@@ -109,10 +110,14 @@ This mode answers the stronger question:
 > Can I understand and approve the agent's high-risk actions before they reach
 > GitHub, Slack, Feishu, a database, or another internal system?
 
-The current executable gateway demo is intentionally narrower than that future
-mode: `taskfence gateway call` executes only configured local fixture tools from
-the task file. It does not start a production MCP server, proxy HTTP traffic,
-call the GitHub API, or read a raw token.
+The current executable gateway surfaces are intentionally narrower than that
+future mode. `taskfence gateway call` executes only configured local fixture
+tools from the task file. `taskfence gateway spool process` processes one
+request from a task-local `gateway-spool/requests` directory and writes one
+typed response under `gateway-spool/responses`; the generated sandbox wrapper
+is only a thin request writer over that spool. These paths do not start a
+production MCP server, proxy HTTP traffic, call the GitHub API, or read a raw
+token.
 
 ## Example Task
 
@@ -311,7 +316,15 @@ The first implementation currently includes:
     GitHub-shaped `github.read_issue` and `github.create_pr` fixture behavior
     with fail-closed policy, explicit approval, redacted secret references,
     structured audit events, local artifacts, and Markdown report evidence.
-11. Task-file `permissions.tools` parsing and policy/audit/report evidence for
+11. An agent-facing gateway spool prototype: task artifact setup creates
+    `gateway-spool/requests`, `gateway-spool/responses`, and a generated
+    `taskfence-gateway-submit` wrapper; the Docker runner mounts only the
+    dedicated spool path for tasks with configured gateway tools; the host-side
+    `taskfence gateway spool process` command validates request paths, executes
+    one mediated local fixture action, and writes typed success, denied,
+    timeout, cancellation, malformed-request, unsupported-action, or failure
+    responses with structured evidence.
+12. Task-file `permissions.tools` parsing and policy/audit/report evidence for
     future gateway-mediated tool actions, including optional approval evidence,
     optional known-tool registry checks, redacted gateway secret references, and
     MCP/HTTP request normalization stubs without production protocol execution

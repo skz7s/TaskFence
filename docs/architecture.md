@@ -43,11 +43,13 @@ feed typed gateway mediation, policy decisions, audit events, and report
 evidence, including optional approval request/resolution records for
 approval-required tool calls, known-tool registry checks, and redacted gateway
 secret references. The executable gateway surface is currently limited to the
-CLI-owned deterministic local fixture command `taskfence gateway call`, including
-GitHub-shaped `read_issue` and `create_pr` fixture operations. Production
-MCP/HTTP/GitHub execution, raw credential use, agent-facing wrapper/spool,
-sidecar/listener, Web UI, replay, team-server, and enterprise control-plane
-behavior are not implemented yet.
+CLI-owned deterministic local fixture command `taskfence gateway call`, plus a
+bounded agent-facing request/response spool prototype processed by `taskfence
+gateway spool process`. The spool path is task-local, mounted separately into
+Docker only for tasks with configured gateway tools, and produces typed
+responses plus structured evidence. Production MCP/HTTP/GitHub execution, raw
+credential use, sidecar/listener, Web UI, replay, team-server, and enterprise
+control-plane behavior are not implemented yet.
 
 ### CLI
 
@@ -95,6 +97,11 @@ Initial commands:
   `diff.patch` artifact from local task evidence when present.
 - `taskfence report <task-id> --workspace <workspace>` reads the generated
   Markdown report from local task evidence.
+- `taskfence gateway call <task-file> <tool> <operation>` executes a configured
+  deterministic local fixture tool call and writes structured local evidence.
+- `taskfence gateway spool process <task-file> <request-file>` processes one
+  validated request from the task-local gateway spool, writes one typed
+  response, and records structured evidence.
 
 ### Task Orchestrator
 
@@ -201,10 +208,19 @@ calls, report evidence, redacted secret references, MCP/HTTP request
 normalization stubs, explicit unsupported-protocol errors, and a CLI-owned local
 fixture execution path. The local fixture path executes only configured
 task-file tools and currently models GitHub-shaped `github.read_issue` and
-`github.create_pr` behavior without network access or raw credentials. When a
+`github.create_pr` behavior without network access or raw credentials. The
+agent-facing spool prototype creates `gateway-spool/requests`,
+`gateway-spool/responses`, and a generated `taskfence-gateway-submit` wrapper
+under the task evidence directory; Docker mounts only that dedicated spool path
+at `/taskfence/gateway-spool` when gateway tools are configured, rejecting
+broader permission mounts that would also expose it. The host-side spool
+processor validates request paths against the task spool root, rejects parent
+components and symlink escapes, executes one mediated local fixture action, and
+writes typed success, denied, timeout, cancellation, malformed-request,
+unsupported-action, or failure responses with structured evidence. When a
 registry is configured, unregistered tool actions fail before policy evaluation
-and record an audit error. It does not execute production MCP, HTTP, CLI
-wrapper, SDK, webhook, live GitHub, or raw secret-broker actions yet.
+and record an audit error. It does not execute production MCP, HTTP, SDK,
+webhook, live GitHub, or raw secret-broker actions yet.
 
 Supported gateway surfaces can include:
 

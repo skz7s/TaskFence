@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use taskfence_core::{
     AgentInvocation, ExitStatus, MountMode, MountPlan, NetworkDefault, NetworkPermissions,
     PreparedRun, ResolvedTask, RunOutput, Runner, RunningTask, SandboxKind, TaskFenceError, TaskId,
+    GATEWAY_SPOOL_CONTAINER_PATH, GATEWAY_SPOOL_DIR_NAME,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,6 +121,15 @@ impl DockerRunner {
         reject_mixed_mode_overlaps(&read_paths, &write_paths)?;
 
         let mut mounts = Vec::new();
+        let gateway_spool_path = if !task.gateway.tools.is_empty() {
+            let spool_path = gateway_spool_host_path(task)?;
+            self.validate_mount_path(task, &spool_path)?;
+            reject_permission_mounts_cover_gateway_spool(&read_paths, &write_paths, &spool_path)?;
+            Some(spool_path)
+        } else {
+            None
+        };
+
         for path in read_paths.difference(&write_paths) {
             mounts.push(MountPlan {
                 host_path: path.clone(),
@@ -131,6 +141,13 @@ impl DockerRunner {
             mounts.push(MountPlan {
                 host_path: path.clone(),
                 container_path: container_path_for(task, &path)?,
+                mode: MountMode::ReadWrite,
+            });
+        }
+        if let Some(spool_path) = gateway_spool_path {
+            mounts.push(MountPlan {
+                host_path: spool_path,
+                container_path: Utf8PathBuf::from(GATEWAY_SPOOL_CONTAINER_PATH),
                 mode: MountMode::ReadWrite,
             });
         }
@@ -718,6 +735,21 @@ fn reject_mixed_mode_overlaps(
     Ok(())
 }
 
+fn reject_permission_mounts_cover_gateway_spool(
+    read_paths: &BTreeSet<Utf8PathBuf>,
+    write_paths: &BTreeSet<Utf8PathBuf>,
+    spool_path: &Utf8Path,
+) -> taskfence_core::Result<()> {
+    for path in read_paths.iter().chain(write_paths.iter()) {
+        if path == spool_path || spool_path.starts_with(path) || path.starts_with(spool_path) {
+            return Err(TaskFenceError::Runner(format!(
+                "gateway spool must be exposed only through its dedicated mount: {spool_path}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn container_path_for(
     task: &ResolvedTask,
     host_path: &Utf8Path,
@@ -734,6 +766,27 @@ fn container_path_for(
             ))
         })?;
     Ok(task.workspace_container_path.join(relative))
+}
+
+fn gateway_spool_host_path(task: &ResolvedTask) -> taskfence_core::Result<Utf8PathBuf> {
+    if task.id.0.is_empty()
+        || task.id.0 == "."
+        || task.id.0 == ".."
+        || task.id.0.contains('/')
+        || task.id.0.contains('\\')
+        || task.id.0.chars().any(char::is_control)
+    {
+        return Err(TaskFenceError::Runner(format!(
+            "task id is not a safe gateway spool path component: {:?}",
+            task.id.0
+        )));
+    }
+    Ok(task
+        .workspace_host_path
+        .join(".taskfence")
+        .join("tasks")
+        .join(task.id.0.as_str())
+        .join(GATEWAY_SPOOL_DIR_NAME))
 }
 
 fn validate_env_name(name: &str) -> taskfence_core::Result<()> {
@@ -781,8 +834,9 @@ fn lock_state(
 mod tests {
     use super::*;
     use taskfence_core::{
-        AgentConfig, AgentKind, ApprovalConfig, AuditConfig, EnvPermissions, LimitConfig,
-        PathPermissions, PermissionConfig, SandboxConfig, SecretConfig, TaskId,
+        AgentConfig, AgentKind, ApprovalConfig, AuditConfig, EnvPermissions, GatewayConfig,
+        GatewayConnectorConfig, GatewayToolConfig, LimitConfig, PathPermissions, PermissionConfig,
+        SandboxConfig, SecretConfig, TaskId,
     };
 
     fn task() -> ResolvedTask {
@@ -859,6 +913,63 @@ mod tests {
             "/workspace/src"
         );
         assert_eq!(plan.prepared.mounts[1].mode, MountMode::ReadWrite);
+    }
+
+    #[test]
+    fn docker_runner_adds_dedicated_gateway_spool_mount_for_gateway_tools() {
+        let mut task = task();
+        task.permissions.paths.read = vec!["/tmp/repo/README.md".into()];
+        task.permissions.paths.write = vec!["/tmp/repo/src".into()];
+        task.gateway = GatewayConfig {
+            tools: vec![GatewayToolConfig {
+                protocol: "mcp".into(),
+                tool: "github".into(),
+                operation: "read_issue".into(),
+                connector: GatewayConnectorConfig::Unsupported {
+                    kind: "github".into(),
+                },
+                secret_refs: Vec::new(),
+            }],
+        };
+
+        let plan = runner().build_run_plan(&task).unwrap();
+
+        assert_eq!(plan.network.mode, DockerNetworkMode::None);
+        let spool_mount = plan
+            .prepared
+            .mounts
+            .iter()
+            .find(|mount| mount.container_path.as_str() == GATEWAY_SPOOL_CONTAINER_PATH)
+            .expect("gateway spool mount should be present");
+        assert_eq!(
+            spool_mount.host_path.as_str(),
+            "/tmp/repo/.taskfence/tasks/task-1/gateway-spool"
+        );
+        assert_eq!(spool_mount.mode, MountMode::ReadWrite);
+    }
+
+    #[test]
+    fn gateway_spool_rejects_broad_permission_mounts_that_cover_spool() {
+        let mut task = task();
+        task.permissions.paths.read.clear();
+        task.permissions.paths.write = vec!["/tmp/repo".into()];
+        task.gateway = GatewayConfig {
+            tools: vec![GatewayToolConfig {
+                protocol: "mcp".into(),
+                tool: "github".into(),
+                operation: "read_issue".into(),
+                connector: GatewayConnectorConfig::Unsupported {
+                    kind: "github".into(),
+                },
+                secret_refs: Vec::new(),
+            }],
+        };
+
+        let err = runner().prepare(&task).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("gateway spool must be exposed only through its dedicated mount"));
     }
 
     #[test]

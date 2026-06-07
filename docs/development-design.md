@@ -431,8 +431,10 @@ Responsibilities:
 
 This crate can start with contracts and deterministic local fixtures, but the
 contracts must stay aligned with Phase 3 so policy and audit are not limited to
-shell commands. Production MCP/HTTP transports, live GitHub integration,
-agent-facing wrapper/spool, and sidecar/listener behavior need separate plans.
+shell commands. The bounded agent-facing request/response spool prototype is
+implemented as a task-local file contract over deterministic local fixture
+execution. Production MCP/HTTP transports, live GitHub integration, and
+sidecar/listener behavior still need separate plans.
 
 ### `taskfence-report`
 
@@ -945,7 +947,8 @@ The first usable version is complete when:
   Typed gateway mediation can record configured tool-call decisions plus
   known-tool registry checks, approval request/resolution evidence, and
   redacted secret references into audit/report output. The current executable
-  path is limited to `taskfence gateway call` against deterministic local
+  paths are limited to `taskfence gateway call` and one-request
+  `taskfence gateway spool process` handling against deterministic local
   fixture adapters, not external tool execution.
 - Approval-required actions fail closed by default in local mode. Operators can
   opt into in-process terminal approval with `taskfence run --interactive-approval`
@@ -960,5 +963,6 @@ The first usable version is complete when:
 
 Current unsupported surfaces must remain explicit in docs and errors: Docker
 domain allowlists without an enforcing proxy, production gateway protocol
-transports, live GitHub/API execution, agent-facing wrapper/spool/sidecar,
-Web UI, replay, team server, and enterprise behavior.
+transports, live GitHub/API execution, sidecar/listener behavior, arbitrary
+in-container command observation, Web UI, replay, team server, and enterprise
+behavior.

@@ -16,7 +16,9 @@ use taskfence_core::{
     ToolExecutionContext, ToolExecutionErrorKind,
 };
 use taskfence_gateway::{
-    normalize_tool_action, GatewayExecutor, InMemoryToolRegistry, LocalFixtureToolAdapter,
+    gateway_spool_request_id_from_path, normalize_tool_action, read_gateway_spool_request,
+    write_gateway_spool_response, GatewayExecutor, GatewaySpoolPaths, GatewaySpoolResponse,
+    GatewaySpoolResponseState, InMemoryToolRegistry, LocalFixtureToolAdapter,
     LocalRedactedSecretBroker, RegisteredTool, ToolAdapter, UnsupportedGatewayAdapter,
 };
 use taskfence_policy::BuiltInPolicyEngine;
@@ -200,6 +202,28 @@ enum GatewayCommand {
         #[arg(long)]
         external_approval: bool,
     },
+    /// Process agent-facing gateway spool requests.
+    Spool {
+        #[command(subcommand)]
+        command: GatewaySpoolCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum GatewaySpoolCommand {
+    /// Process one request file from the task gateway spool.
+    Process {
+        /// TaskFence YAML task file.
+        task_file: Utf8PathBuf,
+        /// Request JSON file under the task gateway spool requests directory.
+        request_file: Utf8PathBuf,
+        /// Resolve approval-required spool calls with a local approved decision.
+        #[arg(long)]
+        approve: bool,
+        /// Wait for taskfence approve/deny to resolve approval-required spool calls.
+        #[arg(long)]
+        external_approval: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -259,6 +283,29 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
                     GatewayApprovalMode::FailClosed
                 };
                 run_gateway_call(task_file, protocol, tool, operation, params, approval_mode)
+            }
+            GatewayCommand::Spool {
+                command:
+                    GatewaySpoolCommand::Process {
+                        task_file,
+                        request_file,
+                        approve,
+                        external_approval,
+                    },
+            } => {
+                if approve && external_approval {
+                    return Err(TaskFenceError::Config(
+                        "--approve and --external-approval cannot be used together".into(),
+                    ));
+                }
+                let approval_mode = if approve {
+                    GatewayApprovalMode::Approved
+                } else if external_approval {
+                    GatewayApprovalMode::External
+                } else {
+                    GatewayApprovalMode::FailClosed
+                };
+                run_gateway_spool_process(task_file, request_file, approval_mode)
             }
         },
         Command::Logs { task_id, workspace } => show_logs(workspace, task_id),
@@ -1231,6 +1278,235 @@ fn run_gateway_call(
     }
 }
 
+fn run_gateway_spool_process(
+    task_file: Utf8PathBuf,
+    request_file: Utf8PathBuf,
+    approval_mode: GatewayApprovalMode,
+) -> taskfence_core::Result<()> {
+    let task = load_task_file(&task_file)?;
+    let artifacts = LocalArtifactStore::in_workspace();
+    let artifact_refs = artifacts.create_task_dir(&task)?;
+    artifacts.write_resolved_task(&task)?;
+    let events_path = artifact_refs
+        .events
+        .clone()
+        .unwrap_or_else(|| artifact_refs.task_dir.join("events.jsonl"));
+    let jsonl = LocalJsonlAuditLogger::new(events_path)?;
+    let audit = CollectingAuditLogger::new(&jsonl);
+    let state = InMemoryStateStore::new();
+    let spool_paths = GatewaySpoolPaths::for_task(&task)?;
+    let request_id = gateway_spool_request_id_from_path(&request_file)
+        .unwrap_or_else(|_| "malformed-request".into());
+
+    gateway_transition(&audit, &state, &task.id, TaskStatus::Created)?;
+    audit.record(AuditEvent::TaskCreated {
+        task_id: task.id.clone(),
+        at: time::OffsetDateTime::now_utc(),
+        goal: task.goal.clone(),
+    })?;
+    gateway_transition(&audit, &state, &task.id, TaskStatus::Validating)?;
+
+    let request = match read_gateway_spool_request(&spool_paths, &request_file) {
+        Ok(request) => request,
+        Err(err) => {
+            return finish_gateway_spool_error(
+                &task,
+                &artifact_refs,
+                &audit,
+                &state,
+                &spool_paths,
+                GatewaySpoolFailure {
+                    request_id,
+                    state: GatewaySpoolResponseState::MalformedRequest,
+                    kind: ToolExecutionErrorKind::InvalidParameters,
+                    message: format!("gateway spool request was malformed: {err}"),
+                },
+            );
+        }
+    };
+
+    if request.cancel {
+        return finish_gateway_spool_error(
+            &task,
+            &artifact_refs,
+            &audit,
+            &state,
+            &spool_paths,
+            GatewaySpoolFailure {
+                request_id: request.request_id,
+                state: GatewaySpoolResponseState::Cancelled,
+                kind: ToolExecutionErrorKind::AdapterFailed,
+                message: "gateway spool request was cancelled".into(),
+            },
+        );
+    }
+
+    if request.timeout_seconds == Some(0) {
+        return finish_gateway_spool_error(
+            &task,
+            &artifact_refs,
+            &audit,
+            &state,
+            &spool_paths,
+            GatewaySpoolFailure {
+                request_id: request.request_id,
+                state: GatewaySpoolResponseState::TimedOut,
+                kind: ToolExecutionErrorKind::AdapterFailed,
+                message: "gateway spool request timed out before execution".into(),
+            },
+        );
+    }
+
+    let registry = gateway_tool_registry(&task)?;
+    let supported_protocols = task
+        .gateway
+        .tools
+        .iter()
+        .map(|tool| tool.protocol.clone())
+        .collect::<Vec<_>>();
+    let policy = BuiltInPolicyEngine;
+    let adapter = gateway_adapter_for(&task, &request.action);
+    let secret_broker = LocalRedactedSecretBroker;
+
+    gateway_transition(&audit, &state, &task.id, TaskStatus::Preparing)?;
+    gateway_transition(&audit, &state, &task.id, TaskStatus::Running)?;
+    let context = ToolExecutionContext {
+        task_dir: Some(artifact_refs.task_dir.clone()),
+        artifact_dir: Some(artifact_refs.task_dir.join("artifacts")),
+    };
+    let execution = match approval_mode {
+        GatewayApprovalMode::FailClosed => {
+            let approval = LocalApprovalEngine::fail_closed()
+                .with_actor("gateway")
+                .with_source("spool-fail-closed");
+            execute_gateway_action(
+                &task,
+                request.action,
+                context,
+                &policy,
+                &audit,
+                &registry,
+                supported_protocols,
+                &approval,
+                adapter.as_ref(),
+                &secret_broker,
+            )?
+        }
+        GatewayApprovalMode::Approved => {
+            let approval = LocalApprovalEngine::preconfigured(ApprovalDecision::Approved)
+                .with_actor("gateway")
+                .with_source("spool-approved");
+            execute_gateway_action(
+                &task,
+                request.action,
+                context,
+                &policy,
+                &audit,
+                &registry,
+                supported_protocols,
+                &approval,
+                adapter.as_ref(),
+                &secret_broker,
+            )?
+        }
+        GatewayApprovalMode::External => {
+            let approval = LocalExternalApprovalEngine::new(task.workspace_host_path.clone())
+                .with_actor("gateway");
+            execute_gateway_action(
+                &task,
+                request.action,
+                context,
+                &policy,
+                &audit,
+                &registry,
+                supported_protocols,
+                &approval,
+                adapter.as_ref(),
+                &secret_broker,
+            )?
+        }
+    };
+
+    gateway_transition(&audit, &state, &task.id, TaskStatus::CollectingArtifacts)?;
+    record_gateway_artifacts(&audit, &task, &execution)?;
+    let response = GatewaySpoolResponse::from_execution(request.request_id, execution);
+    let response_path = write_gateway_spool_response(&spool_paths, &response)?;
+    audit.record(AuditEvent::Artifact {
+        task_id: task.id.clone(),
+        at: time::OffsetDateTime::now_utc(),
+        kind: "gateway_spool_response".into(),
+        path: response_path.clone(),
+    })?;
+
+    let final_status = gateway_spool_task_status(&response);
+    gateway_transition(&audit, &state, &task.id, TaskStatus::Reporting)?;
+    gateway_transition(&audit, &state, &task.id, final_status.clone())?;
+
+    let report = MarkdownReportGenerator::new();
+    let report_path = report.generate(&task, &artifact_refs, &audit.events()?)?;
+    audit.record(AuditEvent::Artifact {
+        task_id: task.id.clone(),
+        at: time::OffsetDateTime::now_utc(),
+        kind: "report".into(),
+        path: report_path,
+    })?;
+
+    print_gateway_spool_summary(&task, &response, &response_path);
+    match final_status {
+        TaskStatus::Succeeded => Ok(()),
+        status => Err(TaskFenceError::Gateway(format!(
+            "gateway spool request {} finished with status {status:?}",
+            response.request_id
+        ))),
+    }
+}
+
+fn finish_gateway_spool_error(
+    task: &ResolvedTask,
+    artifact_refs: &ArtifactRefs,
+    audit: &CollectingAuditLogger<'_>,
+    state: &dyn StateStore,
+    spool_paths: &GatewaySpoolPaths,
+    failure: GatewaySpoolFailure,
+) -> taskfence_core::Result<()> {
+    let response = GatewaySpoolResponse::error(
+        failure.request_id,
+        failure.state,
+        failure.kind,
+        failure.message.clone(),
+    );
+    let response_path = write_gateway_spool_response(spool_paths, &response)?;
+    audit.record(AuditEvent::Artifact {
+        task_id: task.id.clone(),
+        at: time::OffsetDateTime::now_utc(),
+        kind: "gateway_spool_response".into(),
+        path: response_path.clone(),
+    })?;
+    let status = gateway_spool_task_status(&response);
+    gateway_transition(audit, state, &task.id, TaskStatus::Reporting)?;
+    gateway_transition(audit, state, &task.id, status.clone())?;
+    let report = MarkdownReportGenerator::new();
+    let report_path = report.generate(task, artifact_refs, &audit.events()?)?;
+    audit.record(AuditEvent::Artifact {
+        task_id: task.id.clone(),
+        at: time::OffsetDateTime::now_utc(),
+        kind: "report".into(),
+        path: report_path,
+    })?;
+    print_gateway_spool_summary(task, &response, &response_path);
+    Err(TaskFenceError::Gateway(format!(
+        "gateway spool request {} finished with status {status:?}: {}",
+        response.request_id, failure.message
+    )))
+}
+
+struct GatewaySpoolFailure {
+    request_id: String,
+    state: GatewaySpoolResponseState,
+    kind: ToolExecutionErrorKind,
+    message: String,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_gateway_action(
     task: &ResolvedTask,
@@ -1353,6 +1629,18 @@ fn gateway_execution_status(execution: &ToolExecution) -> TaskStatus {
     }
 }
 
+fn gateway_spool_task_status(response: &GatewaySpoolResponse) -> TaskStatus {
+    match response.state {
+        GatewaySpoolResponseState::Succeeded => TaskStatus::Succeeded,
+        GatewaySpoolResponseState::Denied => TaskStatus::Denied,
+        GatewaySpoolResponseState::TimedOut => TaskStatus::TimedOut,
+        GatewaySpoolResponseState::Cancelled => TaskStatus::Cancelled,
+        GatewaySpoolResponseState::Failed
+        | GatewaySpoolResponseState::MalformedRequest
+        | GatewaySpoolResponseState::UnsupportedAction => TaskStatus::Failed,
+    }
+}
+
 fn print_gateway_call_summary(
     task: &ResolvedTask,
     artifacts: &ArtifactRefs,
@@ -1369,6 +1657,27 @@ fn print_gateway_call_summary(
         (Some(result), None) => println!("  result: {}", result.summary),
         (_, Some(error)) => println!("  error: {:?}: {}", error.kind, error.message),
         (None, None) => println!("  result: no result or error recorded"),
+    }
+}
+
+fn print_gateway_spool_summary(
+    task: &ResolvedTask,
+    response: &GatewaySpoolResponse,
+    response_path: &Utf8PathBuf,
+) {
+    println!("Gateway spool request processed");
+    println!("  task: {}", task.id.0);
+    println!("  request: {}", response.request_id);
+    println!("  state: {:?}", response.state);
+    println!("  response: {response_path}");
+    if let Some(execution) = &response.execution {
+        match (&execution.result, &execution.error) {
+            (Some(result), None) => println!("  result: {}", result.summary),
+            (_, Some(error)) => println!("  error: {:?}: {}", error.kind, error.message),
+            (None, None) => println!("  result: no result or error recorded"),
+        }
+    } else if let Some(error) = &response.error {
+        println!("  error: {:?}: {}", error.kind, error.message);
     }
 }
 
@@ -1500,6 +1809,7 @@ mod tests {
     use taskfence_core::{
         Action, ActionDecision, ApprovalDecision, RedactedValue, RiskLevel, ToolAction,
     };
+    use taskfence_gateway::GatewaySpoolRequest;
     use taskfence_runner::FakeRunner;
 
     #[test]
@@ -1628,6 +1938,46 @@ mod tests {
                 assert!(!external_approval);
             }
             other => panic!("expected gateway call command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_gateway_spool_process() {
+        let cli = Cli::try_parse_from([
+            "taskfence",
+            "gateway",
+            "spool",
+            "process",
+            "task.yaml",
+            ".taskfence/tasks/task-1/gateway-spool/requests/request-1.json",
+            "--approve",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Gateway {
+                command:
+                    GatewayCommand::Spool {
+                        command:
+                            GatewaySpoolCommand::Process {
+                                task_file,
+                                request_file,
+                                approve,
+                                external_approval,
+                            },
+                    },
+            } => {
+                assert_eq!(task_file, Utf8PathBuf::from("task.yaml"));
+                assert_eq!(
+                    request_file,
+                    Utf8PathBuf::from(
+                        ".taskfence/tasks/task-1/gateway-spool/requests/request-1.json"
+                    )
+                );
+                assert!(approve);
+                assert!(!external_approval);
+            }
+            other => panic!("expected gateway spool process command, got {other:?}"),
         }
     }
 
@@ -2882,6 +3232,148 @@ mod tests {
     }
 
     #[test]
+    fn gateway_spool_process_writes_success_response_and_evidence() {
+        let (_temp, workspace, task_file) = gateway_fixture_task("gateway-spool-ok");
+        let request_path = write_gateway_spool_request(
+            &task_file,
+            "request-42",
+            ToolAction {
+                protocol: "mcp".into(),
+                tool: "github".into(),
+                operation: "read_issue".into(),
+                parameters: BTreeMap::from([("number".into(), RedactedValue::Plain("42".into()))]),
+            },
+            Some(30),
+            false,
+        );
+
+        run_gateway_spool_process(task_file, request_path, GatewayApprovalMode::FailClosed)
+            .unwrap();
+
+        let task_id = TaskId("gateway-spool-ok".into());
+        let response = read_gateway_spool_response(&workspace, &task_id, "request-42");
+        assert_eq!(response.state, GatewaySpoolResponseState::Succeeded);
+        assert!(response
+            .execution
+            .as_ref()
+            .and_then(|execution| execution.result.as_ref())
+            .is_some_and(|result| result.summary.contains("read fixture issue #42")));
+
+        let events = LocalTaskEvidenceStore::new(workspace.clone())
+            .read_events(&task_id)
+            .unwrap();
+        assert!(events.events.iter().any(|event| {
+            matches!(
+                event,
+                AuditEvent::Artifact { kind, path, .. }
+                    if kind == "gateway_spool_response"
+                        && path.ends_with("gateway-spool/responses/request-42.json")
+            )
+        }));
+        assert!(report_text(workspace.clone(), &task_id)
+            .unwrap()
+            .contains("read fixture issue #42"));
+        assert!(artifacts_text(workspace, &task_id)
+            .unwrap()
+            .contains("gateway-spool"));
+    }
+
+    #[test]
+    fn gateway_spool_process_records_cancelled_request() {
+        let (_temp, workspace, task_file) = gateway_fixture_task("gateway-spool-cancelled");
+        let request_path = write_gateway_spool_request(
+            &task_file,
+            "request-cancelled",
+            ToolAction {
+                protocol: "mcp".into(),
+                tool: "github".into(),
+                operation: "read_issue".into(),
+                parameters: BTreeMap::from([("number".into(), RedactedValue::Plain("42".into()))]),
+            },
+            Some(30),
+            true,
+        );
+
+        let err =
+            run_gateway_spool_process(task_file, request_path, GatewayApprovalMode::FailClosed)
+                .unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Gateway(message) if message.contains("status Cancelled"))
+        );
+        let task_id = TaskId("gateway-spool-cancelled".into());
+        let response = read_gateway_spool_response(&workspace, &task_id, "request-cancelled");
+        assert_eq!(response.state, GatewaySpoolResponseState::Cancelled);
+        assert!(response
+            .error
+            .is_some_and(|error| error.message.contains("cancelled")));
+        assert!(status_text(workspace, &task_id)
+            .unwrap()
+            .contains("  status: Cancelled\n"));
+    }
+
+    #[test]
+    fn gateway_spool_process_records_zero_timeout_request() {
+        let (_temp, workspace, task_file) = gateway_fixture_task("gateway-spool-timeout");
+        let request_path = write_gateway_spool_request(
+            &task_file,
+            "request-timeout",
+            ToolAction {
+                protocol: "mcp".into(),
+                tool: "github".into(),
+                operation: "read_issue".into(),
+                parameters: BTreeMap::from([("number".into(), RedactedValue::Plain("42".into()))]),
+            },
+            Some(0),
+            false,
+        );
+
+        let err =
+            run_gateway_spool_process(task_file, request_path, GatewayApprovalMode::FailClosed)
+                .unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Gateway(message) if message.contains("status TimedOut"))
+        );
+        let task_id = TaskId("gateway-spool-timeout".into());
+        let response = read_gateway_spool_response(&workspace, &task_id, "request-timeout");
+        assert_eq!(response.state, GatewaySpoolResponseState::TimedOut);
+        assert!(response
+            .error
+            .is_some_and(|error| error.message.contains("timed out")));
+        assert!(status_text(workspace, &task_id)
+            .unwrap()
+            .contains("  status: TimedOut\n"));
+    }
+
+    #[test]
+    fn gateway_spool_process_records_malformed_request() {
+        let (_temp, workspace, task_file) = gateway_fixture_task("gateway-spool-malformed");
+        let task = load_task_file(&task_file).unwrap();
+        let spool_paths = GatewaySpoolPaths::for_task(&task).unwrap();
+        fs::create_dir_all(&spool_paths.requests_dir).unwrap();
+        let request_path = spool_paths.request_path("request-malformed").unwrap();
+        fs::write(&request_path, b"{not-json").unwrap();
+
+        let err =
+            run_gateway_spool_process(task_file, request_path, GatewayApprovalMode::FailClosed)
+                .unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Gateway(message) if message.contains("was malformed"))
+        );
+        let task_id = TaskId("gateway-spool-malformed".into());
+        let response = read_gateway_spool_response(&workspace, &task_id, "request-malformed");
+        assert_eq!(response.state, GatewaySpoolResponseState::MalformedRequest);
+        assert!(response
+            .error
+            .is_some_and(|error| error.kind == ToolExecutionErrorKind::InvalidParameters));
+        assert!(status_text(workspace, &task_id)
+            .unwrap()
+            .contains("  status: Failed\n"));
+    }
+
+    #[test]
     fn approvals_command_reads_local_approval_list() {
         let temp = tempfile::tempdir().unwrap();
         let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
@@ -3247,6 +3739,43 @@ mod tests {
         assert!(workspace
             .join(".taskfence/tasks/approval-external-denied/report.md")
             .is_file());
+    }
+
+    fn write_gateway_spool_request(
+        task_file: &Utf8PathBuf,
+        request_id: &str,
+        action: ToolAction,
+        timeout_seconds: Option<u64>,
+        cancel: bool,
+    ) -> Utf8PathBuf {
+        let task = load_task_file(task_file).unwrap();
+        let spool_paths = GatewaySpoolPaths::for_task(&task).unwrap();
+        fs::create_dir_all(&spool_paths.requests_dir).unwrap();
+        let request_path = spool_paths.request_path(request_id).unwrap();
+        let request = GatewaySpoolRequest {
+            request_id: request_id.into(),
+            action,
+            timeout_seconds,
+            cancel,
+        };
+        let bytes = serde_json::to_vec_pretty(&request).unwrap();
+        fs::write(&request_path, bytes).unwrap();
+        request_path
+    }
+
+    fn read_gateway_spool_response(
+        workspace: &Utf8PathBuf,
+        task_id: &TaskId,
+        request_id: &str,
+    ) -> GatewaySpoolResponse {
+        let path = workspace
+            .join(".taskfence")
+            .join("tasks")
+            .join(task_id.0.as_str())
+            .join("gateway-spool")
+            .join("responses")
+            .join(format!("{request_id}.json"));
+        serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
     }
 
     fn gateway_fixture_task(id: &str) -> (tempfile::TempDir, Utf8PathBuf, Utf8PathBuf) {

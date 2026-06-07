@@ -569,6 +569,7 @@ version = "0.1.0"
 dependencies = [
  "camino",
  "clap",
+ "serde_json",
  "taskfence-agent",
  "taskfence-approval",
  "taskfence-artifacts",
@@ -613,9 +614,11 @@ name = "taskfence-gateway"
 version = "0.1.0"
 dependencies = [
  "camino",
+ "serde",
  "serde_json",
  "taskfence-core",
  "taskfence-policy",
+ "tempfile",
  "time",
 ]
 

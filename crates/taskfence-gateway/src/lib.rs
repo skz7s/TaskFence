@@ -1,16 +1,353 @@
+use camino::{Utf8Path, Utf8PathBuf};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::fs::{self, OpenOptions};
 
 use taskfence_core::{
     Action, ActionDecision, ApprovalDecision, ApprovalEngine, ApprovalRecord, AuditEvent,
     AuditLogger, GatewayConnectorConfig, GatewaySecretReferenceConfig, GatewayToolConfig,
     PolicyEngine, RedactedValue, ResolvedTask, TaskFenceError, ToolAction, ToolAdapterIdentity,
     ToolExecution, ToolExecutionContext, ToolExecutionError, ToolExecutionErrorKind, ToolRequest,
-    ToolResult,
+    ToolResult, GATEWAY_SPOOL_DIR_NAME, GATEWAY_SPOOL_REQUESTS_DIR_NAME,
+    GATEWAY_SPOOL_RESPONSES_DIR_NAME,
 };
 use time::OffsetDateTime;
 
 const REDACTION_MARKER: &str = "[redacted]";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GatewaySpoolPaths {
+    pub root: Utf8PathBuf,
+    pub requests_dir: Utf8PathBuf,
+    pub responses_dir: Utf8PathBuf,
+}
+
+impl GatewaySpoolPaths {
+    pub fn for_task(task: &ResolvedTask) -> taskfence_core::Result<Self> {
+        validate_spool_component("task id", &task.id.0)?;
+        let root = task
+            .workspace_host_path
+            .join(".taskfence")
+            .join("tasks")
+            .join(task.id.0.as_str())
+            .join(GATEWAY_SPOOL_DIR_NAME);
+        Self::new(root)
+    }
+
+    pub fn new(root: impl Into<Utf8PathBuf>) -> taskfence_core::Result<Self> {
+        let root = root.into();
+        reject_parent_component("gateway spool root", &root)?;
+        Ok(Self {
+            requests_dir: root.join(GATEWAY_SPOOL_REQUESTS_DIR_NAME),
+            responses_dir: root.join(GATEWAY_SPOOL_RESPONSES_DIR_NAME),
+            root,
+        })
+    }
+
+    pub fn request_path(&self, request_id: &str) -> taskfence_core::Result<Utf8PathBuf> {
+        validate_spool_component("gateway spool request id", request_id)?;
+        Ok(self.requests_dir.join(format!("{request_id}.json")))
+    }
+
+    pub fn response_path(&self, request_id: &str) -> taskfence_core::Result<Utf8PathBuf> {
+        validate_spool_component("gateway spool request id", request_id)?;
+        Ok(self.responses_dir.join(format!("{request_id}.json")))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GatewaySpoolRequest {
+    pub request_id: String,
+    pub action: ToolAction,
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub cancel: bool,
+}
+
+impl GatewaySpoolRequest {
+    pub fn normalized(self) -> taskfence_core::Result<Self> {
+        validate_spool_component("gateway spool request id", &self.request_id)?;
+        Ok(Self {
+            request_id: self.request_id,
+            action: normalize_tool_action(self.action)?,
+            timeout_seconds: self.timeout_seconds,
+            cancel: self.cancel,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GatewaySpoolResponseState {
+    Succeeded,
+    Failed,
+    Denied,
+    TimedOut,
+    Cancelled,
+    MalformedRequest,
+    UnsupportedAction,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GatewaySpoolResponse {
+    pub request_id: String,
+    pub state: GatewaySpoolResponseState,
+    pub execution: Option<ToolExecution>,
+    pub error: Option<ToolExecutionError>,
+}
+
+impl GatewaySpoolResponse {
+    pub fn from_execution(request_id: impl Into<String>, execution: ToolExecution) -> Self {
+        let state = match execution.error.as_ref().map(|error| &error.kind) {
+            None => GatewaySpoolResponseState::Succeeded,
+            Some(
+                ToolExecutionErrorKind::PolicyDenied
+                | ToolExecutionErrorKind::ApprovalDeniedOrTimedOut,
+            ) => GatewaySpoolResponseState::Denied,
+            Some(
+                ToolExecutionErrorKind::UnsupportedProtocol
+                | ToolExecutionErrorKind::UnsupportedTool,
+            ) => GatewaySpoolResponseState::UnsupportedAction,
+            Some(
+                ToolExecutionErrorKind::UnregisteredTool
+                | ToolExecutionErrorKind::InvalidParameters
+                | ToolExecutionErrorKind::AdapterFailed
+                | ToolExecutionErrorKind::SecretUnavailable,
+            ) => GatewaySpoolResponseState::Failed,
+        };
+        Self {
+            request_id: request_id.into(),
+            state,
+            execution: Some(execution),
+            error: None,
+        }
+    }
+
+    pub fn error(
+        request_id: impl Into<String>,
+        state: GatewaySpoolResponseState,
+        kind: ToolExecutionErrorKind,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            request_id: request_id.into(),
+            state,
+            execution: None,
+            error: Some(ToolExecutionError {
+                kind,
+                message: message.into(),
+            }),
+        }
+    }
+}
+
+pub fn read_gateway_spool_request(
+    paths: &GatewaySpoolPaths,
+    request_path: &Utf8Path,
+) -> taskfence_core::Result<GatewaySpoolRequest> {
+    let request_path =
+        validate_existing_spool_file("gateway spool request", request_path, &paths.requests_dir)?;
+    let request_id = request_id_from_path(&request_path)?;
+    let contents = fs::read_to_string(request_path.as_std_path()).map_err(|err| {
+        TaskFenceError::Gateway(format!(
+            "failed to read gateway spool request {request_path}: {err}"
+        ))
+    })?;
+    let request = serde_json::from_str::<GatewaySpoolRequest>(&contents).map_err(|err| {
+        TaskFenceError::Gateway(format!(
+            "malformed gateway spool request {request_path}: {err}"
+        ))
+    })?;
+    let request = request.normalized()?;
+    if request.request_id != request_id {
+        return Err(TaskFenceError::Gateway(format!(
+            "gateway spool request id {} does not match request file {request_id}.json",
+            request.request_id
+        )));
+    }
+    Ok(request)
+}
+
+pub fn gateway_spool_request_id_from_path(path: &Utf8Path) -> taskfence_core::Result<String> {
+    request_id_from_path(path)
+}
+
+pub fn write_gateway_spool_response(
+    paths: &GatewaySpoolPaths,
+    response: &GatewaySpoolResponse,
+) -> taskfence_core::Result<Utf8PathBuf> {
+    validate_spool_component("gateway spool request id", &response.request_id)?;
+    fs::create_dir_all(paths.responses_dir.as_std_path()).map_err(|err| {
+        TaskFenceError::Gateway(format!(
+            "failed to create gateway spool response directory {}: {err}",
+            paths.responses_dir
+        ))
+    })?;
+    let response_path = paths.response_path(&response.request_id)?;
+    validate_new_spool_file(
+        "gateway spool response",
+        &response_path,
+        &paths.responses_dir,
+    )?;
+    let bytes = serde_json::to_vec_pretty(response).map_err(|err| {
+        TaskFenceError::Gateway(format!("failed to serialize gateway spool response: {err}"))
+    })?;
+    write_spool_response_file(&response_path, &bytes)?;
+    Ok(response_path)
+}
+
+fn validate_spool_component(field: &str, value: &str) -> taskfence_core::Result<()> {
+    if value.is_empty()
+        || value == "."
+        || value == ".."
+        || value.contains('/')
+        || value.contains('\\')
+        || value.chars().any(char::is_control)
+    {
+        return Err(TaskFenceError::Gateway(format!(
+            "{field} is not a safe gateway spool path component: {value:?}"
+        )));
+    }
+    if !value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    {
+        return Err(TaskFenceError::Gateway(format!(
+            "{field} may only contain ASCII letters, digits, '.', '_' or '-': {value:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn reject_parent_component(field: &str, path: &Utf8Path) -> taskfence_core::Result<()> {
+    if path
+        .components()
+        .any(|component| component.as_str() == "..")
+    {
+        Err(TaskFenceError::Gateway(format!(
+            "{field} must not contain '..': {path}"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_existing_spool_file(
+    field: &str,
+    path: &Utf8Path,
+    allowed_dir: &Utf8Path,
+) -> taskfence_core::Result<Utf8PathBuf> {
+    reject_parent_component(field, path)?;
+    reject_parent_component("gateway spool allowed directory", allowed_dir)?;
+    if path.extension() != Some("json") {
+        return Err(TaskFenceError::Gateway(format!(
+            "{field} must be a .json file: {path}"
+        )));
+    }
+
+    let metadata = fs::symlink_metadata(path.as_std_path()).map_err(|err| {
+        TaskFenceError::Gateway(format!("failed to inspect {field} {path}: {err}"))
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(TaskFenceError::Gateway(format!(
+            "{field} must not be a symlink: {path}"
+        )));
+    }
+    if !metadata.is_file() {
+        return Err(TaskFenceError::Gateway(format!(
+            "{field} must be a regular file: {path}"
+        )));
+    }
+
+    let canonical_path = canonical_utf8(path)?;
+    let canonical_dir = canonical_utf8(allowed_dir)?;
+    if !canonical_path.starts_with(&canonical_dir) {
+        return Err(TaskFenceError::Gateway(format!(
+            "{field} escapes gateway spool directory {canonical_dir}: {canonical_path}"
+        )));
+    }
+    Ok(canonical_path)
+}
+
+fn validate_new_spool_file(
+    field: &str,
+    path: &Utf8Path,
+    allowed_dir: &Utf8Path,
+) -> taskfence_core::Result<()> {
+    reject_parent_component(field, path)?;
+    reject_parent_component("gateway spool allowed directory", allowed_dir)?;
+    if path.extension() != Some("json") {
+        return Err(TaskFenceError::Gateway(format!(
+            "{field} must be a .json file: {path}"
+        )));
+    }
+
+    let canonical_dir = canonical_utf8(allowed_dir)?;
+    let parent = path.parent().ok_or_else(|| {
+        TaskFenceError::Gateway(format!("{field} path has no parent directory: {path}"))
+    })?;
+    let canonical_parent = canonical_utf8(parent)?;
+    if canonical_parent != canonical_dir {
+        return Err(TaskFenceError::Gateway(format!(
+            "{field} must be written directly under gateway spool directory {canonical_dir}: {path}"
+        )));
+    }
+
+    match fs::symlink_metadata(path.as_std_path()) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(TaskFenceError::Gateway(format!(
+            "{field} must not overwrite a symlink: {path}"
+        ))),
+        Ok(_) => Err(TaskFenceError::Gateway(format!(
+            "{field} already exists: {path}"
+        ))),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(TaskFenceError::Gateway(format!(
+            "failed to inspect {field} {path}: {err}"
+        ))),
+    }
+}
+
+fn request_id_from_path(path: &Utf8Path) -> taskfence_core::Result<String> {
+    let stem = path.file_stem().ok_or_else(|| {
+        TaskFenceError::Gateway(format!("gateway spool request file has no stem: {path}"))
+    })?;
+    validate_spool_component("gateway spool request id", stem)?;
+    Ok(stem.to_owned())
+}
+
+fn canonical_utf8(path: &Utf8Path) -> taskfence_core::Result<Utf8PathBuf> {
+    let canonical = fs::canonicalize(path.as_std_path()).map_err(|err| {
+        TaskFenceError::Gateway(format!(
+            "failed to canonicalize gateway spool path {path}: {err}"
+        ))
+    })?;
+    Utf8PathBuf::from_path_buf(canonical).map_err(|path| {
+        TaskFenceError::Gateway(format!(
+            "gateway spool path is not valid UTF-8: {}",
+            path.display()
+        ))
+    })
+}
+
+fn write_spool_response_file(path: &Utf8Path, bytes: &[u8]) -> taskfence_core::Result<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path.as_std_path())
+        .map_err(|err| {
+            TaskFenceError::Gateway(format!(
+                "failed to create gateway spool response {path}: {err}"
+            ))
+        })?;
+    use std::io::Write as _;
+    file.write_all(bytes).map_err(|err| {
+        TaskFenceError::Gateway(format!(
+            "failed to write gateway spool response {path}: {err}"
+        ))
+    })
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SecretReference {
@@ -1975,5 +2312,102 @@ mod tests {
                 })
             )
         ));
+    }
+
+    #[test]
+    fn spool_request_round_trips_and_writes_response_under_task_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let spool_root = Utf8PathBuf::from_path_buf(temp.path().join("gateway-spool")).unwrap();
+        let paths = GatewaySpoolPaths::new(spool_root).unwrap();
+        fs::create_dir_all(&paths.requests_dir).unwrap();
+        fs::create_dir_all(&paths.responses_dir).unwrap();
+        let request_path = paths.request_path("request-1").unwrap();
+        let request = GatewaySpoolRequest {
+            request_id: "request-1".into(),
+            action: tool_action("mcp"),
+            timeout_seconds: Some(30),
+            cancel: false,
+        };
+        fs::write(&request_path, serde_json::to_vec_pretty(&request).unwrap()).unwrap();
+
+        let parsed = read_gateway_spool_request(&paths, &request_path).unwrap();
+
+        assert_eq!(parsed.request_id, "request-1");
+        assert_eq!(parsed.action.protocol, "mcp");
+        assert_eq!(parsed.action.tool, "github");
+        assert_eq!(parsed.action.operation, "create_pr");
+        assert_eq!(parsed.timeout_seconds, Some(30));
+
+        let response = GatewaySpoolResponse::error(
+            "request-1",
+            GatewaySpoolResponseState::Cancelled,
+            ToolExecutionErrorKind::AdapterFailed,
+            "cancelled by test",
+        );
+        let response_path = write_gateway_spool_response(&paths, &response).unwrap();
+        let written =
+            serde_json::from_slice::<GatewaySpoolResponse>(&fs::read(&response_path).unwrap())
+                .unwrap();
+
+        assert_eq!(response_path, paths.response_path("request-1").unwrap());
+        assert_eq!(written.state, GatewaySpoolResponseState::Cancelled);
+        assert_eq!(
+            written.error.as_ref().map(|error| &error.kind),
+            Some(&ToolExecutionErrorKind::AdapterFailed)
+        );
+        assert!(write_gateway_spool_response(&paths, &response)
+            .unwrap_err()
+            .to_string()
+            .contains("already exists"));
+    }
+
+    #[test]
+    fn spool_request_id_must_match_request_file_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let spool_root = Utf8PathBuf::from_path_buf(temp.path().join("gateway-spool")).unwrap();
+        let paths = GatewaySpoolPaths::new(spool_root).unwrap();
+        fs::create_dir_all(&paths.requests_dir).unwrap();
+        let request_path = paths.request_path("file-id").unwrap();
+        let request = GatewaySpoolRequest {
+            request_id: "body-id".into(),
+            action: tool_action("mcp"),
+            timeout_seconds: None,
+            cancel: false,
+        };
+        fs::write(&request_path, serde_json::to_vec_pretty(&request).unwrap()).unwrap();
+
+        let err = read_gateway_spool_request(&paths, &request_path).unwrap_err();
+
+        assert!(err.to_string().contains("does not match request file"));
+    }
+
+    #[test]
+    fn spool_request_rejects_parent_components() {
+        let temp = tempfile::tempdir().unwrap();
+        let spool_root = Utf8PathBuf::from_path_buf(temp.path().join("gateway-spool")).unwrap();
+        let paths = GatewaySpoolPaths::new(spool_root).unwrap();
+        fs::create_dir_all(&paths.requests_dir).unwrap();
+        let escape = paths.requests_dir.join("../escape.json");
+
+        let err = read_gateway_spool_request(&paths, &escape).unwrap_err();
+
+        assert!(err.to_string().contains("must not contain '..'"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spool_request_rejects_symlinked_request_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let spool_root = Utf8PathBuf::from_path_buf(temp.path().join("gateway-spool")).unwrap();
+        let paths = GatewaySpoolPaths::new(spool_root).unwrap();
+        fs::create_dir_all(&paths.requests_dir).unwrap();
+        let outside = Utf8PathBuf::from_path_buf(temp.path().join("outside.json")).unwrap();
+        fs::write(&outside, "{}").unwrap();
+        let request_path = paths.request_path("linked").unwrap();
+        std::os::unix::fs::symlink(&outside, &request_path).unwrap();
+
+        let err = read_gateway_spool_request(&paths, &request_path).unwrap_err();
+
+        assert!(err.to_string().contains("must not be a symlink"));
     }
 }

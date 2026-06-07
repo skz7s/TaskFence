@@ -434,6 +434,7 @@ fn artifact_rows(artifacts: &ArtifactRefs, recorded: &[(String, Utf8PathBuf)]) -
         ("stderr", &artifacts.stderr),
         ("diff", &artifacts.diff),
         ("report", &artifacts.report),
+        ("gateway_spool", &artifacts.gateway_spool),
     ] {
         if let Some(path) = maybe_path {
             rows.push(vec![kind.into(), path.to_string()]);
@@ -696,6 +697,7 @@ mod tests {
             stderr: Some(task_dir.join("stderr.log")),
             diff: Some(diff_path),
             report: Some(report_path.clone()),
+            gateway_spool: Some(task_dir.join("gateway-spool")),
         };
         let events = vec![
             AuditEvent::TaskCreated {
@@ -773,6 +775,7 @@ mod tests {
             stderr: Some(task_dir.join("stderr.log")),
             diff: None,
             report: Some(report_path.clone()),
+            gateway_spool: Some(task_dir.join("gateway-spool")),
         };
         let events = vec![
             AuditEvent::TaskCreated {
@@ -859,6 +862,7 @@ mod tests {
             stderr: Some(task_dir.join("stderr.log")),
             diff: None,
             report: Some(report_path.clone()),
+            gateway_spool: Some(task_dir.join("gateway-spool")),
         };
         let events = vec![
             AuditEvent::PolicyDecision {
@@ -924,6 +928,7 @@ mod tests {
             stderr: Some(task_dir.join("stderr.log")),
             diff: Some(diff_path),
             report: Some(task_dir.join("report.md")),
+            gateway_spool: Some(task_dir.join("gateway-spool")),
         };
         let events = vec![
             AuditEvent::TaskCreated {

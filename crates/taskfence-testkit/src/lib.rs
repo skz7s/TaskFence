@@ -135,6 +135,7 @@ impl ArtifactStore for MemoryArtifacts {
             stderr: None,
             diff: None,
             report: None,
+            gateway_spool: None,
         })
     }
 

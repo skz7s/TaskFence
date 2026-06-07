@@ -120,7 +120,7 @@ finishes, or blocks. When all phases are terminal, archive this file under
 
 ### Phase 1: Agent-Facing Gateway Spool Prototype
 
-Status: pending
+Status: done
 
 Scope:
 
@@ -148,7 +148,9 @@ cargo test -p taskfence-core -p taskfence-gateway -p taskfence-runner -p taskfen
 
 Completion evidence:
 
-- Pending.
+- Implemented typed gateway spool request/response contracts, safe spool path validation, generated task-local spool wrapper creation, dedicated Docker spool mounting with broad-mount rejection, and one-request `taskfence gateway spool process` handling for success, denied, timeout, cancellation, malformed request, unsupported action, secret, approval, policy, and adapter failure evidence.
+- Updated README, architecture, roadmap, runtime architecture, development design, and `docs/decisions/2026-06-07-agent-facing-gateway-spool-boundary.md` to document only the bounded local spool prototype and keep production MCP/HTTP/GitHub, sidecar/listener, Web UI, replay, team-server, and enterprise behavior unclaimed.
+- Passed: `cargo fmt --all`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test -p taskfence-core -p taskfence-gateway -p taskfence-runner -p taskfence-cli`. The phase test command covered 83 CLI tests, 6 core tests, 32 gateway tests, 15 runner tests, and doc tests, with the Docker integration test remaining explicitly ignored because it requires a Docker daemon and local test image.
 
 ### Phase 2: Production Gateway Transports And First Real Connector
 
