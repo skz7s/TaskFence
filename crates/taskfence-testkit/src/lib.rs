@@ -9,6 +9,7 @@ use taskfence_core::{
     PreparedRun, ReportGenerator, ResolvedTask, Result, RunOutput, RunningTask, SandboxConfig,
     SandboxKind, SecretConfig, StateStore, TaskId, TaskStatus, WorkspaceBaseline,
 };
+use taskfence_runner::{RunnerCapabilityReport, RunnerKind};
 use time::OffsetDateTime;
 
 pub fn sample_task() -> ResolvedTask {
@@ -232,6 +233,40 @@ impl taskfence_core::Runner for StaticRunner {
             stdout: String::new(),
             stderr: String::new(),
         })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RunnerCapabilityFixture {
+    pub report: RunnerCapabilityReport,
+}
+
+impl RunnerCapabilityFixture {
+    pub fn available_docker() -> Self {
+        Self {
+            report: RunnerCapabilityReport {
+                kind: RunnerKind::Docker,
+                available: true,
+                can_isolate_filesystem: true,
+                can_isolate_secrets: true,
+                can_disable_network: true,
+                can_enforce_default_deny_network: true,
+                can_enforce_domain_allowlist: false,
+                can_enforce_limits: true,
+                can_capture_output: true,
+                missing: Vec::new(),
+            },
+        }
+    }
+
+    pub fn unavailable(kind: RunnerKind, missing: impl Into<String>) -> Self {
+        Self {
+            report: RunnerCapabilityReport::unavailable(kind, vec![missing.into()]),
+        }
+    }
+
+    pub fn ensure_sufficient_for(&self, task: &ResolvedTask) -> Result<()> {
+        self.report.ensure_sufficient_for_task(task)
     }
 }
 

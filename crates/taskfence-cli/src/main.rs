@@ -26,7 +26,7 @@ use taskfence_gateway::{
 };
 use taskfence_policy::BuiltInPolicyEngine;
 use taskfence_report::MarkdownReportGenerator;
-use taskfence_runner::DockerRunner;
+use taskfence_runner::ExpandedRunner;
 use taskfence_state::{
     InMemoryStateStore, LocalReviewIndex, LocalTaskEvidenceStore, LocalTaskReview, ReplayPlan,
     TaskArtifactKind, TaskArtifacts, TaskEvents, TaskLogs, TaskSummary,
@@ -292,7 +292,7 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
             } else {
                 RunApprovalMode::FailClosed
             };
-            let runner = DockerRunner::new();
+            let runner = ExpandedRunner::new();
             run_task_with_runner(task_file, &runner, approval_mode)
         }
         Command::Gateway { command } => match command {
@@ -490,7 +490,7 @@ fn validate_task_file_summary(task_file: Utf8PathBuf) -> taskfence_core::Result<
     let task = load_task_file(&task_file)?;
     let adapter = GenericAgentAdapter;
     let policy = BuiltInPolicyEngine;
-    let runner = DockerRunner::new();
+    let runner = ExpandedRunner::new();
     Ok(validation_summary(validate_task_for_run(
         &task, &adapter, &policy, &runner,
     )?))
@@ -3165,6 +3165,26 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_unavailable_remote_runner_contracts() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(
+            &task_file,
+            task_yaml_with_sandbox_type("validate-remote", &workspace, "remote_ssh"),
+        )
+        .unwrap();
+
+        let err = validate_task_file_summary(task_file).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Runner(message) if message.contains("remote SSH isolation contract"))
+        );
+        assert!(!workspace.join(".taskfence").exists());
+    }
+
+    #[test]
     fn validate_rejects_agent_command_with_embedded_arguments() {
         let temp = tempfile::tempdir().unwrap();
         let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
@@ -4842,6 +4862,36 @@ permissions:
   commands:
     allow:
       - "{allowed_command}"
+  network:
+    default: "disabled"
+"#
+        )
+    }
+
+    fn task_yaml_with_sandbox_type(
+        id: &str,
+        workspace: &Utf8PathBuf,
+        sandbox_type: &str,
+    ) -> String {
+        format!(
+            r#"id: "{id}"
+goal: "CLI test"
+workspace: "{workspace}"
+agent:
+  type: "generic"
+  command: "echo"
+  args:
+    - "ok"
+sandbox:
+  type: "{sandbox_type}"
+permissions:
+  paths:
+    read:
+      - "{workspace}"
+    write: []
+  commands:
+    allow:
+      - "echo"
   network:
     default: "disabled"
 "#

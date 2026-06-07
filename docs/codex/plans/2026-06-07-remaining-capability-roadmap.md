@@ -298,7 +298,7 @@ Completion evidence:
 
 ### Phase 5: Runner Expansion
 
-Status: pending
+Status: done
 
 Scope:
 
@@ -323,7 +323,33 @@ Additional verification:
 
 Completion evidence:
 
-- Pending.
+- Added typed sandbox/runner families for `remote_ssh`, `kubernetes_job`,
+  `microvm`, and `managed_cloud` while preserving `docker` as the only
+  executable runner.
+- Implemented runner capability reports covering availability, filesystem
+  isolation, secret isolation, network disable/default-deny, domain allowlist
+  enforcement, limit enforcement, and output capture. Docker reports its
+  known domain-allowlist gap; future runner families report exact missing
+  controls and fail closed.
+- Added `ExpandedRunner` dispatch: Docker tasks delegate to `DockerRunner`;
+  remote SSH, Kubernetes job, microVM, managed cloud, and unknown sandbox
+  types fail closed before execution instead of falling back to Docker or a
+  host-local process.
+- Updated `taskfence validate` / `taskfence run` to use the expanded runner
+  dispatcher, added config parsing tests for the future runner families, and
+  added CLI validation coverage for unavailable remote runner contracts.
+- Updated README, roadmap, architecture, runtime architecture, development
+  design, and `docs/decisions/2026-06-07-expanded-runner-capability-contracts.md`
+  to document the bounded runner expansion and keep live SSH/Kubernetes/
+  microVM/managed-cloud execution unclaimed.
+- Passed: `cargo test -p taskfence-core -p taskfence-runner -p
+  taskfence-testkit`; `cargo test -p taskfence-config`; `cargo test -p
+  taskfence-cli validate_rejects_unavailable_remote_runner_contracts`;
+  `cargo fmt --all --check`; `git diff --check`. Runner-specific live
+  integration tests were not run because no live remote SSH, Kubernetes,
+  microVM, or managed cloud runner backend is implemented yet; the existing
+  Docker integration test remains explicitly ignored unless a Docker daemon and
+  local test image are available.
 
 ### Phase 6: Team Server Foundation
 

@@ -87,7 +87,24 @@ pub enum TaskStatus {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SandboxKind {
     Docker,
+    RemoteSsh,
+    KubernetesJob,
+    MicroVm,
+    ManagedCloud,
     Unsupported(String),
+}
+
+impl SandboxKind {
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Docker => "docker",
+            Self::RemoteSsh => "remote_ssh",
+            Self::KubernetesJob => "kubernetes_job",
+            Self::MicroVm => "microvm",
+            Self::ManagedCloud => "managed_cloud",
+            Self::Unsupported(kind) => kind,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

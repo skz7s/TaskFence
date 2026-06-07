@@ -22,7 +22,8 @@ records what happened, and creates evidence that can be reviewed later.
 > foreground-served HTML page, resolve workspace-local approvals from that
 > page, and plan replay inputs from saved structured evidence. MCP/HTTP
 > listener or proxy servers, SDK/webhook connectors, persistent API server,
-> SQLite migration, deterministic replay execution, team-server, and
+> SQLite migration, deterministic replay execution, live remote SSH,
+> Kubernetes, microVM, or managed cloud runner execution, team-server, and
 > enterprise surfaces remain future work.
 
 ## Why TaskFence
@@ -88,6 +89,12 @@ The current local runner can enforce:
 Local Docker does not enforce domain-level allowlists. If a task configures
 `permissions.network.allow_domains`, TaskFence fails closed until an enforcing
 proxy or gateway-backed network path is implemented.
+
+Task files can name future runner families with `sandbox.type` values
+`remote_ssh`, `kubernetes_job`, `microvm`, or `managed_cloud`. These are
+currently typed contracts only. `taskfence validate` and `taskfence run` fail
+closed with the missing isolation, network, secret, limit, and artifact
+capability requirements instead of falling back to Docker or claiming execution.
 
 This mode answers the basic question:
 
@@ -379,6 +386,10 @@ The first implementation currently includes:
     a foreground loopback-only server with workspace-local approval resolution,
     and `taskfence replay plan` reports saved replay inputs, blockers, and
     deterministic limits without executing replay.
+15. Expanded runner contracts for `remote_ssh`, `kubernetes_job`, `microvm`,
+    and `managed_cloud` sandbox families. They currently provide typed
+    capability reports and fail-closed validation when required controls are
+    unavailable; Docker remains the only executable runner.
 
 ## Non-Goals
 

@@ -385,12 +385,27 @@ Docker runner responsibilities:
 - Apply network disabled, default deny, or allowlisted mode.
 - Capture stdout, stderr, and exit code.
 
+Expanded runner contracts:
+
+- Parse future sandbox families as `remote_ssh`, `kubernetes_job`, `microvm`,
+  and `managed_cloud`.
+- Route Docker tasks through the executable Docker runner.
+- For future runner families, produce typed capability reports and fail closed
+  until the runner proves filesystem isolation, secret isolation, network
+  disable/default-deny behavior, domain allowlist enforcement when configured,
+  limit enforcement, output capture, and artifact collection.
+- Never fall back from an unavailable remote runner to Docker or a host-local
+  process without an explicit contract and tests.
+
 Branches:
 
 - Docker missing: return environment error with installation guidance.
 - Image missing: pull only if policy allows network/image pull, otherwise fail.
 - Network allowlist unsupported on local Docker: fail closed or start a gateway
   proxy mode that enforces domains.
+- Remote SSH, Kubernetes, microVM, or managed cloud runner unavailable: fail
+  closed with the exact missing isolation, network, secret, limit, or artifact
+  capability instead of starting a weaker runner.
 - Container exits non-zero: task can still produce audit/report; do not discard
   artifacts.
 - Timeout: stop container, record timeout, collect partial artifacts.

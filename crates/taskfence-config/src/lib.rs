@@ -136,6 +136,10 @@ impl RawSandbox {
     fn resolve(self) -> taskfence_core::Result<SandboxConfig> {
         let kind = match self.kind.as_deref() {
             Some("docker") => SandboxKind::Docker,
+            Some("remote_ssh") => SandboxKind::RemoteSsh,
+            Some("kubernetes_job") => SandboxKind::KubernetesJob,
+            Some("microvm") => SandboxKind::MicroVm,
+            Some("managed_cloud") => SandboxKind::ManagedCloud,
             Some(other) => SandboxKind::Unsupported(other.to_owned()),
             None => return Err(TaskFenceError::Config("sandbox.type is required".into())),
         };
@@ -794,6 +798,56 @@ permissions:
         assert_eq!(task.permissions.budget.allow[0].max_amount, 1000);
         assert_eq!(task.permissions.budget.allow[1].kind, "usd_cents");
         assert_eq!(task.permissions.budget.allow[1].max_amount, 250);
+    }
+
+    #[test]
+    fn parses_known_runner_sandbox_types_as_typed_contracts() {
+        for (sandbox_type, expected_kind) in [
+            ("remote_ssh", SandboxKind::RemoteSsh),
+            ("kubernetes_job", SandboxKind::KubernetesJob),
+            ("microvm", SandboxKind::MicroVm),
+            ("managed_cloud", SandboxKind::ManagedCloud),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            fs::create_dir(temp.path().join("repo")).unwrap();
+            let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+            let yaml = format!(
+                r#"
+goal: Test runner contract
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: {sandbox_type}
+"#
+            );
+
+            let task = parse_task_file(&task_file, &yaml).unwrap();
+
+            assert_eq!(task.sandbox.kind, expected_kind);
+        }
+    }
+
+    #[test]
+    fn preserves_unknown_runner_sandbox_types_as_unsupported() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("repo")).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        let yaml = r#"
+goal: Test unsupported runner
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: bare_metal
+"#;
+
+        let task = parse_task_file(&task_file, yaml).unwrap();
+
+        assert_eq!(
+            task.sandbox.kind,
+            SandboxKind::Unsupported("bare_metal".into())
+        );
     }
 
     #[test]

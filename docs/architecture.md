@@ -173,7 +173,7 @@ Initial runner:
 
 - Docker
 
-Future runners:
+Runner contract families:
 
 - local process with reduced guarantees
 - SSH remote runner
@@ -197,6 +197,13 @@ disabled/default-deny/default-allow Docker network modes, and captures stdout,
 stderr, timeout, and exit status. Domain-level network allowlists are not
 enforceable by local Docker alone; tasks that configure allowlisted domains fail
 closed until an enforcing proxy is implemented.
+
+The expanded runner dispatcher can parse and classify `remote_ssh`,
+`kubernetes_job`, `microvm`, and `managed_cloud` sandbox types. These runner
+families are currently capability contracts, not executable backends. They
+report missing isolation, network control, secret boundary, limit enforcement,
+and artifact collection guarantees and fail closed before task execution. Docker
+remains the only implemented runner.
 
 ### Agent Adapter
 

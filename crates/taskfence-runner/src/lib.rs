@@ -29,6 +29,238 @@ pub enum DockerNetworkMode {
     Bridge,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RunnerKind {
+    Docker,
+    RemoteSsh,
+    KubernetesJob,
+    MicroVm,
+    ManagedCloud,
+    Unsupported(String),
+}
+
+impl RunnerKind {
+    pub fn from_sandbox(kind: &SandboxKind) -> Self {
+        match kind {
+            SandboxKind::Docker => Self::Docker,
+            SandboxKind::RemoteSsh => Self::RemoteSsh,
+            SandboxKind::KubernetesJob => Self::KubernetesJob,
+            SandboxKind::MicroVm => Self::MicroVm,
+            SandboxKind::ManagedCloud => Self::ManagedCloud,
+            SandboxKind::Unsupported(kind) => Self::Unsupported(kind.clone()),
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Docker => "docker",
+            Self::RemoteSsh => "remote_ssh",
+            Self::KubernetesJob => "kubernetes_job",
+            Self::MicroVm => "microvm",
+            Self::ManagedCloud => "managed_cloud",
+            Self::Unsupported(kind) => kind,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunnerCapabilityReport {
+    pub kind: RunnerKind,
+    pub available: bool,
+    pub can_isolate_filesystem: bool,
+    pub can_isolate_secrets: bool,
+    pub can_disable_network: bool,
+    pub can_enforce_default_deny_network: bool,
+    pub can_enforce_domain_allowlist: bool,
+    pub can_enforce_limits: bool,
+    pub can_capture_output: bool,
+    pub missing: Vec<String>,
+}
+
+impl RunnerCapabilityReport {
+    pub fn docker(network: &NetworkPermissions) -> Self {
+        let mut missing = Vec::new();
+        if !network.allow_domains.is_empty() {
+            missing.push("domain allowlist enforcement".into());
+        }
+        Self {
+            kind: RunnerKind::Docker,
+            available: true,
+            can_isolate_filesystem: true,
+            can_isolate_secrets: true,
+            can_disable_network: true,
+            can_enforce_default_deny_network: true,
+            can_enforce_domain_allowlist: false,
+            can_enforce_limits: true,
+            can_capture_output: true,
+            missing,
+        }
+    }
+
+    pub fn unavailable(kind: RunnerKind, missing: Vec<String>) -> Self {
+        Self {
+            kind,
+            available: false,
+            can_isolate_filesystem: false,
+            can_isolate_secrets: false,
+            can_disable_network: false,
+            can_enforce_default_deny_network: false,
+            can_enforce_domain_allowlist: false,
+            can_enforce_limits: false,
+            can_capture_output: false,
+            missing,
+        }
+    }
+
+    fn is_sufficient_for_task(&self, task: &ResolvedTask) -> bool {
+        self.available
+            && self.can_isolate_filesystem
+            && self.can_isolate_secrets
+            && self.can_capture_output
+            && self.can_enforce_limits
+            && match task.permissions.network.default {
+                NetworkDefault::Disabled => self.can_disable_network,
+                NetworkDefault::Deny => self.can_enforce_default_deny_network,
+                NetworkDefault::Allow => true,
+            }
+            && (task.permissions.network.allow_domains.is_empty()
+                || self.can_enforce_domain_allowlist)
+    }
+
+    pub fn ensure_sufficient_for_task(&self, task: &ResolvedTask) -> taskfence_core::Result<()> {
+        if self.is_sufficient_for_task(task) {
+            return Ok(());
+        }
+        let missing = if self.missing.is_empty() {
+            "required isolation or network controls".into()
+        } else {
+            self.missing.join(", ")
+        };
+        Err(TaskFenceError::Runner(format!(
+            "{} runner is unavailable or cannot provide required controls: {missing}",
+            self.kind.label()
+        )))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct UnsupportedRunner {
+    kind: RunnerKind,
+}
+
+impl UnsupportedRunner {
+    pub fn new(kind: RunnerKind) -> Self {
+        Self { kind }
+    }
+
+    pub fn capability_report(&self) -> RunnerCapabilityReport {
+        RunnerCapabilityReport::unavailable(
+            self.kind.clone(),
+            unsupported_runner_missing_controls(&self.kind),
+        )
+    }
+}
+
+impl Runner for UnsupportedRunner {
+    fn prepare(&self, task: &ResolvedTask) -> taskfence_core::Result<PreparedRun> {
+        self.capability_report().ensure_sufficient_for_task(task)?;
+        Err(TaskFenceError::Runner(format!(
+            "{} runner execution is not implemented",
+            self.kind.label()
+        )))
+    }
+
+    fn start(
+        &self,
+        _prepared: PreparedRun,
+        _invocation: AgentInvocation,
+    ) -> taskfence_core::Result<RunningTask> {
+        Err(TaskFenceError::Runner(format!(
+            "{} runner execution is not implemented",
+            self.kind.label()
+        )))
+    }
+
+    fn stop(&self, _running: &RunningTask) -> taskfence_core::Result<()> {
+        Err(TaskFenceError::Runner(format!(
+            "{} runner execution is not implemented",
+            self.kind.label()
+        )))
+    }
+
+    fn collect_exit(&self, _running: &RunningTask) -> taskfence_core::Result<RunOutput> {
+        Err(TaskFenceError::Runner(format!(
+            "{} runner execution is not implemented",
+            self.kind.label()
+        )))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ExpandedRunner {
+    docker: DockerRunner,
+}
+
+impl Default for ExpandedRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ExpandedRunner {
+    pub fn new() -> Self {
+        Self {
+            docker: DockerRunner::new(),
+        }
+    }
+
+    pub fn with_docker(docker: DockerRunner) -> Self {
+        Self { docker }
+    }
+
+    pub fn capability_report(&self, task: &ResolvedTask) -> RunnerCapabilityReport {
+        match RunnerKind::from_sandbox(&task.sandbox.kind) {
+            RunnerKind::Docker => RunnerCapabilityReport::docker(&task.permissions.network),
+            kind => UnsupportedRunner::new(kind).capability_report(),
+        }
+    }
+
+    pub fn ensure_capable(&self, task: &ResolvedTask) -> taskfence_core::Result<()> {
+        self.capability_report(task)
+            .ensure_sufficient_for_task(task)
+    }
+
+    fn unsupported_runner(&self, task: &ResolvedTask) -> UnsupportedRunner {
+        UnsupportedRunner::new(RunnerKind::from_sandbox(&task.sandbox.kind))
+    }
+}
+
+impl Runner for ExpandedRunner {
+    fn prepare(&self, task: &ResolvedTask) -> taskfence_core::Result<PreparedRun> {
+        self.ensure_capable(task)?;
+        match task.sandbox.kind {
+            SandboxKind::Docker => self.docker.prepare(task),
+            _ => self.unsupported_runner(task).prepare(task),
+        }
+    }
+
+    fn start(
+        &self,
+        prepared: PreparedRun,
+        invocation: AgentInvocation,
+    ) -> taskfence_core::Result<RunningTask> {
+        self.docker.start(prepared, invocation)
+    }
+
+    fn stop(&self, running: &RunningTask) -> taskfence_core::Result<()> {
+        self.docker.stop(running)
+    }
+
+    fn collect_exit(&self, running: &RunningTask) -> taskfence_core::Result<RunOutput> {
+        self.docker.collect_exit(running)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct DockerRunner {
     host_env: BTreeMap<String, String>,
@@ -665,6 +897,18 @@ struct FakeRunnerState {
 fn ensure_docker_task(task: &ResolvedTask) -> taskfence_core::Result<()> {
     match &task.sandbox.kind {
         SandboxKind::Docker => Ok(()),
+        SandboxKind::RemoteSsh => Err(TaskFenceError::Unsupported(
+            "DockerRunner cannot run remote_ssh sandbox tasks".into(),
+        )),
+        SandboxKind::KubernetesJob => Err(TaskFenceError::Unsupported(
+            "DockerRunner cannot run kubernetes_job sandbox tasks".into(),
+        )),
+        SandboxKind::MicroVm => Err(TaskFenceError::Unsupported(
+            "DockerRunner cannot run microvm sandbox tasks".into(),
+        )),
+        SandboxKind::ManagedCloud => Err(TaskFenceError::Unsupported(
+            "DockerRunner cannot run managed_cloud sandbox tasks".into(),
+        )),
         SandboxKind::Unsupported(kind) => Err(TaskFenceError::Unsupported(format!(
             "DockerRunner cannot run unsupported sandbox type {kind}"
         ))),
@@ -828,6 +1072,38 @@ fn lock_state(
     state
         .lock()
         .map_err(|_| TaskFenceError::Runner("fake runner state lock poisoned".into()))
+}
+
+fn unsupported_runner_missing_controls(kind: &RunnerKind) -> Vec<String> {
+    match kind {
+        RunnerKind::RemoteSsh => vec![
+            "remote SSH isolation contract".into(),
+            "remote filesystem mount policy enforcement".into(),
+            "remote secret isolation".into(),
+            "remote network control enforcement".into(),
+            "remote limit enforcement".into(),
+        ],
+        RunnerKind::KubernetesJob => vec![
+            "Kubernetes job namespace/pod security contract".into(),
+            "Kubernetes network policy enforcement".into(),
+            "Kubernetes secret isolation".into(),
+            "Kubernetes artifact collection contract".into(),
+        ],
+        RunnerKind::MicroVm => vec![
+            "microVM image contract".into(),
+            "microVM filesystem sharing policy".into(),
+            "microVM network policy enforcement".into(),
+            "microVM lifecycle and artifact collection".into(),
+        ],
+        RunnerKind::ManagedCloud => vec![
+            "managed cloud runner provider contract".into(),
+            "managed cloud credential boundary".into(),
+            "managed cloud network policy enforcement".into(),
+            "managed cloud artifact collection contract".into(),
+        ],
+        RunnerKind::Unsupported(kind) => vec![format!("unsupported sandbox type {kind}")],
+        RunnerKind::Docker => Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -1157,5 +1433,77 @@ mod tests {
         assert!(
             matches!(err, TaskFenceError::Runner(message) if message.contains("docker executable"))
         );
+    }
+
+    #[test]
+    fn expanded_runner_reports_docker_capabilities_and_domain_gap() {
+        let mut task = task();
+        task.permissions.network.default = NetworkDefault::Deny;
+        task.permissions.network.allow_domains = vec!["api.github.com".into()];
+        let runner = ExpandedRunner::with_docker(runner());
+
+        let report = runner.capability_report(&task);
+
+        assert_eq!(report.kind, RunnerKind::Docker);
+        assert!(report.available);
+        assert!(report.can_enforce_default_deny_network);
+        assert!(!report.can_enforce_domain_allowlist);
+        assert!(report
+            .missing
+            .contains(&"domain allowlist enforcement".into()));
+        assert!(runner.ensure_capable(&task).is_err());
+    }
+
+    #[test]
+    fn expanded_runner_delegates_docker_prepare() {
+        let runner = ExpandedRunner::with_docker(runner());
+
+        let prepared = runner.prepare(&task()).unwrap();
+
+        assert_eq!(prepared.task_id, TaskId("task-1".into()));
+        assert_eq!(prepared.mounts.len(), 2);
+    }
+
+    #[test]
+    fn expanded_runner_fails_closed_for_remote_runner_families() {
+        for (kind, expected) in [
+            (SandboxKind::RemoteSsh, "remote SSH isolation contract"),
+            (
+                SandboxKind::KubernetesJob,
+                "Kubernetes job namespace/pod security contract",
+            ),
+            (SandboxKind::MicroVm, "microVM image contract"),
+            (
+                SandboxKind::ManagedCloud,
+                "managed cloud runner provider contract",
+            ),
+        ] {
+            let mut task = task();
+            task.sandbox.kind = kind;
+            let runner = ExpandedRunner::with_docker(runner());
+
+            let report = runner.capability_report(&task);
+            let err = runner.prepare(&task).unwrap_err();
+
+            assert!(!report.available);
+            assert!(report.missing.iter().any(|missing| missing == expected));
+            assert!(err.to_string().contains(expected), "{err}");
+        }
+    }
+
+    #[test]
+    fn unsupported_runner_fails_closed_for_unknown_sandbox_types() {
+        let mut task = task();
+        task.sandbox.kind = SandboxKind::Unsupported("bare-metal".into());
+        let runner = ExpandedRunner::with_docker(runner());
+
+        let report = runner.capability_report(&task);
+        let err = runner.prepare(&task).unwrap_err();
+
+        assert_eq!(report.kind, RunnerKind::Unsupported("bare-metal".into()));
+        assert!(!report.available);
+        assert!(err
+            .to_string()
+            .contains("unsupported sandbox type bare-metal"));
     }
 }

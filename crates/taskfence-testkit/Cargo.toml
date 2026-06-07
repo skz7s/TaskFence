@@ -9,4 +9,5 @@ rust-version.workspace = true
 [dependencies]
 camino.workspace = true
 taskfence-core.workspace = true
+taskfence-runner.workspace = true
 time.workspace = true

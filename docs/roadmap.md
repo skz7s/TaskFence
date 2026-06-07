@@ -279,7 +279,23 @@ Minimum demo:
   compare multiple runs, and approve or deny a pending workspace-local action
   from the loopback review page
 
-## Phase 5: Team and Enterprise Foundation
+## Phase 5: Runner Expansion
+
+Goal: preserve identical task semantics across future runner families.
+
+- implemented: typed `sandbox.type` parsing for `remote_ssh`,
+  `kubernetes_job`, `microvm`, and `managed_cloud`
+- implemented: runner capability reports for Docker and future runner
+  families, including whether the runner can isolate filesystem/secrets,
+  disable or default-deny network, enforce domain allowlists, enforce limits,
+  and capture output
+- implemented: expanded runner dispatch for Docker plus fail-closed capability
+  checks for unavailable remote runner families
+- remaining: live SSH execution, Kubernetes job execution, microVM lifecycle,
+  managed cloud provider execution, runner-specific artifact transport, and
+  runner-specific integration tests on configured hosts
+
+## Phase 6: Team and Enterprise Foundation
 
 Goal: support teams running multiple agents and policies.
 
@@ -296,7 +312,7 @@ Deliverables:
 - SIEM integration
 - GitHub Enterprise and GitLab support
 
-## Phase 6: Broader Enterprise Agent Gateway
+## Phase 7: Broader Enterprise Agent Gateway
 
 Goal: expand beyond coding agents.
 
