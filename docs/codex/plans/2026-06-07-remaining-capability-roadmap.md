@@ -234,7 +234,7 @@ Completion evidence:
 
 ### Phase 4: Local Review UI And Replay Foundation
 
-Status: pending
+Status: done
 
 Scope:
 
@@ -264,7 +264,37 @@ Additional verification:
 
 Completion evidence:
 
-- Pending.
+- Implemented file-backed local review contracts in `taskfence-state`:
+  `LocalReviewIndex`, `LocalTaskReview`, and `ReplayPlan` assemble task lists,
+  task details, structured events, logs, diffs, reports, optional-evidence
+  warnings, replay inputs, blockers, last status, and deterministic limitations
+  without scraping Markdown reports.
+- Added CLI surfaces: `taskfence review --workspace <workspace>
+  [--output <file>]`, `taskfence review --workspace <workspace> --serve
+  [--port <port>]`, and `taskfence replay plan <task-id> --workspace
+  <workspace>`. The static review page renders task lists, pending approvals,
+  run comparison, replay readiness, timeline, diffs, logs, and reports from
+  structured local evidence. The foreground loopback server resolves pending
+  workspace-local approval records through explicit approve/deny POST routes.
+- Kept the selected state store file-backed for this phase and documented that
+  SQLite, a persistent API server, live log streaming, artifact-download
+  routing, richer browser diff interaction, and deterministic replay execution
+  remain future work.
+- Updated README, roadmap, architecture, runtime architecture, development
+  design, and `docs/decisions/2026-06-07-local-review-replay-foundation.md`
+  to document the bounded local review/replay-plan behavior without
+  overclaiming team-server, persistent Web/API, SQLite, or replay execution.
+- Rendered UI verification used Playwright CLI fallback because the Browser
+  plugin was listed but the required Node REPL Browser control tool was not
+  exposed in this tool surface. Verified `http://127.0.0.1:18186/` from a
+  foreground `taskfence review --serve` process: page title `TaskFence Review`,
+  task content, run comparison, replay panel, report content, zero console
+  errors/warnings, and no horizontal overflow at desktop and 390px mobile
+  widths. Screenshots were kept under `/tmp/taskfence-phase4-playwright-final`.
+- Passed: `cargo test -p taskfence-state`; `cargo test -p taskfence-cli`;
+  `cargo fmt --all --check`; `git diff --check`; `cargo test --workspace`.
+  The workspace suite reported the Docker integration test ignored because it
+  requires a Docker daemon and a locally available test image.
 
 ### Phase 5: Runner Expansion
 

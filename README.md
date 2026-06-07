@@ -18,8 +18,12 @@ records what happened, and creates evidence that can be reviewed later.
 > bounded GitHub REST connector, plus a request/response gateway spool
 > prototype for sandboxed agents. These paths prove policy, approval,
 > registry, gateway-side secret brokering, audit, and report behavior.
-> MCP/HTTP listener or proxy servers, SDK/webhook connectors, Web UI, replay,
-> team-server, and enterprise surfaces remain future work.
+> The local review foundation can render workspace evidence as a static or
+> foreground-served HTML page, resolve workspace-local approvals from that
+> page, and plan replay inputs from saved structured evidence. MCP/HTTP
+> listener or proxy servers, SDK/webhook connectors, persistent API server,
+> SQLite migration, deterministic replay execution, team-server, and
+> enterprise surfaces remain future work.
 
 ## Why TaskFence
 
@@ -270,6 +274,28 @@ cargo run -p taskfence-cli -- report local-demo --workspace examples/repo
 cargo run -p taskfence-cli -- logs <task-id> --workspace <workspace>
 ```
 
+You can generate a local review page from the same file-backed evidence:
+
+```bash
+cargo run -p taskfence-cli -- review --workspace examples/repo
+cargo run -p taskfence-cli -- review --workspace examples/repo --serve --port 0
+```
+
+The static page is written to `.taskfence/review/index.html` by default. The
+foreground server binds only to `127.0.0.1`, rebuilds the page from local
+evidence on each request, and can approve or deny pending records from the
+workspace-local approval queue. It is not a persistent API server or team
+approval service.
+
+Replay planning is currently inspection-only:
+
+```bash
+cargo run -p taskfence-cli -- replay plan local-demo --workspace examples/repo
+```
+
+The command reports saved task inputs, artifact paths, last status, blockers,
+and determinism limits. It does not execute a replay.
+
 ## Documentation
 
 - [Product Positioning](docs/positioning.md)
@@ -348,6 +374,11 @@ The first implementation currently includes:
     MCP/HTTP adapter requests that execute through the existing gateway
     executor when explicitly configured. This is not a production MCP server or
     HTTP proxy.
+14. A local review and replay-planning foundation: `taskfence review` renders a
+    static HTML task review page, `taskfence review --serve` exposes it through
+    a foreground loopback-only server with workspace-local approval resolution,
+    and `taskfence replay plan` reports saved replay inputs, blockers, and
+    deterministic limits without executing replay.
 
 ## Non-Goals
 

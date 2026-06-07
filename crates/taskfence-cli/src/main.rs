@@ -1,7 +1,8 @@
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use std::fs::{self, OpenOptions};
-use std::io::{ErrorKind, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::net::{TcpListener, TcpStream};
 use std::process::ExitCode;
 use taskfence_agent::GenericAgentAdapter;
 use taskfence_approval::{LocalApprovalEngine, LocalApprovalStore, LocalExternalApprovalEngine};
@@ -27,8 +28,8 @@ use taskfence_policy::BuiltInPolicyEngine;
 use taskfence_report::MarkdownReportGenerator;
 use taskfence_runner::DockerRunner;
 use taskfence_state::{
-    InMemoryStateStore, LocalTaskEvidenceStore, TaskArtifactKind, TaskArtifacts, TaskEvents,
-    TaskLogs, TaskSummary,
+    InMemoryStateStore, LocalReviewIndex, LocalTaskEvidenceStore, LocalTaskReview, ReplayPlan,
+    TaskArtifactKind, TaskArtifacts, TaskEvents, TaskLogs, TaskSummary,
 };
 
 #[derive(Debug, Parser)]
@@ -141,6 +142,26 @@ enum Command {
         #[arg(long, default_value = ".")]
         workspace: Utf8PathBuf,
     },
+    /// Build a local review page from workspace evidence.
+    Review {
+        /// Workspace that owns the .taskfence task evidence directory.
+        #[arg(long, default_value = ".")]
+        workspace: Utf8PathBuf,
+        /// Write the generated page here instead of .taskfence/review/index.html.
+        #[arg(long)]
+        output: Option<Utf8PathBuf>,
+        /// Serve the local review page on 127.0.0.1 until interrupted.
+        #[arg(long)]
+        serve: bool,
+        /// Port for --serve, or 0 to ask the OS for an available port.
+        #[arg(long, default_value_t = 0)]
+        port: u16,
+    },
+    /// Plan replay from saved task evidence without executing it.
+    Replay {
+        #[command(subcommand)]
+        command: ReplayCommand,
+    },
     /// List locally recorded approval requests in a workspace.
     Approvals {
         /// Workspace that owns the .taskfence approval directory.
@@ -174,6 +195,18 @@ enum Command {
     /// Generate or show a task report.
     Report {
         /// Task ID to report on.
+        task_id: String,
+        /// Workspace that owns the .taskfence task evidence directory.
+        #[arg(long, default_value = ".")]
+        workspace: Utf8PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ReplayCommand {
+    /// Show replay inputs, blockers, and determinism limits for one local task.
+    Plan {
+        /// Task ID to plan replay for.
         task_id: String,
         /// Workspace that owns the .taskfence task evidence directory.
         #[arg(long, default_value = ".")]
@@ -323,6 +356,15 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
         } => show_compare(workspace, left_task_id, right_task_id),
         Command::Status { task_id, workspace } => show_status(workspace, task_id),
         Command::Events { task_id, workspace } => show_events(workspace, task_id),
+        Command::Review {
+            workspace,
+            output,
+            serve,
+            port,
+        } => show_review(workspace, output, serve, port),
+        Command::Replay { command } => match command {
+            ReplayCommand::Plan { task_id, workspace } => show_replay_plan(workspace, task_id),
+        },
         Command::Approvals { workspace } => show_approvals(workspace),
         Command::Approval {
             approval_id,
@@ -547,6 +589,32 @@ fn show_events(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Resul
     Ok(())
 }
 
+fn show_review(
+    workspace: Utf8PathBuf,
+    output: Option<Utf8PathBuf>,
+    serve: bool,
+    port: u16,
+) -> taskfence_core::Result<()> {
+    if output.is_some() && serve {
+        return Err(TaskFenceError::Config(
+            "--output and --serve cannot be used together".into(),
+        ));
+    }
+    if serve {
+        return serve_review_page(workspace, port);
+    }
+    let path = write_review_page(workspace, output)?;
+    println!("Review page written");
+    println!("  path: {path}");
+    Ok(())
+}
+
+fn show_replay_plan(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Result<()> {
+    let text = replay_plan_text(workspace, &TaskId(task_id))?;
+    print!("{text}");
+    Ok(())
+}
+
 fn show_approvals(workspace: Utf8PathBuf) -> taskfence_core::Result<()> {
     let text = approvals_text(workspace)?;
     print!("{text}");
@@ -643,6 +711,216 @@ fn events_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Resu
     let store = LocalTaskEvidenceStore::new(workspace);
     let events = store.read_events(task_id)?;
     Ok(render_task_events(task_id, &events))
+}
+
+fn replay_plan_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Result<String> {
+    let store = LocalTaskEvidenceStore::new(workspace);
+    Ok(render_replay_plan(&store.replay_plan(task_id)?))
+}
+
+fn write_review_page(
+    workspace: Utf8PathBuf,
+    output: Option<Utf8PathBuf>,
+) -> taskfence_core::Result<Utf8PathBuf> {
+    let store = LocalTaskEvidenceStore::new(workspace.clone());
+    let index = store.review_index()?;
+    let mut reviews = Vec::new();
+    for task in &index.tasks {
+        reviews.push(store.read_task_review(&task.task_id)?);
+    }
+    let approvals = LocalApprovalStore::new(workspace.clone()).list()?;
+    let html = render_review_page(&index, &reviews, &approvals);
+    let path = output.unwrap_or_else(|| workspace.join(".taskfence/review/index.html"));
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent.as_std_path()).map_err(|err| {
+            TaskFenceError::Artifact(format!("failed to create review directory {parent}: {err}"))
+        })?;
+    }
+    fs::write(path.as_std_path(), html).map_err(|err| {
+        TaskFenceError::Artifact(format!("failed to write review page {path}: {err}"))
+    })?;
+    Ok(path)
+}
+
+fn serve_review_page(workspace: Utf8PathBuf, port: u16) -> taskfence_core::Result<()> {
+    let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|err| {
+        TaskFenceError::State(format!("failed to bind local review server: {err}"))
+    })?;
+    let address = listener
+        .local_addr()
+        .map_err(|err| TaskFenceError::State(format!("failed to inspect review server: {err}")))?;
+    println!("Review page serving");
+    println!("  url: http://{address}/");
+    println!("  workspace: {workspace}");
+    for stream in listener.incoming() {
+        let stream = stream.map_err(|err| {
+            TaskFenceError::State(format!("review server connection failed: {err}"))
+        })?;
+        handle_review_http_stream(stream, workspace.clone())?;
+    }
+    Ok(())
+}
+
+fn handle_review_http_stream(
+    mut stream: TcpStream,
+    workspace: Utf8PathBuf,
+) -> taskfence_core::Result<()> {
+    let mut reader = BufReader::new(stream.try_clone().map_err(|err| {
+        TaskFenceError::State(format!("failed to clone review connection: {err}"))
+    })?);
+    let request = read_http_request(&mut reader)?;
+    let response = review_http_response(&workspace, &request);
+    stream
+        .write_all(response.as_bytes())
+        .map_err(|err| TaskFenceError::State(format!("failed to write review response: {err}")))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ReviewHttpRequest {
+    method: String,
+    path: String,
+}
+
+fn read_http_request(reader: &mut impl BufRead) -> taskfence_core::Result<ReviewHttpRequest> {
+    let mut request_line = String::new();
+    reader.read_line(&mut request_line).map_err(|err| {
+        TaskFenceError::State(format!("failed to read review request line: {err}"))
+    })?;
+    let parts = request_line.split_whitespace().collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return Err(TaskFenceError::State(
+            "review request line is malformed".into(),
+        ));
+    }
+    let mut header = String::new();
+    loop {
+        header.clear();
+        let read = reader.read_line(&mut header).map_err(|err| {
+            TaskFenceError::State(format!("failed to read review request header: {err}"))
+        })?;
+        if read == 0 || header == "\r\n" || header == "\n" {
+            break;
+        }
+    }
+    Ok(ReviewHttpRequest {
+        method: parts[0].to_owned(),
+        path: parts[1].to_owned(),
+    })
+}
+
+fn review_http_response(workspace: &Utf8PathBuf, request: &ReviewHttpRequest) -> String {
+    match (request.method.as_str(), request.path.as_str()) {
+        ("GET", "/") | ("GET", "/index.html") => match review_page_html(workspace.clone()) {
+            Ok(html) => http_response("200 OK", "text/html; charset=utf-8", &html),
+            Err(err) => http_response(
+                "500 Internal Server Error",
+                "text/plain; charset=utf-8",
+                &err.to_string(),
+            ),
+        },
+        ("POST", path) if path.starts_with("/approval/") => {
+            match resolve_review_approval_path(workspace, path) {
+                Ok(message) => http_response(
+                    "303 See Other",
+                    "text/plain; charset=utf-8",
+                    &message,
+                )
+                .replacen("\r\n\r\n", "\r\nLocation: /\r\n\r\n", 1),
+                Err(err) => http_response(
+                    "400 Bad Request",
+                    "text/plain; charset=utf-8",
+                    &err.to_string(),
+                ),
+            }
+        }
+        _ => http_response("404 Not Found", "text/plain; charset=utf-8", "not found"),
+    }
+}
+
+fn review_page_html(workspace: Utf8PathBuf) -> taskfence_core::Result<String> {
+    let store = LocalTaskEvidenceStore::new(workspace.clone());
+    let index = store.review_index()?;
+    let mut reviews = Vec::new();
+    for task in &index.tasks {
+        reviews.push(store.read_task_review(&task.task_id)?);
+    }
+    let approvals = LocalApprovalStore::new(workspace).list()?;
+    Ok(render_review_page(&index, &reviews, &approvals))
+}
+
+fn resolve_review_approval_path(
+    workspace: &Utf8PathBuf,
+    path: &str,
+) -> taskfence_core::Result<String> {
+    let mut parts = path.trim_start_matches('/').split('/');
+    let Some("approval") = parts.next() else {
+        return Err(TaskFenceError::Approval(
+            "approval route is malformed".into(),
+        ));
+    };
+    let approval_id = parts
+        .next()
+        .ok_or_else(|| TaskFenceError::Approval("approval id is missing".into()))?;
+    let action = parts
+        .next()
+        .ok_or_else(|| TaskFenceError::Approval("approval action is missing".into()))?;
+    if parts.next().is_some() {
+        return Err(TaskFenceError::Approval(
+            "approval route has extra segments".into(),
+        ));
+    }
+    let decision = match action {
+        "approve" => ApprovalDecision::Approved,
+        "deny" => ApprovalDecision::Denied,
+        _ => {
+            return Err(TaskFenceError::Approval(format!(
+                "unsupported approval action {action}"
+            )));
+        }
+    };
+    let record = LocalApprovalStore::new(workspace.clone()).resolve_with_actor(
+        &ApprovalId(url_decode_path_component(approval_id)?),
+        decision,
+        "local-review",
+        Some("review-ui".into()),
+    )?;
+    Ok(format!("approval {} resolved", record.id.0))
+}
+
+fn url_decode_path_component(value: &str) -> taskfence_core::Result<String> {
+    let mut decoded = String::new();
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).map_err(|err| {
+                    TaskFenceError::State(format!("invalid percent encoding: {err}"))
+                })?;
+                let byte = u8::from_str_radix(hex, 16).map_err(|err| {
+                    TaskFenceError::State(format!("invalid percent encoding {hex}: {err}"))
+                })?;
+                decoded.push(char::from(byte));
+                index += 3;
+            }
+            b'+' => {
+                decoded.push(' ');
+                index += 1;
+            }
+            byte => {
+                decoded.push(char::from(byte));
+                index += 1;
+            }
+        }
+    }
+    Ok(decoded)
+}
+
+fn http_response(status: &str, content_type: &str, body: &str) -> String {
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
 }
 
 fn approvals_text(workspace: Utf8PathBuf) -> taskfence_core::Result<String> {
@@ -1116,6 +1394,282 @@ fn render_task_comparison(left: &TaskSummary, right: &TaskSummary) -> String {
         right.task_dir.as_str(),
     );
     rendered
+}
+
+fn render_replay_plan(plan: &ReplayPlan) -> String {
+    let mut rendered = String::new();
+    rendered.push_str("Replay plan\n");
+    rendered.push_str(&format!("  task: {}\n", plan.task_id.0));
+    rendered.push_str(&format!("  can_replay: {}\n", plan.can_replay));
+    rendered.push_str(&format!("  deterministic: {}\n", plan.deterministic));
+    rendered.push_str(&format!(
+        "  status: {}\n",
+        plan.last_status
+            .as_ref()
+            .map(|status| format!("{status:?}"))
+            .unwrap_or_else(|| "-".into())
+    ));
+    rendered.push_str(&format!(
+        "  task_file: {}\n",
+        plan.source_task_file
+            .as_ref()
+            .map(|path| compact_cell(path.as_str()))
+            .unwrap_or_else(|| "-".into())
+    ));
+    rendered.push_str(&format!(
+        "  resolved_task: {}\n",
+        plan.resolved_task_path
+            .as_ref()
+            .map(|path| compact_cell(path.as_str()))
+            .unwrap_or_else(|| "-".into())
+    ));
+    rendered.push_str(&format!(
+        "  events: {}\n",
+        plan.event_log_path
+            .as_ref()
+            .map(|path| compact_cell(path.as_str()))
+            .unwrap_or_else(|| "-".into())
+    ));
+    rendered.push_str(&format!("  artifacts: {}\n", plan.artifact_dir));
+    push_text_list(&mut rendered, "blockers", &plan.blockers);
+    push_text_list(&mut rendered, "limitations", &plan.limitations);
+    rendered
+}
+
+fn push_text_list(rendered: &mut String, label: &str, values: &[String]) {
+    rendered.push_str(&format!("  {label}:"));
+    if values.is_empty() {
+        rendered.push_str(" -\n");
+        return;
+    }
+    rendered.push('\n');
+    for value in values {
+        rendered.push_str("    - ");
+        rendered.push_str(&compact_cell(value));
+        rendered.push('\n');
+    }
+}
+
+fn render_review_page(
+    index: &LocalReviewIndex,
+    reviews: &[LocalTaskReview],
+    approvals: &[ApprovalRecord],
+) -> String {
+    let mut html = String::new();
+    html.push_str("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">");
+    html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
+    html.push_str("<title>TaskFence Review</title>");
+    html.push_str("<link rel=\"icon\" href=\"data:,\">");
+    html.push_str("<style>");
+    html.push_str(
+        "body{margin:0;font-family:Arial,sans-serif;background:#f6f7f9;color:#1f2933;letter-spacing:0}",
+    );
+    html.push_str("header{background:#17324d;color:#fff;padding:20px 24px}");
+    html.push_str("main{max-width:1180px;margin:0 auto;padding:20px 16px 48px}");
+    html.push_str("h1{font-size:24px;margin:0 0 6px}h2{font-size:18px;margin:28px 0 10px}h3{font-size:16px;margin:18px 0 8px}");
+    html.push_str("p{margin:4px 0 10px}.muted{color:#607085}.status{font-weight:700}.ok{color:#176b3a}.blocked{color:#9a3412}");
+    html.push_str("table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #d9dee7}th,td{padding:9px 10px;border-bottom:1px solid #e7ebf0;text-align:left;vertical-align:top}th{background:#eef2f7;font-size:13px}td{font-size:13px}");
+    html.push_str("section{margin-top:18px}.panel{background:#fff;border:1px solid #d9dee7;padding:14px;border-radius:6px}.toolbar{display:flex;gap:8px;flex-wrap:wrap}.button{display:inline-block;border:1px solid #b9c3d0;border-radius:4px;padding:5px 8px;background:#fff;color:#17324d;text-decoration:none;font-size:12px}");
+    html.push_str("pre{background:#101923;color:#f5f7fa;padding:12px;overflow:auto;border-radius:4px;max-height:280px;font-size:12px;line-height:1.45}");
+    html.push_str("@media(max-width:760px){main{padding:14px 8px}table{display:block;overflow-x:auto}header{padding:16px}th,td{white-space:nowrap}.panel{padding:10px}}");
+    html.push_str("</style></head><body>");
+    html.push_str("<header><h1>TaskFence Review</h1><p>Workspace: ");
+    html.push_str(&html_escape(index.workspace.as_str()));
+    html.push_str("</p></header><main>");
+
+    html.push_str("<section><h2>Tasks</h2>");
+    if index.tasks.is_empty() {
+        html.push_str("<p class=\"muted\">No local task evidence was found.</p>");
+    } else {
+        html.push_str("<table><thead><tr><th>Task</th><th>Status</th><th>Artifacts</th><th>Warnings</th><th>Goal</th></tr></thead><tbody>");
+        for task in &index.tasks {
+            html.push_str("<tr><td><a href=\"#task-");
+            html.push_str(&html_escape(&task.task_id.0));
+            html.push_str("\">");
+            html.push_str(&html_escape(&task.task_id.0));
+            html.push_str("</a></td><td>");
+            html.push_str(&html_escape(&task_status_text(task)));
+            html.push_str("</td><td>");
+            html.push_str(&html_escape(&artifact_flags(task)));
+            html.push_str("</td><td>");
+            html.push_str(&task.warnings.len().to_string());
+            html.push_str("</td><td>");
+            html.push_str(&html_escape(task.goal.as_deref().unwrap_or("-")));
+            html.push_str("</td></tr>");
+        }
+        html.push_str("</tbody></table>");
+    }
+    html.push_str("</section>");
+
+    render_review_comparison(&mut html, &index.tasks);
+
+    html.push_str("<section><h2>Pending Approvals</h2>");
+    let pending = approvals
+        .iter()
+        .filter(|approval| approval.decision.is_none())
+        .collect::<Vec<_>>();
+    if pending.is_empty() {
+        html.push_str("<p class=\"muted\">No pending approvals.</p>");
+    } else {
+        html.push_str("<table><thead><tr><th>Approval</th><th>Task</th><th>Action</th><th>Resolve</th></tr></thead><tbody>");
+        for approval in pending {
+            html.push_str("<tr><td>");
+            html.push_str(&html_escape(&approval.id.0));
+            html.push_str("</td><td>");
+            html.push_str(&html_escape(&approval.task_id.0));
+            html.push_str("</td><td>");
+            html.push_str(&html_escape(&approval_action_summary(&approval.action)));
+            html.push_str("</td><td><code>taskfence approve ");
+            html.push_str(&html_escape(&approval.id.0));
+            html.push_str(" --workspace ");
+            html.push_str(&html_escape(index.workspace.as_str()));
+            html.push_str("</code><br><code>taskfence deny ");
+            html.push_str(&html_escape(&approval.id.0));
+            html.push_str(" --workspace ");
+            html.push_str(&html_escape(index.workspace.as_str()));
+            html.push_str("</code><div class=\"toolbar\" style=\"margin-top:8px\"><form method=\"post\" action=\"/approval/");
+            html.push_str(&html_escape(&approval.id.0));
+            html.push_str("/approve\"><button class=\"button\" type=\"submit\">Approve</button></form><form method=\"post\" action=\"/approval/");
+            html.push_str(&html_escape(&approval.id.0));
+            html.push_str("/deny\"><button class=\"button\" type=\"submit\">Deny</button></form></div></td></tr>");
+        }
+        html.push_str("</tbody></table>");
+    }
+    html.push_str("</section>");
+
+    html.push_str("<section><h2>Task Review</h2>");
+    for review in reviews {
+        render_review_task(&mut html, review);
+    }
+    html.push_str("</section></main></body></html>");
+    html
+}
+
+fn render_review_comparison(html: &mut String, tasks: &[TaskSummary]) {
+    html.push_str("<section><h2>Run Comparison</h2>");
+    if tasks.len() < 2 {
+        html.push_str("<p class=\"muted\">At least two task runs are needed for comparison.</p>");
+        html.push_str("</section>");
+        return;
+    }
+
+    html.push_str("<table><thead><tr><th>Task</th><th>Status</th><th>Goal</th><th>Artifacts</th><th>Warnings</th><th>Evidence</th></tr></thead><tbody>");
+    for task in tasks {
+        html.push_str("<tr><td>");
+        html.push_str(&html_escape(&task.task_id.0));
+        html.push_str("</td><td>");
+        html.push_str(&html_escape(&task_status_text(task)));
+        html.push_str("</td><td>");
+        html.push_str(&html_escape(task.goal.as_deref().unwrap_or("-")));
+        html.push_str("</td><td>");
+        html.push_str(&html_escape(&artifact_flags(task)));
+        html.push_str("</td><td>");
+        html.push_str(&task.warnings.len().to_string());
+        html.push_str("</td><td>");
+        html.push_str(&html_escape(task.task_dir.as_str()));
+        html.push_str("</td></tr>");
+    }
+    html.push_str("</tbody></table></section>");
+}
+
+fn render_review_task(html: &mut String, review: &LocalTaskReview) {
+    let task = &review.summary;
+    html.push_str("<section class=\"panel\" id=\"task-");
+    html.push_str(&html_escape(&task.task_id.0));
+    html.push_str("\"><h3>");
+    html.push_str(&html_escape(&task.task_id.0));
+    html.push_str("</h3><p><span class=\"status\">Status:</span> ");
+    html.push_str(&html_escape(&task_status_text(task)));
+    html.push_str(" | <span class=\"status\">Artifacts:</span> ");
+    html.push_str(&html_escape(&artifact_flags(task)));
+    html.push_str("</p><p>");
+    html.push_str(&html_escape(task.goal.as_deref().unwrap_or("-")));
+    html.push_str("</p>");
+
+    html.push_str("<h3>Replay</h3><p>");
+    if review.replay.can_replay {
+        html.push_str("<span class=\"ok\">Ready from saved inputs</span>");
+    } else {
+        html.push_str("<span class=\"blocked\">Blocked</span>");
+    }
+    html.push_str("; deterministic: ");
+    html.push_str(if review.replay.deterministic {
+        "yes"
+    } else {
+        "no"
+    });
+    html.push_str("</p>");
+    render_html_list(html, "Blockers", &review.replay.blockers);
+    render_html_list(html, "Limitations", &review.replay.limitations);
+
+    if !review.warnings.is_empty() {
+        render_html_list(html, "Evidence warnings", &review.warnings);
+    }
+    if let Some(events) = &review.events {
+        html.push_str("<h3>Timeline</h3><pre>");
+        html.push_str(&html_escape(&render_task_events(&task.task_id, events)));
+        html.push_str("</pre>");
+    }
+    if let Some(diff) = &review.diff {
+        html.push_str("<h3>Diff</h3><pre>");
+        html.push_str(&html_escape(&snippet(&diff.contents)));
+        html.push_str("</pre>");
+    }
+    if let Some(logs) = &review.logs {
+        html.push_str("<h3>Logs</h3><pre>");
+        html.push_str(&html_escape(&snippet(&render_logs(logs))));
+        html.push_str("</pre>");
+    }
+    if let Some(report) = &review.report {
+        html.push_str("<h3>Report</h3><pre>");
+        html.push_str(&html_escape(&snippet(&report.contents)));
+        html.push_str("</pre>");
+    }
+    html.push_str("</section>");
+}
+
+fn render_html_list(html: &mut String, label: &str, values: &[String]) {
+    html.push_str("<p><strong>");
+    html.push_str(&html_escape(label));
+    html.push_str(":</strong>");
+    if values.is_empty() {
+        html.push_str(" none</p>");
+        return;
+    }
+    html.push_str("</p><ul>");
+    for value in values {
+        html.push_str("<li>");
+        html.push_str(&html_escape(&compact_cell(value)));
+        html.push_str("</li>");
+    }
+    html.push_str("</ul>");
+}
+
+fn snippet(value: &str) -> String {
+    const LIMIT: usize = 6000;
+    if value.len() <= LIMIT {
+        return value.to_owned();
+    }
+    let mut end = LIMIT;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n... truncated ...\n", &value[..end])
+}
+
+fn html_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 fn push_comparison_row(rendered: &mut String, field: &str, left: &str, right: &str) {
@@ -2282,6 +2836,74 @@ mod tests {
     }
 
     #[test]
+    fn parses_review_output_and_serve_options() {
+        let cli = Cli::try_parse_from([
+            "taskfence",
+            "review",
+            "--workspace",
+            "repo",
+            "--output",
+            "review.html",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Review {
+                workspace,
+                output,
+                serve,
+                port,
+            } => {
+                assert_eq!(workspace, Utf8PathBuf::from("repo"));
+                assert_eq!(output, Some(Utf8PathBuf::from("review.html")));
+                assert!(!serve);
+                assert_eq!(port, 0);
+            }
+            other => panic!("expected review command, got {other:?}"),
+        }
+
+        let cli =
+            Cli::try_parse_from(["taskfence", "review", "--serve", "--port", "8765"]).unwrap();
+        match cli.command {
+            Command::Review {
+                workspace,
+                output,
+                serve,
+                port,
+            } => {
+                assert_eq!(workspace, Utf8PathBuf::from("."));
+                assert_eq!(output, None);
+                assert!(serve);
+                assert_eq!(port, 8765);
+            }
+            other => panic!("expected review command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_replay_plan_workspace() {
+        let cli = Cli::try_parse_from([
+            "taskfence",
+            "replay",
+            "plan",
+            "task-123",
+            "--workspace",
+            "repo",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Replay {
+                command: ReplayCommand::Plan { task_id, workspace },
+            } => {
+                assert_eq!(task_id, "task-123");
+                assert_eq!(workspace, Utf8PathBuf::from("repo"));
+            }
+            other => panic!("expected replay plan command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_approvals_default_workspace() {
         let cli = Cli::try_parse_from(["taskfence", "approvals"]).unwrap();
 
@@ -2868,6 +3490,167 @@ mod tests {
             "requires tool_call approval by rule tool-test: needs review; risk critical"
         ));
         assert!(!text.contains("secret-value"));
+    }
+
+    #[test]
+    fn replay_plan_command_reads_saved_inputs_and_limitations() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(&task_file, task_yaml("cli-replay", &workspace, "echo ok")).unwrap();
+
+        run_task_with_runner(
+            task_file,
+            &FakeRunner::succeeding(),
+            RunApprovalMode::FailClosed,
+        )
+        .unwrap();
+
+        let text = replay_plan_text(workspace, &TaskId("cli-replay".into())).unwrap();
+
+        assert!(text.contains("Replay plan\n"));
+        assert!(text.contains("  task: cli-replay\n"));
+        assert!(text.contains("  can_replay: true\n"));
+        assert!(text.contains("  deterministic: false\n"));
+        assert!(text.contains("task.resolved.json"));
+        assert!(text.contains("events.jsonl"));
+        assert!(text.contains("runner image availability"));
+    }
+
+    #[test]
+    fn review_command_writes_local_html_from_structured_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(&task_file, task_yaml("cli-review", &workspace, "echo ok")).unwrap();
+        let compare_task_file =
+            Utf8PathBuf::from_path_buf(temp.path().join("compare.yaml")).unwrap();
+        fs::write(
+            &compare_task_file,
+            task_yaml("cli-review-compare", &workspace, "echo ok"),
+        )
+        .unwrap();
+
+        run_task_with_runner(
+            task_file,
+            &FakeRunner::succeeding(),
+            RunApprovalMode::FailClosed,
+        )
+        .unwrap();
+        run_task_with_runner(
+            compare_task_file,
+            &FakeRunner::failing(2),
+            RunApprovalMode::FailClosed,
+        )
+        .unwrap_err();
+        let approval_id = create_pending_approval(&workspace, "approval-review-1");
+        let output = Utf8PathBuf::from_path_buf(temp.path().join("review.html")).unwrap();
+
+        let written = write_review_page(workspace.clone(), Some(output.clone())).unwrap();
+
+        assert_eq!(written, output);
+        let html = fs::read_to_string(output).unwrap();
+        assert!(html.contains("<title>TaskFence Review</title>"));
+        assert!(html.contains("cli-review"));
+        assert!(html.contains("Succeeded"));
+        assert!(html.contains("Run Comparison"));
+        assert!(html.contains("cli-review-compare"));
+        assert!(html.contains("Failed"));
+        assert!(html.contains("Replay"));
+        assert!(html.contains("Ready from saved inputs"));
+        assert!(html.contains(&approval_id.0));
+        assert!(html.contains("/approval/approval-review-1/approve"));
+        assert!(html.contains("taskfence deny approval-review-1"));
+        assert!(html.contains("Task events"));
+        assert!(html.contains("TaskFence Report"));
+        assert!(!html.contains("secret-value"));
+    }
+
+    #[test]
+    fn review_command_rejects_output_and_serve_together() {
+        let err = execute(Cli {
+            command: Command::Review {
+                workspace: Utf8PathBuf::from("."),
+                output: Some(Utf8PathBuf::from("review.html")),
+                serve: true,
+                port: 0,
+            },
+        })
+        .unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Config(message) if message.contains("--output and --serve"))
+        );
+    }
+
+    #[test]
+    fn review_http_handler_resolves_pending_approval() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let approval_id = create_pending_approval(&workspace, "approval-http-1");
+        let request = ReviewHttpRequest {
+            method: "POST".into(),
+            path: "/approval/approval-http-1/approve".into(),
+        };
+
+        let response = review_http_response(&workspace, &request);
+
+        assert!(response.starts_with("HTTP/1.1 303 See Other"));
+        let record = LocalApprovalStore::new(workspace)
+            .read(&approval_id)
+            .unwrap();
+        assert_eq!(record.decision, Some(ApprovalDecision::Approved));
+        assert_eq!(record.actor, "local-review");
+        assert_eq!(record.source.as_deref(), Some("review-ui"));
+    }
+
+    #[test]
+    fn review_html_escapes_task_goal() {
+        let review = LocalTaskReview {
+            summary: TaskSummary {
+                task_id: TaskId("escape-task".into()),
+                task_dir: Utf8PathBuf::from("/tmp/task"),
+                status: Some(TaskStatus::Succeeded),
+                goal: Some("<script>alert(1)</script>".into()),
+                has_report: false,
+                has_diff: false,
+                has_stdout: false,
+                has_stderr: false,
+                warnings: Vec::new(),
+            },
+            inputs: None,
+            artifacts: None,
+            events: None,
+            logs: None,
+            diff: None,
+            report: None,
+            replay: ReplayPlan {
+                task_id: TaskId("escape-task".into()),
+                source_task_file: None,
+                resolved_task_path: None,
+                event_log_path: None,
+                artifact_dir: Utf8PathBuf::from("/tmp/task"),
+                last_status: Some(TaskStatus::Succeeded),
+                can_replay: false,
+                deterministic: false,
+                blockers: vec!["missing <input>".into()],
+                limitations: Vec::new(),
+            },
+            warnings: Vec::new(),
+        };
+        let index = LocalReviewIndex {
+            workspace: Utf8PathBuf::from("/tmp/repo"),
+            tasks: vec![review.summary.clone()],
+        };
+
+        let html = render_review_page(&index, &[review], &[]);
+
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(html.contains("missing &lt;input&gt;"));
+        assert!(!html.contains("<script>alert(1)</script>"));
     }
 
     #[test]
@@ -3942,6 +4725,10 @@ permissions:
   tools:
     allow:
       - "github.read_issue"
+  budget:
+    allow:
+      - kind: "gateway_calls"
+        max_amount: 1
 secrets:
   expose_to_agent: false
   available_to_gateway:

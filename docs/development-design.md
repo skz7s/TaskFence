@@ -67,13 +67,18 @@ Recommended core crates:
   invoking Git through a narrow adapter for the first implementation because the
   product target is repository-centric and Git output is familiar to users.
 
-### Web UI
+### Review UI
 
-Use TypeScript, React, Vite, and TanStack Router/Query when Phase 4 starts.
+The current local review UI is generated and optionally foreground-served by
+the Rust CLI from file-backed task evidence. It is intentionally bounded to
+workspace-local review, approval resolution, report/log/diff/event inspection,
+structured comparison, and replay planning. A future persistent Web UI can use
+TypeScript, React, Vite, and TanStack Router/Query after a stable local API
+server exists.
 
-The Web UI must consume API/state contracts owned by the core runtime; it must
-not become the source of truth for task state, approval state, or report
-generation.
+Any persistent Web UI must consume API/state contracts owned by the core
+runtime; it must not become the source of truth for task state, approval state,
+or report generation.
 
 ### Gateway Surface
 
@@ -136,6 +141,9 @@ Initial commands:
 - `taskfence compare <left-task-id> <right-task-id> --workspace <workspace>`
 - `taskfence status <task-id> --workspace <workspace>`
 - `taskfence events <task-id> --workspace <workspace>`
+- `taskfence review --workspace <workspace> [--output <file>]`
+- `taskfence review --workspace <workspace> --serve [--port <port>]`
+- `taskfence replay plan <task-id> --workspace <workspace>`
 - `taskfence logs <task-id>`
 - `taskfence diff <task-id>`
 - `taskfence approvals --workspace <workspace>`
@@ -472,14 +480,19 @@ its primary source of truth.
 
 Owns queryable task state.
 
-Phase 1 can be filesystem-backed. Introduce SQLite when logs, approvals, replay,
-or Web UI queries require structured persistence.
+Phase 1 can be filesystem-backed. The current local review and replay-planning
+foundation stays filesystem-backed and reads structured evidence from
+`.taskfence/tasks` plus workspace-local approvals from `.taskfence/approvals`.
+Introduce SQLite only when cross-workspace indexing, live query refresh,
+team-server migration, or persistent API queries require structured
+persistence.
 
 Current filesystem-backed state can read reports, structured event summaries,
 captured diffs, captured logs, resolved task inputs, artifact manifests, and
-workspace-local task summaries and comparisons from `.taskfence/tasks`. Task
-summaries use structured `task.resolved.json` and `events.jsonl` evidence and do
-not infer status from rendered report text.
+workspace-local task summaries and comparisons from `.taskfence/tasks`. It can
+assemble local review detail and replay plans from those same files. Task
+summaries use structured `task.resolved.json` and `events.jsonl` evidence and
+do not infer status from rendered report text.
 
 Responsibilities:
 
@@ -979,4 +992,5 @@ Current unsupported surfaces must remain explicit in docs and errors: Docker
 domain allowlists without an enforcing proxy, MCP/HTTP listener or proxy
 servers, SDK/webhook connectors, arbitrary HTTP proxying, branch/commit
 creation, sidecar/listener behavior, arbitrary in-container command
-observation, Web UI, replay, team server, and enterprise behavior.
+observation, persistent Web/API server behavior, SQLite-backed state migration,
+deterministic replay execution, team server, and enterprise behavior.

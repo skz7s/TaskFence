@@ -126,6 +126,39 @@ pub struct TaskSummary {
     pub warnings: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalReviewIndex {
+    pub workspace: Utf8PathBuf,
+    pub tasks: Vec<TaskSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalTaskReview {
+    pub summary: TaskSummary,
+    pub inputs: Option<TaskInputs>,
+    pub artifacts: Option<TaskArtifacts>,
+    pub events: Option<TaskEvents>,
+    pub logs: Option<TaskLogs>,
+    pub diff: Option<TaskDiff>,
+    pub report: Option<TaskReport>,
+    pub replay: ReplayPlan,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayPlan {
+    pub task_id: TaskId,
+    pub source_task_file: Option<Utf8PathBuf>,
+    pub resolved_task_path: Option<Utf8PathBuf>,
+    pub event_log_path: Option<Utf8PathBuf>,
+    pub artifact_dir: Utf8PathBuf,
+    pub last_status: Option<TaskStatus>,
+    pub can_replay: bool,
+    pub deterministic: bool,
+    pub blockers: Vec<String>,
+    pub limitations: Vec<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct LocalTaskEvidenceStore {
     workspace: Utf8PathBuf,
@@ -201,6 +234,131 @@ impl LocalTaskEvidenceStore {
 
         summaries.sort_by(|left, right| left.task_id.cmp(&right.task_id));
         Ok(summaries)
+    }
+
+    pub fn review_index(&self) -> taskfence_core::Result<LocalReviewIndex> {
+        Ok(LocalReviewIndex {
+            workspace: self.workspace.clone(),
+            tasks: self.list_tasks()?,
+        })
+    }
+
+    pub fn read_task_review(&self, task_id: &TaskId) -> taskfence_core::Result<LocalTaskReview> {
+        let summary = self.read_task_summary(task_id)?;
+        let inputs = optional_evidence("resolved task input", self.read_inputs(task_id));
+        let artifacts = optional_evidence("artifact manifest", self.read_artifacts(task_id));
+        let events = optional_evidence("event log", self.read_events(task_id));
+        let logs = optional_evidence("captured logs", self.read_logs(task_id));
+        let diff = optional_evidence("diff artifact", self.read_diff(task_id));
+        let report = optional_evidence("report", self.read_report(task_id));
+        let mut warnings = summary.warnings.clone();
+        push_optional_warning(&mut warnings, &inputs);
+        push_optional_warning(&mut warnings, &artifacts);
+        push_optional_warning(&mut warnings, &events);
+        push_optional_warning(&mut warnings, &logs);
+        push_optional_warning(&mut warnings, &diff);
+        push_optional_warning(&mut warnings, &report);
+        let replay = self.replay_plan(task_id)?;
+
+        Ok(LocalTaskReview {
+            summary,
+            inputs: inputs.value,
+            artifacts: artifacts.value,
+            events: events.value,
+            logs: logs.value,
+            diff: diff.value,
+            report: report.value,
+            replay,
+            warnings,
+        })
+    }
+
+    pub fn replay_plan(&self, task_id: &TaskId) -> taskfence_core::Result<ReplayPlan> {
+        let task_dir = self.task_dir(task_id)?;
+        ensure_task_dir(task_id, &task_dir)?;
+        let inputs = optional_evidence("resolved task input", self.read_inputs(task_id));
+        let events = optional_evidence("event log", self.read_events(task_id));
+        let mut blockers = Vec::new();
+        let mut limitations = Vec::new();
+
+        let (source_task_file, resolved_task_path) = match &inputs.value {
+            Some(inputs) => (
+                Some(inputs.task.task_file.clone()),
+                Some(inputs.path.clone()),
+            ),
+            None => {
+                blockers.push(
+                    inputs
+                        .warning
+                        .clone()
+                        .unwrap_or_else(|| "resolved task input is unavailable".into()),
+                );
+                (None, None)
+            }
+        };
+
+        let event_log_path = match &events.value {
+            Some(events) => Some(events.path.clone()),
+            None => {
+                limitations.push(
+                    events
+                        .warning
+                        .clone()
+                        .unwrap_or_else(|| "event log is unavailable".into()),
+                );
+                None
+            }
+        };
+
+        if let Some(inputs) = &inputs.value {
+            if !inputs.task.gateway.tools.is_empty() {
+                limitations.push(
+                    "gateway calls require fresh mediation, policy, approval, and secret checks"
+                        .into(),
+                );
+            }
+            if inputs.task.permissions.network.default != taskfence_core::NetworkDefault::Disabled {
+                limitations.push("network outcomes may differ between replay attempts".into());
+            }
+            if !inputs.task.approval.require_for.is_empty()
+                || !inputs
+                    .task
+                    .permissions
+                    .commands
+                    .approval_required
+                    .is_empty()
+                || !inputs.task.permissions.tools.approval_required.is_empty()
+            {
+                limitations.push("approval decisions must be replayed from captured policy context or re-requested".into());
+            }
+            if inputs.task.sandbox.image.is_some() {
+                limitations.push(
+                    "runner image availability and contents are external to the replay input"
+                        .into(),
+                );
+            }
+        }
+
+        if limitations.is_empty() {
+            limitations.push(
+                "file-backed replay can reuse resolved inputs but does not guarantee identical external state"
+                    .into(),
+            );
+        }
+
+        let last_status = read_latest_task_status(task_id, &task_dir, &mut Vec::new());
+        Ok(ReplayPlan {
+            task_id: task_id.clone(),
+            source_task_file,
+            resolved_task_path,
+            event_log_path,
+            artifact_dir: task_dir,
+            last_status,
+            can_replay: blockers.is_empty(),
+            deterministic: false,
+            blockers,
+            limitations,
+        })
     }
 
     pub fn read_task_summary(&self, task_id: &TaskId) -> taskfence_core::Result<TaskSummary> {
@@ -352,6 +510,30 @@ impl LocalTaskEvidenceStore {
 
     fn tasks_dir(&self) -> Utf8PathBuf {
         self.workspace.join(TASKFENCE_DIR).join(TASKS_DIR)
+    }
+}
+
+struct OptionalEvidence<T> {
+    value: Option<T>,
+    warning: Option<String>,
+}
+
+fn optional_evidence<T>(label: &str, result: taskfence_core::Result<T>) -> OptionalEvidence<T> {
+    match result {
+        Ok(value) => OptionalEvidence {
+            value: Some(value),
+            warning: None,
+        },
+        Err(err) => OptionalEvidence {
+            value: None,
+            warning: Some(format!("{label}: {err}")),
+        },
+    }
+}
+
+fn push_optional_warning<T>(warnings: &mut Vec<String>, evidence: &OptionalEvidence<T>) {
+    if let Some(warning) = &evidence.warning {
+        warnings.push(warning.clone());
     }
 }
 
@@ -933,6 +1115,236 @@ mod tests {
         assert!(tasks[1].has_report);
         assert!(tasks[1].has_diff);
         assert!(tasks[1].warnings.is_empty());
+    }
+
+    #[test]
+    fn review_index_uses_file_backed_task_summaries() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        write_task_evidence(
+            &workspace,
+            "review-index",
+            "review task",
+            &[TaskStatus::Succeeded],
+            &["report.md"],
+        );
+        let store = LocalTaskEvidenceStore::new(workspace.clone());
+
+        let index = store.review_index().unwrap();
+
+        assert_eq!(index.workspace, workspace);
+        assert_eq!(index.tasks.len(), 1);
+        assert_eq!(index.tasks[0].task_id, TaskId("review-index".into()));
+        assert_eq!(index.tasks[0].status, Some(TaskStatus::Succeeded));
+    }
+
+    #[test]
+    fn task_review_collects_available_evidence_without_report_scraping() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        write_task_evidence(
+            &workspace,
+            "review-detail",
+            "inspect review",
+            &[TaskStatus::Running, TaskStatus::Succeeded],
+            &["report.md", "diff.patch", "stdout.log", "stderr.log"],
+        );
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let review = store
+            .read_task_review(&TaskId("review-detail".into()))
+            .unwrap();
+
+        assert_eq!(review.summary.task_id, TaskId("review-detail".into()));
+        assert!(review.inputs.is_some());
+        assert!(review.artifacts.is_some());
+        assert!(review.events.is_some());
+        assert!(review.logs.is_some());
+        assert!(review.diff.is_some());
+        assert!(review.report.is_some());
+        assert!(review.replay.can_replay);
+        assert_eq!(review.replay.last_status, Some(TaskStatus::Succeeded));
+        assert!(review
+            .replay
+            .resolved_task_path
+            .as_ref()
+            .is_some_and(|path| path.ends_with("task.resolved.json")));
+        assert!(review.warnings.is_empty());
+    }
+
+    #[test]
+    fn task_review_keeps_missing_optional_evidence_as_warnings() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        write_task_evidence(
+            &workspace,
+            "review-partial",
+            "partial review",
+            &[TaskStatus::Denied],
+            &[],
+        );
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let review = store
+            .read_task_review(&TaskId("review-partial".into()))
+            .unwrap();
+
+        assert!(review.inputs.is_some());
+        assert!(review.events.is_some());
+        assert!(review.report.is_none());
+        assert!(review.diff.is_none());
+        assert!(review.logs.is_none());
+        assert!(review
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("report not found")));
+        assert!(review
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("diff artifact not found")));
+        assert!(review
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("no captured stdout or stderr logs")));
+    }
+
+    #[test]
+    fn replay_plan_blocks_when_resolved_inputs_are_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let task_dir = workspace.join(".taskfence/tasks/replay-missing");
+        fs::create_dir_all(&task_dir).unwrap();
+        write_events(
+            &workspace,
+            "replay-missing",
+            &[AuditEvent::TaskStatusChanged {
+                task_id: TaskId("replay-missing".into()),
+                at: datetime!(2024-01-01 00:00 UTC),
+                status: TaskStatus::Failed,
+            }],
+        );
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let plan = store.replay_plan(&TaskId("replay-missing".into())).unwrap();
+
+        assert!(!plan.can_replay);
+        assert!(!plan.deterministic);
+        assert_eq!(plan.last_status, Some(TaskStatus::Failed));
+        assert!(plan
+            .blockers
+            .iter()
+            .any(|blocker| blocker.contains("resolved task input not found")));
+        assert!(plan.event_log_path.is_some());
+    }
+
+    #[test]
+    fn replay_plan_records_gateway_and_runner_limitations() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let task_dir = workspace.join(".taskfence/tasks/replay-gateway");
+        fs::create_dir_all(&task_dir).unwrap();
+        let mut task = test_task("replay-gateway", &workspace, "replay gateway");
+        task.gateway.tools = vec![taskfence_core::GatewayToolConfig {
+            protocol: "mcp".into(),
+            tool: "github".into(),
+            operation: "read_issue".into(),
+            connector: taskfence_core::GatewayConnectorConfig::Unsupported {
+                kind: "test".into(),
+            },
+            secret_refs: Vec::new(),
+        }];
+        fs::write(
+            task_dir.join("task.resolved.json"),
+            serde_json::to_string_pretty(&task).unwrap(),
+        )
+        .unwrap();
+        write_events(
+            &workspace,
+            "replay-gateway",
+            &[AuditEvent::TaskStatusChanged {
+                task_id: TaskId("replay-gateway".into()),
+                at: datetime!(2024-01-01 00:00 UTC),
+                status: TaskStatus::Succeeded,
+            }],
+        );
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let plan = store.replay_plan(&TaskId("replay-gateway".into())).unwrap();
+
+        assert!(plan.can_replay);
+        assert!(!plan.deterministic);
+        assert!(plan
+            .limitations
+            .iter()
+            .any(|limitation| limitation.contains("gateway calls require fresh mediation")));
+        assert!(plan
+            .limitations
+            .iter()
+            .any(|limitation| limitation.contains("runner image availability")));
+    }
+
+    #[test]
+    fn replay_plan_preserves_denied_and_timeout_statuses() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        write_task_evidence(
+            &workspace,
+            "replay-denied",
+            "denied replay",
+            &[TaskStatus::Denied],
+            &[],
+        );
+        write_task_evidence(
+            &workspace,
+            "replay-timeout",
+            "timeout replay",
+            &[TaskStatus::TimedOut],
+            &[],
+        );
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let denied = store.replay_plan(&TaskId("replay-denied".into())).unwrap();
+        let timeout = store.replay_plan(&TaskId("replay-timeout".into())).unwrap();
+
+        assert_eq!(denied.last_status, Some(TaskStatus::Denied));
+        assert!(denied.can_replay);
+        assert_eq!(timeout.last_status, Some(TaskStatus::TimedOut));
+        assert!(timeout.can_replay);
+    }
+
+    #[test]
+    fn replay_plan_notes_approval_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let task_dir = workspace.join(".taskfence/tasks/replay-approval");
+        fs::create_dir_all(&task_dir).unwrap();
+        let mut task = test_task("replay-approval", &workspace, "approval replay");
+        task.permissions.commands.approval_required = vec!["echo".into()];
+        fs::write(
+            task_dir.join("task.resolved.json"),
+            serde_json::to_string_pretty(&task).unwrap(),
+        )
+        .unwrap();
+        write_events(
+            &workspace,
+            "replay-approval",
+            &[AuditEvent::TaskStatusChanged {
+                task_id: TaskId("replay-approval".into()),
+                at: datetime!(2024-01-01 00:00 UTC),
+                status: TaskStatus::Denied,
+            }],
+        );
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let plan = store
+            .replay_plan(&TaskId("replay-approval".into()))
+            .unwrap();
+
+        assert!(plan.can_replay);
+        assert!(plan
+            .limitations
+            .iter()
+            .any(|limitation| limitation.contains("approval decisions must be replayed")));
     }
 
     #[test]

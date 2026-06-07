@@ -197,8 +197,9 @@ Current implemented gateway coverage:
   denied tool actions from structured audit events without rendering raw
   parameter values
 - MCP/HTTP listener or proxy servers, SDK/webhook connectors, arbitrary HTTP
-  proxying, branch/commit creation, Web UI, replay, team-server, and
-  enterprise gateway surfaces remain future work
+  proxying, branch/commit creation, persistent Web/API server behavior,
+  deterministic replay execution, team-server, and enterprise gateway surfaces
+  remain future work
 
 Current local fixture demo:
 
@@ -220,53 +221,63 @@ Current local fixture demo:
 
 Goal: improve review, debugging, and reproducibility.
 
-Current local coverage before Web UI and SQLite:
+Current local coverage:
 
 - `taskfence tasks --workspace <workspace>` lists workspace-local task
   summaries from `.taskfence/tasks`, using structured resolved-task JSON and
   JSONL status events rather than rendered report text
 - `taskfence task <task-id> --workspace <workspace>` reads a single
   workspace-local task summary and artifact availability without a report text
-  scrape, Web UI, API server, or SQLite index
+  scrape, persistent API server, or SQLite index
 - `taskfence inputs <task-id> --workspace <workspace>` reads the saved
   workspace-local `task.resolved.json` as replay input evidence without replay
-  execution, Web UI, API server, SQLite index, or report scraping
+  execution, persistent API server, SQLite index, or report scraping
 - `taskfence artifacts <task-id> --workspace <workspace>` lists known
   workspace-local evidence files and immediate custom artifact files without an
-  artifact download flow, recursive browser, Web UI, API server, or SQLite index
+  artifact download flow, recursive browser, persistent API server, or SQLite
+  index
 - `taskfence compare <left-task-id> <right-task-id> --workspace <workspace>`
   compares two workspace-local task summaries from structured evidence without
-  a Web UI comparison view, replay execution, API server, SQLite index, report
-  scraping, or artifact content diffing
+  replay execution, persistent API server, SQLite index, report scraping, or
+  artifact content diffing
 - `taskfence status <task-id> --workspace <workspace>` reads the latest
   workspace-local task status from structured status events without a report
-  text scrape, Web UI, API server, or SQLite index
+  text scrape, persistent API server, or SQLite index
 - `taskfence events <task-id> --workspace <workspace>` reads a structured
   workspace-local event timeline from `events.jsonl` without replay execution,
-  Web UI, API server, SQLite index, or raw tool parameter rendering
+  persistent API server, SQLite index, or raw tool parameter rendering
 - `taskfence diff <task-id> --workspace <workspace>` reads the workspace-local
   `diff.patch` artifact without a browser diff viewer or SQLite index
 - `taskfence approvals --workspace <workspace>` lists workspace-local approval
-  records from `.taskfence/approvals` without an approval UI, API server, or
-  SQLite index
+  records from `.taskfence/approvals` without a persistent API server or SQLite
+  index
 - `taskfence approval <approval-id> --workspace <workspace>` reads one
   workspace-local approval record from `.taskfence/approvals` without an
-  approval UI, API server, SQLite index, or raw tool parameter rendering
+  persistent API server, SQLite index, or raw tool parameter rendering
+- `taskfence review --workspace <workspace>` renders a static local HTML review
+  page from file-backed task summaries, pending approvals, event timelines,
+  diffs, logs, reports, replay plans, and a structured run-comparison table
+- `taskfence review --workspace <workspace> --serve --port <port>` serves that
+  review page on loopback in the foreground and resolves pending
+  workspace-local approvals through explicit approve/deny POST routes
+- `taskfence replay plan <task-id> --workspace <workspace>` reports saved
+  replay inputs, last status, blockers, and limitations without executing
+  replay
 
 Deliverables:
 
-- task list
-- live logs
-- diff viewer
-- approval UI
-- report viewer
-- task replay inputs
-- local SQLite state
-- comparison view for multiple runs
+- implemented: task list, evidence detail page, pending approval review,
+  approve/deny actions, report/log/diff/event viewing, replay input planning,
+  and structured comparison for multiple runs
+- remaining: live log streaming, richer browser diff interactions, persistent
+  local API server, SQLite-backed state migration, artifact download routing,
+  and deterministic replay execution
 
 Minimum demo:
 
-- reviewer can inspect a task, approve an action, and download the report
+- reviewer can inspect a local task, read its report/log/diff/event evidence,
+  compare multiple runs, and approve or deny a pending workspace-local action
+  from the loopback review page
 
 ## Phase 5: Team and Enterprise Foundation
 

@@ -50,8 +50,13 @@ request/response spool prototype is processed by `taskfence gateway spool
 process`. The spool path is task-local, mounted separately into Docker only for
 tasks with configured gateway tools, and produces typed responses plus
 structured evidence. MCP/HTTP listener or proxy servers, SDK/webhook
-connectors, arbitrary HTTP proxying, branch/commit creation, Web UI, replay,
+connectors, arbitrary HTTP proxying, branch/commit creation, persistent API
+server, SQLite-backed state migration, deterministic replay execution,
 team-server, and enterprise control-plane behavior are not implemented yet.
+The local review foundation is CLI-owned: it can render file-backed evidence as
+a static or foreground-served loopback HTML page, resolve pending
+workspace-local approvals from that page, and plan replay inputs without
+executing them.
 
 ### CLI
 
@@ -93,6 +98,16 @@ Initial commands:
 - `taskfence events <task-id> --workspace <workspace>` reads a structured local
   event timeline from the task `events.jsonl` evidence without rendering raw
   tool parameter values.
+- `taskfence review --workspace <workspace>` writes a static local HTML review
+  page under `.taskfence/review/index.html`, or to `--output` when supplied,
+  using file-backed task, event, diff, log, report, approval, comparison, and
+  replay-plan evidence.
+- `taskfence review --workspace <workspace> --serve --port <port>` serves the
+  same local review page on `127.0.0.1` in the foreground and resolves pending
+  workspace-local approvals through explicit approve/deny POST routes.
+- `taskfence replay plan <task-id> --workspace <workspace>` reports saved task
+  inputs, artifact paths, last status, blockers, and replay limitations without
+  executing replay.
 - `taskfence logs <task-id> --workspace <workspace>` reads captured stdout and
   stderr logs from local task evidence when present.
 - `taskfence diff <task-id> --workspace <workspace>` reads the captured
@@ -231,8 +246,9 @@ cancellation, malformed-request, unsupported-action, or failure responses with
 structured evidence. When a registry is configured, unregistered tool actions
 fail before policy evaluation and record an audit error. It does not implement
 MCP/HTTP listener or proxy servers, SDK/webhook connectors, arbitrary HTTP
-proxying, branch/commit creation, Web UI, replay, team-server, or enterprise
-connector behavior yet.
+proxying, branch/commit creation, persistent Web/API server behavior,
+deterministic replay execution, team-server, or enterprise connector behavior
+yet.
 
 Supported gateway surfaces can include:
 
@@ -339,9 +355,10 @@ stdout/stderr logs when present, a diff artifact, and a Markdown report. The
 local CLI can list workspace-local task summaries and read structured event
 summaries, resolved task inputs, artifact manifests, task summary comparisons,
 latest task statuses, captured diffs, generated reports, or captured logs from
-that workspace-local artifact directory, but it does not yet provide
-cross-workspace indexing, Web UI queries, replay execution, or SQLite-backed
-state.
+that workspace-local artifact directory. The local review page and replay-plan
+command consume these same structured files. They do not yet provide
+cross-workspace indexing, a persistent API server, replay execution, or
+SQLite-backed state.
 
 ## Security Boundary
 
