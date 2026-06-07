@@ -3,10 +3,11 @@ use serde::Deserialize;
 use std::fs;
 use std::io;
 use taskfence_core::{
-    AgentConfig, AgentKind, ApprovalConfig, AuditConfig, CaptureConfig, CommandPermissions,
-    EnvPermissions, LimitConfig, NetworkDefault, NetworkPermissions, PathPermissions,
-    PermissionConfig, ReportConfig, ReportFormat, ResolvedTask, SandboxConfig, SandboxKind,
-    SecretConfig, SecretGrant, TaskFenceError, TaskId, ToolPermissions,
+    AgentConfig, AgentKind, ApprovalConfig, AuditConfig, BudgetLimit, BudgetPermissions,
+    CaptureConfig, CommandPermissions, EnvPermissions, LimitConfig, NetworkDefault,
+    NetworkPermissions, PathPermissions, PermissionConfig, ReportConfig, ReportFormat,
+    ResolvedTask, SandboxConfig, SandboxKind, SecretConfig, SecretGrant, TaskFenceError, TaskId,
+    ToolPermissions,
 };
 
 pub fn load_task_file(path: impl AsRef<Utf8Path>) -> taskfence_core::Result<ResolvedTask> {
@@ -160,6 +161,8 @@ struct RawPermissions {
     env: EnvPermissions,
     #[serde(default)]
     tools: ToolPermissions,
+    #[serde(default)]
+    budget: RawBudgetPermissions,
 }
 
 impl RawPermissions {
@@ -174,6 +177,7 @@ impl RawPermissions {
             network: self.network.resolve()?,
             env: self.env,
             tools: self.tools,
+            budget: self.budget.resolve()?,
         })
     }
 }
@@ -227,6 +231,47 @@ impl RawNetworkPermissions {
                 .into_iter()
                 .map(validate_domain)
                 .collect::<taskfence_core::Result<Vec<_>>>()?,
+        })
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBudgetPermissions {
+    #[serde(default)]
+    allow: Vec<RawBudgetLimit>,
+}
+
+impl RawBudgetPermissions {
+    fn resolve(self) -> taskfence_core::Result<BudgetPermissions> {
+        Ok(BudgetPermissions {
+            allow: self
+                .allow
+                .into_iter()
+                .map(RawBudgetLimit::resolve)
+                .collect::<taskfence_core::Result<Vec<_>>>()?,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBudgetLimit {
+    kind: String,
+    max_amount: u64,
+}
+
+impl RawBudgetLimit {
+    fn resolve(self) -> taskfence_core::Result<BudgetLimit> {
+        let kind = normalize_budget_kind(&self.kind)?;
+        if self.max_amount == 0 {
+            return Err(TaskFenceError::Config(
+                "permissions.budget.allow max_amount must be positive".into(),
+            ));
+        }
+        Ok(BudgetLimit {
+            kind,
+            max_amount: self.max_amount,
         })
     }
 }
@@ -427,6 +472,16 @@ fn validate_domain(domain: String) -> taskfence_core::Result<String> {
     Ok(domain)
 }
 
+fn normalize_budget_kind(kind: &str) -> taskfence_core::Result<String> {
+    let normalized = kind.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Err(TaskFenceError::Config(
+            "permissions.budget.allow kind must not be empty".into(),
+        ));
+    }
+    Ok(normalized)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -485,6 +540,36 @@ permissions:
     }
 
     #[test]
+    fn parses_budget_permissions() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("repo")).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        let yaml = r#"
+goal: Test budget policy
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+permissions:
+  budget:
+    allow:
+      - kind: " Tokens "
+        max_amount: 1000
+      - kind: "usd_cents"
+        max_amount: 250
+"#;
+
+        let task = parse_task_file(&task_file, yaml).unwrap();
+
+        assert_eq!(task.permissions.budget.allow.len(), 2);
+        assert_eq!(task.permissions.budget.allow[0].kind, "tokens");
+        assert_eq!(task.permissions.budget.allow[0].max_amount, 1000);
+        assert_eq!(task.permissions.budget.allow[1].kind, "usd_cents");
+        assert_eq!(task.permissions.budget.allow[1].max_amount, 250);
+    }
+
+    #[test]
     fn rejects_unknown_fields() {
         let yaml = r#"
 goal: Test
@@ -517,6 +602,44 @@ permissions:
 "#;
 
         assert!(parse_task_file(&task_file, yaml).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_budget_permissions() {
+        for yaml in [
+            r#"
+goal: Test
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+permissions:
+  budget:
+    allow:
+      - kind: " "
+        max_amount: 1
+"#,
+            r#"
+goal: Test
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+permissions:
+  budget:
+    allow:
+      - kind: tokens
+        max_amount: 0
+"#,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            fs::create_dir(temp.path().join("repo")).unwrap();
+            let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+
+            assert!(parse_task_file(&task_file, yaml).is_err());
+        }
     }
 
     #[test]

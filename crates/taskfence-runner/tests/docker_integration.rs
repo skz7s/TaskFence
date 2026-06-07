@@ -142,6 +142,7 @@ fn docker_task(
             },
             env: EnvPermissions::default(),
             tools: Default::default(),
+            budget: Default::default(),
         },
         secrets: SecretConfig::default(),
         approval: ApprovalConfig::default(),

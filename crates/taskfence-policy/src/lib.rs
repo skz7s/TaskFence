@@ -103,8 +103,35 @@ impl PolicyEngine for BuiltInPolicyEngine {
                     MatchDecision::NoMatch => deny("tool call did not match policy"),
                 }
             }
-            Action::Budget { .. } => allow("budget action accepted by default"),
+            Action::Budget { kind, amount } => evaluate_budget(task, kind, *amount),
         }
+    }
+}
+
+fn evaluate_budget(
+    task: &ResolvedTask,
+    kind: &str,
+    amount: u64,
+) -> taskfence_core::Result<ActionDecision> {
+    let kind = kind.trim().to_ascii_lowercase();
+    if kind.is_empty() {
+        return deny("budget kind is empty");
+    }
+
+    let Some(limit) = task
+        .permissions
+        .budget
+        .allow
+        .iter()
+        .find(|limit| limit.kind == kind)
+    else {
+        return deny("budget kind is not allowed");
+    };
+
+    if amount > limit.max_amount {
+        deny("budget amount exceeds configured limit")
+    } else {
+        allow("budget action matched configured limit")
     }
 }
 
@@ -252,9 +279,10 @@ mod tests {
     use camino::Utf8PathBuf;
     use std::collections::BTreeMap;
     use taskfence_core::{
-        AgentConfig, AgentKind, ApprovalConfig, AuditConfig, CommandPermissions, EnvPermissions,
-        LimitConfig, NetworkPermissions, PathPermissions, PermissionConfig, SandboxConfig,
-        SandboxKind, SecretConfig, TaskId, ToolAction, ToolPermissions,
+        AgentConfig, AgentKind, ApprovalConfig, AuditConfig, BudgetLimit, BudgetPermissions,
+        CommandPermissions, EnvPermissions, LimitConfig, NetworkPermissions, PathPermissions,
+        PermissionConfig, SandboxConfig, SandboxKind, SecretConfig, TaskId, ToolAction,
+        ToolPermissions,
     };
 
     fn task() -> ResolvedTask {
@@ -289,6 +317,7 @@ mod tests {
                     allow: vec!["CI".into()],
                 },
                 tools: Default::default(),
+                budget: Default::default(),
             },
             secrets: SecretConfig::default(),
             approval: ApprovalConfig::default(),
@@ -450,5 +479,73 @@ mod tests {
             .unwrap();
 
         assert!(matches!(decision, ActionDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn budget_action_is_denied_without_configured_limit() {
+        let decision = BuiltInPolicyEngine
+            .evaluate(
+                &task(),
+                &Action::Budget {
+                    kind: "tokens".into(),
+                    amount: 100,
+                },
+            )
+            .unwrap();
+
+        assert!(matches!(
+            decision,
+            ActionDecision::Deny { reason, .. } if reason == "budget kind is not allowed"
+        ));
+    }
+
+    #[test]
+    fn budget_action_is_allowed_within_configured_limit() {
+        let mut task = task();
+        task.permissions.budget = BudgetPermissions {
+            allow: vec![BudgetLimit {
+                kind: "tokens".into(),
+                max_amount: 1000,
+            }],
+        };
+
+        let decision = BuiltInPolicyEngine
+            .evaluate(
+                &task,
+                &Action::Budget {
+                    kind: " Tokens ".into(),
+                    amount: 1000,
+                },
+            )
+            .unwrap();
+
+        assert!(matches!(decision, ActionDecision::Allow { .. }));
+    }
+
+    #[test]
+    fn budget_action_over_configured_limit_is_denied() {
+        let mut task = task();
+        task.permissions.budget = BudgetPermissions {
+            allow: vec![BudgetLimit {
+                kind: "usd_cents".into(),
+                max_amount: 250,
+            }],
+        };
+
+        let decision = BuiltInPolicyEngine
+            .evaluate(
+                &task,
+                &Action::Budget {
+                    kind: "usd_cents".into(),
+                    amount: 251,
+                },
+            )
+            .unwrap();
+
+        assert!(matches!(
+            decision,
+            ActionDecision::Deny { reason, .. }
+                if reason == "budget amount exceeds configured limit"
+        ));
     }
 }

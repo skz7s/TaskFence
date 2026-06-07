@@ -41,6 +41,10 @@ permissions:
       - "github.create_pr"
     deny:
       - "github.delete_repo"
+  budget:
+    allow:
+      - kind: "tokens"
+        max_amount: 100000
 
 secrets:
   expose_to_agent: false

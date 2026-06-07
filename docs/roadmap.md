@@ -112,13 +112,16 @@ Deliverables:
 - denied action records
 - secret redaction rules
 
-Partially implemented: built-in command/file/network/env/secret/tool policy
-decisions, task-file `permissions.tools` parsing, deny precedence,
-approval-required command/tool patterns, non-interactive fail-closed approval
-records, timeout modeling, and audit/report redaction. Opt-in local interactive
-approval during `run` is implemented, as is an explicit workspace-local
-external approval mode through `taskfence approvals`, `taskfence approval`,
-`taskfence approve`, and `taskfence deny`.
+Partially implemented: built-in command/file/network/env/secret/tool/budget
+policy decisions, task-file `permissions.tools` and `permissions.budget`
+parsing, deny precedence, approval-required command/tool patterns,
+non-interactive fail-closed approval records, timeout modeling, and audit/report
+redaction. Budget actions are denied by default unless a typed action matches a
+configured `permissions.budget.allow` kind and positive `max_amount`; this does
+not implement live token, cost, provider, or team quota metering. Opt-in local
+interactive approval during `run` is implemented, as is an explicit
+workspace-local external approval mode through `taskfence approvals`,
+`taskfence approval`, `taskfence approve`, and `taskfence deny`.
 Denied command and approval denial evidence/reporting is implemented for local
 pre-run decisions; configured tool-call policy decisions are covered through
 typed gateway mediation and structured report evidence, including optional

@@ -141,6 +141,10 @@ permissions:
       - "github.create_pr"
     deny:
       - "github.delete_repo"
+  budget:
+    allow:
+      - kind: "tokens"
+        max_amount: 100000
 ```
 
 See [examples/task.yaml](examples/task.yaml) for the runnable demo.
@@ -256,7 +260,7 @@ The first implementation currently includes:
    validation.
 2. Docker-based sandbox execution.
 3. One black-box CLI agent adapter.
-4. File, command, network, and secret restrictions.
+4. File, command, network, secret, and explicit budget restrictions.
 5. Non-interactive fail-closed local approval records, opt-in local interactive
    approval during `run`, and explicit local external approval through
    workspace-scoped `approvals` / `approve` / `deny` commands.
@@ -268,7 +272,11 @@ The first implementation currently includes:
    latest task statuses, structured task event summaries, captured diffs,
    generated reports, captured stdout/stderr logs, and local approval
    records/details.
-9. Task-file `permissions.tools` parsing and policy/audit/report evidence for
+9. Task-file `permissions.budget.allow` parsing and built-in policy decisions
+   for typed budget actions. Budget actions are denied by default unless a
+   matching kind and `max_amount` are explicitly configured; this is not live
+   token, cost, or provider metering.
+10. Task-file `permissions.tools` parsing and policy/audit/report evidence for
    future gateway-mediated tool actions, including optional approval evidence,
    redacted gateway secret references, and MCP/HTTP request normalization
    stubs without real tool execution or credential use.

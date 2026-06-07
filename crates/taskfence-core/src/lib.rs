@@ -159,6 +159,8 @@ pub struct PermissionConfig {
     pub network: NetworkPermissions,
     pub env: EnvPermissions,
     pub tools: ToolPermissions,
+    #[serde(default)]
+    pub budget: BudgetPermissions,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -213,6 +215,20 @@ pub struct ToolPermissions {
     pub approval_required: Vec<String>,
     #[serde(default)]
     pub deny: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BudgetPermissions {
+    #[serde(default)]
+    pub allow: Vec<BudgetLimit>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BudgetLimit {
+    pub kind: String,
+    pub max_amount: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]

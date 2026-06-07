@@ -122,6 +122,13 @@ Initial policy dimensions:
 - tool calls
 - budget limits
 
+The current built-in budget policy evaluates typed `Action::Budget` values
+only. Task files can configure `permissions.budget.allow` entries with a
+normalized budget kind and positive `max_amount`. Budget actions with no
+matching kind, an empty kind, or an amount above the configured limit are
+denied. This is a policy boundary for mediated budget actions, not live
+token/cost metering or provider accounting.
+
 The first implementation can use a built-in policy evaluator. Later versions can
 support OPA, Cedar, or custom plugins.
 

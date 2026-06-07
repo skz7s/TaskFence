@@ -37,6 +37,7 @@ pub fn sample_task() -> ResolvedTask {
             network: NetworkPermissions::default(),
             env: EnvPermissions::default(),
             tools: Default::default(),
+            budget: Default::default(),
         },
         secrets: SecretConfig::default(),
         approval: ApprovalConfig::default(),

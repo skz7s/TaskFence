@@ -558,6 +558,9 @@ Validation rules:
 - Domain allowlists must be normalized to lower-case hostnames.
 - Report format must be one of the supported formats.
 - Budget and timeout values must be positive and bounded.
+- Task-file `permissions.budget.allow` entries normalize budget kinds to
+  lower-case and require positive `max_amount`; missing budget configuration
+  means typed budget actions deny by default.
 
 ## Concurrency Strategy
 
