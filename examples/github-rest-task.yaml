@@ -1,8 +1,7 @@
 # Example TaskFence task file for the bounded GitHub REST connector.
 #
 # This file is for validation and configuration reference. Running it requires
-# a real repository, an existing head/base for create_pr operations, and a
-# gateway-side token exported as:
+# a real repository and a gateway-side token exported as:
 #
 #   TASKFENCE_GATEWAY_SECRET_GITHUB_TOKEN=...
 
@@ -36,12 +35,16 @@ permissions:
       - "github.read_issue"
       - "egress.fetch"
     approval_required:
+      - "github.create_branch"
+      - "github.commit_file"
       - "github.create_pr"
+      - "github.update_pr"
       - "github.comment_issue"
+      - "github.comment_report"
   budget:
     allow:
       - kind: "gateway_calls"
-        max_amount: 1
+        max_amount: 8
 
 secrets:
   expose_to_agent: false
@@ -49,8 +52,12 @@ secrets:
     - name: "github_token"
       use_for:
         - "github.read_issue"
+        - "github.create_branch"
+        - "github.commit_file"
         - "github.create_pr"
+        - "github.update_pr"
         - "github.comment_issue"
+        - "github.comment_report"
 
 gateway:
   mode: "local_listener"
@@ -85,6 +92,36 @@ gateway:
           scope: "github.create_pr"
     - protocol: "mcp"
       tool: "github"
+      operation: "create_branch"
+      connector:
+        type: "github_rest"
+        repository: "owner/repo"
+      secret_refs:
+        - name: "github_token"
+          parameter: "authorization"
+          scope: "github.create_branch"
+    - protocol: "mcp"
+      tool: "github"
+      operation: "commit_file"
+      connector:
+        type: "github_rest"
+        repository: "owner/repo"
+      secret_refs:
+        - name: "github_token"
+          parameter: "authorization"
+          scope: "github.commit_file"
+    - protocol: "mcp"
+      tool: "github"
+      operation: "update_pr"
+      connector:
+        type: "github_rest"
+        repository: "owner/repo"
+      secret_refs:
+        - name: "github_token"
+          parameter: "authorization"
+          scope: "github.update_pr"
+    - protocol: "mcp"
+      tool: "github"
       operation: "comment_issue"
       connector:
         type: "github_rest"
@@ -93,3 +130,13 @@ gateway:
         - name: "github_token"
           parameter: "authorization"
           scope: "github.comment_issue"
+    - protocol: "mcp"
+      tool: "github"
+      operation: "comment_report"
+      connector:
+        type: "github_rest"
+        repository: "owner/repo"
+      secret_refs:
+        - name: "github_token"
+          parameter: "authorization"
+          scope: "github.comment_report"

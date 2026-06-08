@@ -194,7 +194,7 @@ Completion evidence:
 
 ### Phase 2: Expanded GitHub Workflow And Connector Prioritization
 
-Status: pending
+Status: done
 
 Scope:
 
@@ -221,7 +221,48 @@ cargo test -p taskfence-config -p taskfence-gateway -p taskfence-policy -p taskf
 
 Completion evidence:
 
-- Pending.
+- Started on 2026-06-08 after Phase 1 was marked done and committed as
+  `5f05618` (`gateway: add enforcing local gateway and network controls`).
+- Implemented bounded live `github_rest` / `github_enterprise_rest` workflow
+  operations for `github.create_branch`, `github.commit_file`,
+  `github.update_pr`, and `github.comment_report`, alongside existing
+  `github.read_issue`, `github.create_pr`, and `github.comment_issue`.
+- Added GitHub REST client methods for ref creation, one-file Contents API
+  commits, PR updates, and structured issue/PR comments. Operation parameters
+  are bounded before live API calls: safe branch/ref names, safe
+  repository-relative file paths, bounded commit messages/content, optional
+  object SHA validation, bounded PR title/body/state/base updates, bounded
+  comment/report bodies, and safe report URLs.
+- Kept live tokens gateway-side through the existing environment secret broker.
+  Unsupported GitHub REST operations now fail during planned budget validation,
+  before gateway-side token issuance or client execution.
+- Updated connector policy templates so GitHub and GitHub Enterprise advertise
+  the expanded operation set, keep write/report/comment operations
+  approval-sensitive, and keep non-GitHub enterprise connectors contract-only
+  with explicit unsupported-action evidence.
+- Added gateway tests for branch creation, file commit, PR update,
+  report-comment posting, path-escape rejection, missing live-token
+  fail-closed behavior, token redaction, and unsupported operation
+  fail-closed behavior.
+- Added a config parser test for the expanded GitHub REST workflow and updated
+  `examples/github-rest-task.yaml` and `examples/enterprise-connectors-task.yaml`
+  to validate the expanded live connector shape without embedding credentials.
+- Updated README, architecture, roadmap, runtime architecture, development
+  design, and decision records to document the bounded issue-to-branch-to-PR
+  GitHub/GitHub Enterprise workflow while keeping GitLab, Jira, Feishu, WeCom,
+  DingTalk, Gitee, CODING, database, internal HTTP, SIEM export, production MCP
+  server, arbitrary HTTP proxying, SDK/webhook, and non-GitHub branch/commit
+  behavior unsupported.
+- Verification passed: `cargo fmt --all --check`.
+- Verification passed: `cargo test -p taskfence-gateway github_rest_ --no-fail-fast`
+  (10 targeted GitHub REST tests).
+- Verification passed: `cargo test -p taskfence-config parses_expanded_github_rest_workflow_tools`.
+- Example validation passed: `cargo run -p taskfence-cli -- validate examples/github-rest-task.yaml`.
+- Example validation passed: `cargo run -p taskfence-cli -- validate examples/enterprise-connectors-task.yaml`.
+- Verification passed: `cargo test -p taskfence-config -p taskfence-gateway -p taskfence-policy -p taskfence-audit -p taskfence-report -p taskfence-cli`
+  (20 config tests, 52 gateway tests, 13 policy tests, 4 audit tests, 4 report
+  tests, and 95 CLI tests).
+- Additional compile guard passed: `cargo check --workspace`.
 
 ### Phase 3: Persistent Local State, API Surface, And Rich Review UI
 

@@ -15,8 +15,10 @@ export.
 
 `github_enterprise_rest` reuses the bounded GitHub REST adapter contract with an
 explicit HTTPS API base and supports only `github.read_issue`,
-`github.create_pr`, and `github.comment_issue`. Raw tokens remain gateway-side
-through `TASKFENCE_GATEWAY_SECRET_<NORMALIZED_SECRET_NAME>`.
+`github.create_branch`, `github.commit_file`, `github.create_pr`,
+`github.update_pr`, `github.comment_issue`, and `github.comment_report`. Raw
+tokens remain gateway-side through
+`TASKFENCE_GATEWAY_SECRET_<NORMALIZED_SECRET_NAME>`.
 
 All other enterprise connectors are opt-in contract-only surfaces. They parse
 safe configuration references, expose connector-specific policy templates,

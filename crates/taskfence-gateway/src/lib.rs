@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1324,6 +1325,7 @@ pub struct GitHubPullRequestInput {
 pub struct GitHubPullRequest {
     pub number: u64,
     pub title: String,
+    pub state: String,
     pub html_url: String,
 }
 
@@ -1332,6 +1334,37 @@ pub struct GitHubIssueComment {
     pub id: u64,
     pub body: String,
     pub html_url: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitHubBranch {
+    pub name: String,
+    pub sha: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitHubFileCommitInput {
+    pub path: String,
+    pub message: String,
+    pub content: String,
+    pub branch: String,
+    pub sha: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitHubFileCommit {
+    pub path: String,
+    pub sha: String,
+    pub html_url: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitHubPullRequestUpdateInput {
+    pub number: u64,
+    pub title: Option<String>,
+    pub body: Option<String>,
+    pub state: Option<String>,
+    pub base: Option<String>,
 }
 
 pub trait GitHubApiClient {
@@ -1359,6 +1392,31 @@ pub trait GitHubApiClient {
         number: u64,
         body: String,
     ) -> std::result::Result<GitHubIssueComment, ToolExecutionError>;
+
+    fn create_branch(
+        &self,
+        api_base: &str,
+        repository: &str,
+        token: &str,
+        branch: &str,
+        from_ref: &str,
+    ) -> std::result::Result<GitHubBranch, ToolExecutionError>;
+
+    fn commit_file(
+        &self,
+        api_base: &str,
+        repository: &str,
+        token: &str,
+        input: GitHubFileCommitInput,
+    ) -> std::result::Result<GitHubFileCommit, ToolExecutionError>;
+
+    fn update_pull_request(
+        &self,
+        api_base: &str,
+        repository: &str,
+        token: &str,
+        input: GitHubPullRequestUpdateInput,
+    ) -> std::result::Result<GitHubPullRequest, ToolExecutionError>;
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1404,6 +1462,7 @@ impl GitHubApiClient for UreqGitHubClient {
         Ok(GitHubPullRequest {
             number: json_u64_field(&value, "number").unwrap_or_default(),
             title: json_string_field(&value, "title"),
+            state: json_string_field(&value, "state"),
             html_url: json_string_field(&value, "html_url"),
         })
     }
@@ -1424,6 +1483,117 @@ impl GitHubApiClient for UreqGitHubClient {
         Ok(GitHubIssueComment {
             id: json_u64_field(&value, "id").unwrap_or_default(),
             body: json_string_field(&value, "body"),
+            html_url: json_string_field(&value, "html_url"),
+        })
+    }
+
+    fn create_branch(
+        &self,
+        api_base: &str,
+        repository: &str,
+        token: &str,
+        branch: &str,
+        from_ref: &str,
+    ) -> std::result::Result<GitHubBranch, ToolExecutionError> {
+        let from = github_get_json(
+            &github_api_url(api_base, &format!("repos/{repository}/git/ref/{from_ref}")),
+            token,
+        )?;
+        let sha = from
+            .get("object")
+            .and_then(|object| object.get("sha"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| ToolExecutionError {
+                kind: ToolExecutionErrorKind::AdapterFailed,
+                message: format!("GitHub ref {from_ref} did not include an object sha"),
+            })?;
+        let value = github_post_json(
+            &github_api_url(api_base, &format!("repos/{repository}/git/refs")),
+            token,
+            serde_json::json!({
+                "ref": format!("refs/heads/{branch}"),
+                "sha": sha,
+            }),
+        )?;
+        let created_ref = json_string_field(&value, "ref");
+        let created_sha = value
+            .get("object")
+            .and_then(|object| object.get("sha"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(sha)
+            .to_owned();
+        Ok(GitHubBranch {
+            name: created_ref
+                .strip_prefix("refs/heads/")
+                .unwrap_or(branch)
+                .to_owned(),
+            sha: created_sha,
+        })
+    }
+
+    fn commit_file(
+        &self,
+        api_base: &str,
+        repository: &str,
+        token: &str,
+        input: GitHubFileCommitInput,
+    ) -> std::result::Result<GitHubFileCommit, ToolExecutionError> {
+        let mut body = serde_json::json!({
+            "message": input.message,
+            "content": base64::engine::general_purpose::STANDARD.encode(input.content.as_bytes()),
+            "branch": input.branch,
+        });
+        if let Some(sha) = input.sha {
+            body["sha"] = serde_json::Value::String(sha);
+        }
+        let value = github_put_json(
+            &github_api_url(
+                api_base,
+                &format!("repos/{repository}/contents/{}", input.path),
+            ),
+            token,
+            body,
+        )?;
+        let content = value.get("content").unwrap_or(&serde_json::Value::Null);
+        Ok(GitHubFileCommit {
+            path: json_string_field(content, "path"),
+            sha: json_string_field(content, "sha"),
+            html_url: json_string_field(content, "html_url"),
+        })
+    }
+
+    fn update_pull_request(
+        &self,
+        api_base: &str,
+        repository: &str,
+        token: &str,
+        input: GitHubPullRequestUpdateInput,
+    ) -> std::result::Result<GitHubPullRequest, ToolExecutionError> {
+        let mut body = serde_json::Map::new();
+        if let Some(title) = input.title {
+            body.insert("title".into(), serde_json::Value::String(title));
+        }
+        if let Some(body_text) = input.body {
+            body.insert("body".into(), serde_json::Value::String(body_text));
+        }
+        if let Some(state) = input.state {
+            body.insert("state".into(), serde_json::Value::String(state));
+        }
+        if let Some(base) = input.base {
+            body.insert("base".into(), serde_json::Value::String(base));
+        }
+        let value = github_patch_json(
+            &github_api_url(
+                api_base,
+                &format!("repos/{repository}/pulls/{}", input.number),
+            ),
+            token,
+            serde_json::Value::Object(body),
+        )?;
+        Ok(GitHubPullRequest {
+            number: json_u64_field(&value, "number").unwrap_or(input.number),
+            title: json_string_field(&value, "title"),
+            state: json_string_field(&value, "state"),
             html_url: json_string_field(&value, "html_url"),
         })
     }
@@ -1472,6 +1642,15 @@ where
         _context: &ToolExecutionContext,
     ) -> std::result::Result<Vec<BudgetUsage>, ToolExecutionError> {
         let connector = connector_kind(&self.tool.connector);
+        if !connector_supports_operation(&self.tool.connector, &action.tool, &action.operation) {
+            return Err(ToolExecutionError {
+                kind: ToolExecutionErrorKind::UnsupportedTool,
+                message: format!(
+                    "{} connector template does not support {}.{}",
+                    connector, action.tool, action.operation
+                ),
+            });
+        }
         Ok(vec![BudgetUsage {
             kind: "gateway_calls".into(),
             amount: 1,
@@ -1560,10 +1739,11 @@ where
             }
             "create_pr" => {
                 let input = GitHubPullRequestInput {
-                    title: plain_required_parameter(action, "title")?.to_owned(),
-                    head: plain_required_parameter(action, "head")?.to_owned(),
-                    base: plain_required_parameter(action, "base")?.to_owned(),
-                    body: plain_optional_parameter(action, "body").unwrap_or_default(),
+                    title: bounded_plain_parameter(action, "title", 512)?,
+                    head: safe_git_ref_parameter(action, "head")?,
+                    base: safe_git_ref_parameter(action, "base")?,
+                    body: optional_bounded_plain_parameter(action, "body", 65_536)?
+                        .unwrap_or_default(),
                 };
                 let pull = self
                     .client
@@ -1597,7 +1777,7 @@ where
             }
             "comment_issue" => {
                 let number = plain_u64_parameter(action, "number")?;
-                let body = plain_required_parameter(action, "body")?.to_owned();
+                let body = bounded_plain_parameter(action, "body", 65_536)?;
                 let comment = self
                     .client
                     .create_issue_comment(api_base, repository, token, number, body)?;
@@ -1619,6 +1799,146 @@ where
                         (
                             "body".into(),
                             RedactedValue::Plain(redact_secret_like_text(&comment.body)),
+                        ),
+                        (
+                            "html_url".into(),
+                            RedactedValue::Plain(redact_secret_like_text(&comment.html_url)),
+                        ),
+                    ]),
+                    artifacts: Vec::new(),
+                    usage: Vec::new(),
+                })
+            }
+            "create_branch" => {
+                let branch = safe_git_ref_parameter(action, "branch")?;
+                let from_ref = safe_git_ref_parameter(action, "from_ref")?;
+                let branch_result = self
+                    .client
+                    .create_branch(api_base, repository, token, &branch, &from_ref)?;
+                Ok(ToolResult {
+                    summary: format!(
+                        "created GitHub branch {} in {repository}",
+                        branch_result.name
+                    ),
+                    values: BTreeMap::from([
+                        (
+                            "repository".into(),
+                            RedactedValue::Plain(repository.to_owned()),
+                        ),
+                        ("branch".into(), RedactedValue::Plain(branch_result.name)),
+                        (
+                            "sha".into(),
+                            RedactedValue::Plain(redact_secret_like_text(&branch_result.sha)),
+                        ),
+                    ]),
+                    artifacts: Vec::new(),
+                    usage: Vec::new(),
+                })
+            }
+            "commit_file" => {
+                let input = GitHubFileCommitInput {
+                    path: safe_github_file_path_parameter(action, "path")?,
+                    message: bounded_plain_parameter(action, "message", 1024)?,
+                    content: bounded_plain_parameter(action, "content", 256 * 1024)?,
+                    branch: safe_git_ref_parameter(action, "branch")?,
+                    sha: optional_safe_sha_parameter(action, "sha")?,
+                };
+                let commit = self
+                    .client
+                    .commit_file(api_base, repository, token, input)?;
+                Ok(ToolResult {
+                    summary: format!("committed file {} in {repository}", commit.path),
+                    values: BTreeMap::from([
+                        (
+                            "repository".into(),
+                            RedactedValue::Plain(repository.to_owned()),
+                        ),
+                        ("path".into(), RedactedValue::Plain(commit.path)),
+                        (
+                            "sha".into(),
+                            RedactedValue::Plain(redact_secret_like_text(&commit.sha)),
+                        ),
+                        (
+                            "html_url".into(),
+                            RedactedValue::Plain(redact_secret_like_text(&commit.html_url)),
+                        ),
+                    ]),
+                    artifacts: Vec::new(),
+                    usage: Vec::new(),
+                })
+            }
+            "update_pr" => {
+                let input = GitHubPullRequestUpdateInput {
+                    number: plain_u64_parameter(action, "number")?,
+                    title: optional_bounded_plain_parameter(action, "title", 512)?,
+                    body: optional_bounded_plain_parameter(action, "body", 65_536)?,
+                    state: optional_pr_state_parameter(action, "state")?,
+                    base: optional_safe_git_ref_parameter(action, "base")?,
+                };
+                if input.title.is_none()
+                    && input.body.is_none()
+                    && input.state.is_none()
+                    && input.base.is_none()
+                {
+                    return Err(ToolExecutionError {
+                        kind: ToolExecutionErrorKind::InvalidParameters,
+                        message: "github.update_pr requires at least one update field".into(),
+                    });
+                }
+                let pull = self
+                    .client
+                    .update_pull_request(api_base, repository, token, input)?;
+                Ok(ToolResult {
+                    summary: format!(
+                        "updated GitHub pull request #{} in {repository}",
+                        pull.number
+                    ),
+                    values: BTreeMap::from([
+                        (
+                            "repository".into(),
+                            RedactedValue::Plain(repository.to_owned()),
+                        ),
+                        (
+                            "number".into(),
+                            RedactedValue::Plain(pull.number.to_string()),
+                        ),
+                        (
+                            "title".into(),
+                            RedactedValue::Plain(redact_secret_like_text(&pull.title)),
+                        ),
+                        (
+                            "state".into(),
+                            RedactedValue::Plain(redact_secret_like_text(&pull.state)),
+                        ),
+                        (
+                            "html_url".into(),
+                            RedactedValue::Plain(redact_secret_like_text(&pull.html_url)),
+                        ),
+                    ]),
+                    artifacts: Vec::new(),
+                    usage: Vec::new(),
+                })
+            }
+            "comment_report" => {
+                let number = plain_u64_parameter(action, "number")?;
+                let body = report_comment_body(action)?;
+                let comment = self
+                    .client
+                    .create_issue_comment(api_base, repository, token, number, body)?;
+                Ok(ToolResult {
+                    summary: format!(
+                        "posted GitHub report comment {} on {repository} PR #{number}",
+                        comment.id
+                    ),
+                    values: BTreeMap::from([
+                        (
+                            "repository".into(),
+                            RedactedValue::Plain(repository.to_owned()),
+                        ),
+                        ("number".into(), RedactedValue::Plain(number.to_string())),
+                        (
+                            "comment_id".into(),
+                            RedactedValue::Plain(comment.id.to_string()),
                         ),
                         (
                             "html_url".into(),
@@ -1718,14 +2038,29 @@ pub fn connector_policy_template(kind: &str) -> Option<ConnectorPolicyTemplate> 
             kind,
             &[
                 "github.read_issue",
+                "github.create_branch",
+                "github.commit_file",
                 "github.create_pr",
+                "github.update_pr",
                 "github.comment_issue",
+                "github.comment_report",
             ],
-            &["github.create_pr", "github.comment_issue"],
+            &[
+                "github.create_branch",
+                "github.commit_file",
+                "github.create_pr",
+                "github.update_pr",
+                "github.comment_issue",
+                "github.comment_report",
+            ],
             &[
                 "github.read_issue",
+                "github.create_branch",
+                "github.commit_file",
                 "github.create_pr",
+                "github.update_pr",
                 "github.comment_issue",
+                "github.comment_report",
             ],
         )),
         "gitlab" => Some(template(
@@ -2066,6 +2401,38 @@ fn github_post_json(
         })
 }
 
+fn github_patch_json(
+    url: &str,
+    token: &str,
+    body: serde_json::Value,
+) -> std::result::Result<serde_json::Value, ToolExecutionError> {
+    let response = github_request_headers(ureq::patch(url), token)
+        .send_json(body)
+        .map_err(github_ureq_error)?;
+    response
+        .into_json::<serde_json::Value>()
+        .map_err(|err| ToolExecutionError {
+            kind: ToolExecutionErrorKind::AdapterFailed,
+            message: format!("failed to parse GitHub response: {err}"),
+        })
+}
+
+fn github_put_json(
+    url: &str,
+    token: &str,
+    body: serde_json::Value,
+) -> std::result::Result<serde_json::Value, ToolExecutionError> {
+    let response = github_request_headers(ureq::put(url), token)
+        .send_json(body)
+        .map_err(github_ureq_error)?;
+    response
+        .into_json::<serde_json::Value>()
+        .map_err(|err| ToolExecutionError {
+            kind: ToolExecutionErrorKind::AdapterFailed,
+            message: format!("failed to parse GitHub response: {err}"),
+        })
+}
+
 fn github_request_headers(request: ureq::Request, token: &str) -> ureq::Request {
     request
         .set("Authorization", &format!("Bearer {token}"))
@@ -2262,6 +2629,189 @@ fn plain_optional_parameter(action: &ToolAction, key: &str) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn bounded_plain_parameter(
+    action: &ToolAction,
+    key: &str,
+    max_bytes: usize,
+) -> std::result::Result<String, ToolExecutionError> {
+    let value = plain_required_parameter(action, key)?;
+    if value.len() > max_bytes {
+        return Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::InvalidParameters,
+            message: format!("parameter {key} exceeds {max_bytes} bytes"),
+        });
+    }
+    Ok(value.to_owned())
+}
+
+fn optional_bounded_plain_parameter(
+    action: &ToolAction,
+    key: &str,
+    max_bytes: usize,
+) -> std::result::Result<Option<String>, ToolExecutionError> {
+    plain_optional_parameter(action, key)
+        .map(|value| {
+            if value.len() > max_bytes {
+                Err(ToolExecutionError {
+                    kind: ToolExecutionErrorKind::InvalidParameters,
+                    message: format!("parameter {key} exceeds {max_bytes} bytes"),
+                })
+            } else {
+                Ok(value)
+            }
+        })
+        .transpose()
+}
+
+fn safe_git_ref_parameter(
+    action: &ToolAction,
+    key: &str,
+) -> std::result::Result<String, ToolExecutionError> {
+    validate_safe_git_ref(key, plain_required_parameter(action, key)?)
+}
+
+fn optional_safe_git_ref_parameter(
+    action: &ToolAction,
+    key: &str,
+) -> std::result::Result<Option<String>, ToolExecutionError> {
+    plain_optional_parameter(action, key)
+        .map(|value| validate_safe_git_ref(key, &value))
+        .transpose()
+}
+
+fn validate_safe_git_ref(
+    key: &str,
+    value: &str,
+) -> std::result::Result<String, ToolExecutionError> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.starts_with('/')
+        || value.ends_with('/')
+        || value.starts_with('-')
+        || value.contains("..")
+        || value.contains('@')
+        || value.contains('\\')
+        || value.chars().any(char::is_whitespace)
+        || value
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '/'))
+    {
+        return Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::InvalidParameters,
+            message: format!("parameter {key} must be a safe Git ref"),
+        });
+    }
+    Ok(value.to_owned())
+}
+
+fn safe_github_file_path_parameter(
+    action: &ToolAction,
+    key: &str,
+) -> std::result::Result<String, ToolExecutionError> {
+    let value = plain_required_parameter(action, key)?;
+    if value.starts_with('/')
+        || value.contains('\\')
+        || value.contains('\0')
+        || value.contains("..")
+        || value.chars().any(char::is_whitespace)
+        || value.split('/').any(|segment| {
+            segment.is_empty()
+                || segment == "."
+                || segment == ".."
+                || segment.chars().any(char::is_control)
+        })
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '/'))
+    {
+        return Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::InvalidParameters,
+            message: format!("parameter {key} must be a safe repository-relative file path"),
+        });
+    }
+    Ok(value.to_owned())
+}
+
+fn optional_safe_sha_parameter(
+    action: &ToolAction,
+    key: &str,
+) -> std::result::Result<Option<String>, ToolExecutionError> {
+    plain_optional_parameter(action, key)
+        .map(|value| {
+            if value.len() < 7
+                || value.len() > 64
+                || !value.chars().all(|ch| ch.is_ascii_hexdigit())
+            {
+                Err(ToolExecutionError {
+                    kind: ToolExecutionErrorKind::InvalidParameters,
+                    message: format!("parameter {key} must be a Git object sha"),
+                })
+            } else {
+                Ok(value)
+            }
+        })
+        .transpose()
+}
+
+fn optional_pr_state_parameter(
+    action: &ToolAction,
+    key: &str,
+) -> std::result::Result<Option<String>, ToolExecutionError> {
+    plain_optional_parameter(action, key)
+        .map(|value| {
+            let normalized = value.to_ascii_lowercase();
+            if matches!(normalized.as_str(), "open" | "closed") {
+                Ok(normalized)
+            } else {
+                Err(ToolExecutionError {
+                    kind: ToolExecutionErrorKind::InvalidParameters,
+                    message: format!("parameter {key} must be open or closed"),
+                })
+            }
+        })
+        .transpose()
+}
+
+fn report_comment_body(action: &ToolAction) -> std::result::Result<String, ToolExecutionError> {
+    let title =
+        plain_optional_parameter(action, "title").unwrap_or_else(|| "TaskFence report".into());
+    let status = plain_optional_parameter(action, "status").unwrap_or_else(|| "unknown".into());
+    let report_url = plain_optional_parameter(action, "report_url");
+    let summary = optional_bounded_plain_parameter(action, "summary", 16 * 1024)?
+        .unwrap_or_else(|| "No summary provided.".into());
+    let mut body = format!(
+        "## {}\n\nStatus: `{}`\n\n{}",
+        redact_secret_like_text(&title),
+        redact_secret_like_text(&status),
+        redact_secret_like_text(&summary)
+    );
+    if let Some(report_url) = report_url {
+        validate_report_url(&report_url)?;
+        body.push_str("\n\nReport: ");
+        body.push_str(&redact_secret_like_text(&report_url));
+    }
+    Ok(body)
+}
+
+fn validate_report_url(value: &str) -> std::result::Result<(), ToolExecutionError> {
+    let lower = value.to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://"))
+        || value.contains('@')
+        || value.contains('#')
+        || value.chars().any(char::is_whitespace)
+        || secret_like_url(value)
+    {
+        return Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::InvalidParameters,
+            message: "report_url must be a non-secret http(s) URL without userinfo, fragments, or whitespace".into(),
+        });
+    }
+    Ok(())
 }
 
 fn json_string_field(value: &serde_json::Value, key: &str) -> String {
@@ -2740,6 +3290,25 @@ mod tests {
             number: u64,
             body: String,
         },
+        CreateBranch {
+            api_base: String,
+            repository: String,
+            token: String,
+            branch: String,
+            from_ref: String,
+        },
+        CommitFile {
+            api_base: String,
+            repository: String,
+            token: String,
+            input: GitHubFileCommitInput,
+        },
+        UpdatePullRequest {
+            api_base: String,
+            repository: String,
+            token: String,
+            input: GitHubPullRequestUpdateInput,
+        },
     }
 
     #[derive(Clone, Debug, Default)]
@@ -2792,6 +3361,7 @@ mod tests {
             Ok(GitHubPullRequest {
                 number: 7,
                 title: "Ship bounded connector".into(),
+                state: "open".into(),
                 html_url: format!("https://github.example/{repository}/pull/7"),
             })
         }
@@ -2818,6 +3388,80 @@ mod tests {
                 id: 99,
                 body: "Comment recorded".into(),
                 html_url: format!("https://github.example/{repository}/issues/{number}#comment-99"),
+            })
+        }
+
+        fn create_branch(
+            &self,
+            api_base: &str,
+            repository: &str,
+            token: &str,
+            branch: &str,
+            from_ref: &str,
+        ) -> std::result::Result<GitHubBranch, ToolExecutionError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(GitHubClientCall::CreateBranch {
+                    api_base: api_base.into(),
+                    repository: repository.into(),
+                    token: token.into(),
+                    branch: branch.into(),
+                    from_ref: from_ref.into(),
+                });
+            Ok(GitHubBranch {
+                name: branch.into(),
+                sha: "abc123def456".into(),
+            })
+        }
+
+        fn commit_file(
+            &self,
+            api_base: &str,
+            repository: &str,
+            token: &str,
+            input: GitHubFileCommitInput,
+        ) -> std::result::Result<GitHubFileCommit, ToolExecutionError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(GitHubClientCall::CommitFile {
+                    api_base: api_base.into(),
+                    repository: repository.into(),
+                    token: token.into(),
+                    input: input.clone(),
+                });
+            Ok(GitHubFileCommit {
+                path: input.path,
+                sha: "feedface1234".into(),
+                html_url: format!(
+                    "https://github.example/{repository}/blob/{}/README.md",
+                    input.branch
+                ),
+            })
+        }
+
+        fn update_pull_request(
+            &self,
+            api_base: &str,
+            repository: &str,
+            token: &str,
+            input: GitHubPullRequestUpdateInput,
+        ) -> std::result::Result<GitHubPullRequest, ToolExecutionError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(GitHubClientCall::UpdatePullRequest {
+                    api_base: api_base.into(),
+                    repository: repository.into(),
+                    token: token.into(),
+                    input: input.clone(),
+                });
+            Ok(GitHubPullRequest {
+                number: input.number,
+                title: input.title.unwrap_or_else(|| "Updated PR".into()),
+                state: input.state.unwrap_or_else(|| "open".into()),
+                html_url: format!("https://github.example/{repository}/pull/{}", input.number),
             })
         }
     }
@@ -4366,6 +5010,352 @@ mod tests {
             }]
         );
         assert!(!format!("{:?}", audit.events.lock().unwrap()).contains(token));
+    }
+
+    #[test]
+    fn github_rest_create_branch_runs_after_approval() {
+        let token = "ghp_live_test_token";
+        let client = RecordingGitHubClient::default();
+        let adapter = GitHubRestAdapter::new(github_rest_tool("create_branch"), client.clone());
+        let broker = StaticLiveSecretBroker::new(token);
+        let policy = BuiltInPolicyEngine;
+        let approval = StaticApproval::new(ApprovalDecision::Approved);
+        let audit = RecordingAudit::default();
+        let registry =
+            InMemoryToolRegistry::new([
+                RegisteredTool::new("mcp", "github", "create_branch").unwrap()
+            ]);
+        let mediator = GatewayMediator::new(&policy, &audit)
+            .with_tool_registry(&registry)
+            .with_approval(&approval);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
+        let mut task = task_with_gateway_secret_scope("github.create_branch");
+        task.permissions.tools.approval_required = vec!["github.create_branch".into()];
+        task.permissions.budget = BudgetPermissions {
+            allow: vec![BudgetLimit {
+                kind: "gateway_calls".into(),
+                max_amount: 1,
+            }],
+        };
+
+        let execution = executor
+            .execute_tool_action(
+                &task,
+                ToolAction {
+                    protocol: "mcp".into(),
+                    tool: "github".into(),
+                    operation: "create_branch".into(),
+                    parameters: BTreeMap::from([
+                        (
+                            "branch".into(),
+                            RedactedValue::Plain("codex/connector".into()),
+                        ),
+                        ("from_ref".into(), RedactedValue::Plain("heads/main".into())),
+                    ]),
+                },
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(execution.error.is_none());
+        assert!(matches!(
+            execution.result,
+            Some(ToolResult { summary, values, .. })
+                if summary == "created GitHub branch codex/connector in taskfence/example"
+                    && matches!(
+                        values.get("branch"),
+                        Some(RedactedValue::Plain(branch)) if branch == "codex/connector"
+                    )
+        ));
+        assert_eq!(
+            client.calls.lock().unwrap().as_slice(),
+            &[GitHubClientCall::CreateBranch {
+                api_base: "https://api.github.test".into(),
+                repository: "taskfence/example".into(),
+                token: token.into(),
+                branch: "codex/connector".into(),
+                from_ref: "heads/main".into(),
+            }]
+        );
+        assert!(!format!("{:?}", audit.events.lock().unwrap()).contains(token));
+    }
+
+    #[test]
+    fn github_rest_commit_file_uses_safe_path_branch_and_sha() {
+        let token = "ghp_live_test_token";
+        let client = RecordingGitHubClient::default();
+        let adapter = GitHubRestAdapter::new(github_rest_tool("commit_file"), client.clone());
+        let broker = StaticLiveSecretBroker::new(token);
+        let policy = BuiltInPolicyEngine;
+        let approval = StaticApproval::new(ApprovalDecision::Approved);
+        let audit = RecordingAudit::default();
+        let registry =
+            InMemoryToolRegistry::new([
+                RegisteredTool::new("mcp", "github", "commit_file").unwrap()
+            ]);
+        let mediator = GatewayMediator::new(&policy, &audit)
+            .with_tool_registry(&registry)
+            .with_approval(&approval);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
+        let mut task = task_with_gateway_secret_scope("github.commit_file");
+        task.permissions.tools.approval_required = vec!["github.commit_file".into()];
+        task.permissions.budget = BudgetPermissions {
+            allow: vec![BudgetLimit {
+                kind: "gateway_calls".into(),
+                max_amount: 1,
+            }],
+        };
+
+        let execution = executor
+            .execute_tool_action(
+                &task,
+                ToolAction {
+                    protocol: "mcp".into(),
+                    tool: "github".into(),
+                    operation: "commit_file".into(),
+                    parameters: BTreeMap::from([
+                        ("path".into(), RedactedValue::Plain("docs/report.md".into())),
+                        (
+                            "message".into(),
+                            RedactedValue::Plain("Add TaskFence report".into()),
+                        ),
+                        (
+                            "content".into(),
+                            RedactedValue::Plain("# TaskFence\n\nReport".into()),
+                        ),
+                        (
+                            "branch".into(),
+                            RedactedValue::Plain("codex/connector".into()),
+                        ),
+                        ("sha".into(), RedactedValue::Plain("abc123def456".into())),
+                    ]),
+                },
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(execution.error.is_none());
+        assert!(matches!(
+            execution.result,
+            Some(ToolResult { summary, values, .. })
+                if summary == "committed file docs/report.md in taskfence/example"
+                    && matches!(
+                        values.get("sha"),
+                        Some(RedactedValue::Plain(sha)) if sha == "feedface1234"
+                    )
+        ));
+        assert_eq!(
+            client.calls.lock().unwrap().as_slice(),
+            &[GitHubClientCall::CommitFile {
+                api_base: "https://api.github.test".into(),
+                repository: "taskfence/example".into(),
+                token: token.into(),
+                input: GitHubFileCommitInput {
+                    path: "docs/report.md".into(),
+                    message: "Add TaskFence report".into(),
+                    content: "# TaskFence\n\nReport".into(),
+                    branch: "codex/connector".into(),
+                    sha: Some("abc123def456".into()),
+                },
+            }]
+        );
+    }
+
+    #[test]
+    fn github_rest_update_pr_requires_update_fields_and_safe_state() {
+        let token = "ghp_live_test_token";
+        let client = RecordingGitHubClient::default();
+        let adapter = GitHubRestAdapter::new(github_rest_tool("update_pr"), client.clone());
+        let broker = StaticLiveSecretBroker::new(token);
+        let policy = BuiltInPolicyEngine;
+        let audit = RecordingAudit::default();
+        let registry =
+            InMemoryToolRegistry::new([RegisteredTool::new("mcp", "github", "update_pr").unwrap()]);
+        let mediator = GatewayMediator::new(&policy, &audit).with_tool_registry(&registry);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
+        let mut task = task_with_gateway_secret_scope("github.update_pr");
+        task.permissions.tools.allow = vec!["github.update_pr".into()];
+        task.permissions.budget = BudgetPermissions {
+            allow: vec![BudgetLimit {
+                kind: "gateway_calls".into(),
+                max_amount: 2,
+            }],
+        };
+
+        let missing_update = executor
+            .execute_tool_action(
+                &task,
+                ToolAction {
+                    protocol: "mcp".into(),
+                    tool: "github".into(),
+                    operation: "update_pr".into(),
+                    parameters: BTreeMap::from([(
+                        "number".into(),
+                        RedactedValue::Plain("7".into()),
+                    )]),
+                },
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            missing_update.error,
+            Some(ToolExecutionError {
+                kind: ToolExecutionErrorKind::InvalidParameters,
+                ..
+            })
+        ));
+        assert!(client.calls.lock().unwrap().is_empty());
+
+        let execution = executor
+            .execute_tool_action(
+                &task,
+                ToolAction {
+                    protocol: "mcp".into(),
+                    tool: "github".into(),
+                    operation: "update_pr".into(),
+                    parameters: BTreeMap::from([
+                        ("number".into(), RedactedValue::Plain("7".into())),
+                        (
+                            "title".into(),
+                            RedactedValue::Plain("Ship connector workflow".into()),
+                        ),
+                        ("state".into(), RedactedValue::Plain("open".into())),
+                    ]),
+                },
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(execution.error.is_none());
+        assert_eq!(
+            client.calls.lock().unwrap().as_slice(),
+            &[GitHubClientCall::UpdatePullRequest {
+                api_base: "https://api.github.test".into(),
+                repository: "taskfence/example".into(),
+                token: token.into(),
+                input: GitHubPullRequestUpdateInput {
+                    number: 7,
+                    title: Some("Ship connector workflow".into()),
+                    body: None,
+                    state: Some("open".into()),
+                    base: None,
+                },
+            }]
+        );
+    }
+
+    #[test]
+    fn github_rest_comment_report_posts_structured_pr_comment() {
+        let token = "ghp_live_test_token";
+        let client = RecordingGitHubClient::default();
+        let adapter = GitHubRestAdapter::new(github_rest_tool("comment_report"), client.clone());
+        let broker = StaticLiveSecretBroker::new(token);
+        let policy = BuiltInPolicyEngine;
+        let approval = StaticApproval::new(ApprovalDecision::Approved);
+        let audit = RecordingAudit::default();
+        let registry =
+            InMemoryToolRegistry::new([
+                RegisteredTool::new("mcp", "github", "comment_report").unwrap()
+            ]);
+        let mediator = GatewayMediator::new(&policy, &audit)
+            .with_tool_registry(&registry)
+            .with_approval(&approval);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
+        let mut task = task_with_gateway_secret_scope("github.comment_report");
+        task.permissions.tools.approval_required = vec!["github.comment_report".into()];
+        task.permissions.budget = BudgetPermissions {
+            allow: vec![BudgetLimit {
+                kind: "gateway_calls".into(),
+                max_amount: 1,
+            }],
+        };
+
+        let execution = executor
+            .execute_tool_action(
+                &task,
+                ToolAction {
+                    protocol: "mcp".into(),
+                    tool: "github".into(),
+                    operation: "comment_report".into(),
+                    parameters: BTreeMap::from([
+                        ("number".into(), RedactedValue::Plain("7".into())),
+                        ("title".into(), RedactedValue::Plain("TaskFence run".into())),
+                        ("status".into(), RedactedValue::Plain("passed".into())),
+                        (
+                            "summary".into(),
+                            RedactedValue::Plain("All checks passed token=secret".into()),
+                        ),
+                        (
+                            "report_url".into(),
+                            RedactedValue::Plain("https://example.invalid/report".into()),
+                        ),
+                    ]),
+                },
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(execution.error.is_none());
+        let calls = client.calls.lock().unwrap();
+        let [GitHubClientCall::CreateIssueComment { number, body, .. }] = calls.as_slice() else {
+            panic!("expected report comment call, got {calls:?}");
+        };
+        assert_eq!(*number, 7);
+        assert!(body.contains("## TaskFence run"));
+        assert!(body.contains("Status: `passed`"));
+        assert!(body.contains("[redacted]"));
+        assert!(body.contains("https://example.invalid/report"));
+    }
+
+    #[test]
+    fn github_rest_commit_file_rejects_path_escape_before_client_call() {
+        let client = RecordingGitHubClient::default();
+        let adapter = GitHubRestAdapter::new(github_rest_tool("commit_file"), client.clone());
+        let broker = StaticLiveSecretBroker::new("ghp_live_test_token");
+        let policy = BuiltInPolicyEngine;
+        let audit = RecordingAudit::default();
+        let registry =
+            InMemoryToolRegistry::new([
+                RegisteredTool::new("mcp", "github", "commit_file").unwrap()
+            ]);
+        let mediator = GatewayMediator::new(&policy, &audit).with_tool_registry(&registry);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
+        let mut task = task_with_gateway_secret_scope("github.commit_file");
+        task.permissions.tools.allow = vec!["github.commit_file".into()];
+        task.permissions.budget = BudgetPermissions {
+            allow: vec![BudgetLimit {
+                kind: "gateway_calls".into(),
+                max_amount: 1,
+            }],
+        };
+
+        let execution = executor
+            .execute_tool_action(
+                &task,
+                ToolAction {
+                    protocol: "mcp".into(),
+                    tool: "github".into(),
+                    operation: "commit_file".into(),
+                    parameters: BTreeMap::from([
+                        ("path".into(), RedactedValue::Plain("../secret".into())),
+                        ("message".into(), RedactedValue::Plain("bad".into())),
+                        ("content".into(), RedactedValue::Plain("bad".into())),
+                        ("branch".into(), RedactedValue::Plain("codex/bad".into())),
+                    ]),
+                },
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            execution.error,
+            Some(ToolExecutionError {
+                kind: ToolExecutionErrorKind::InvalidParameters,
+                ..
+            })
+        ));
+        assert!(client.calls.lock().unwrap().is_empty());
     }
 
     #[test]

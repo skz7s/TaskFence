@@ -200,9 +200,11 @@ Current implemented gateway coverage:
   `github.create_pr` as a PR proposal artifact after explicit approval; it does
   not call live GitHub or use a real token
 - the live `github_rest` and `github_enterprise_rest` connector contracts
-  support `github.read_issue`, `github.create_pr`, and
-  `github.comment_issue`; `create_pr` assumes the requested `head` and `base`
-  already exist and does not create branches or commits
+  support `github.read_issue`, `github.create_branch`, `github.commit_file`,
+  `github.create_pr`, `github.update_pr`, `github.comment_issue`, and
+  `github.comment_report`; write operations require explicit tool policy,
+  gateway-side secrets, planned `gateway_calls` budget checks, and bounded
+  parameters before any live API call
 - opt-in enterprise connector contracts exist for GitLab, Jira, Feishu, WeCom,
   DingTalk, Gitee, CODING, database, internal HTTP, and SIEM export; these
   currently validate configuration, connector-specific policy templates,
@@ -215,9 +217,10 @@ Current implemented gateway coverage:
   denied tool actions from structured audit events without rendering raw
   parameter values
 - production MCP servers, arbitrary HTTP proxying, SDK/webhook connectors,
-  branch/commit creation, persistent Web/API server behavior, deterministic
-  replay execution, team-server, and live enterprise connector execution beyond
-  the bounded GitHub REST family remain future work
+  branch/commit behavior outside the bounded GitHub REST family, persistent
+  Web/API server behavior, deterministic replay execution, team-server, and
+  live enterprise connector execution beyond the bounded GitHub REST family
+  remain future work
 
 Current local fixture demo:
 
@@ -360,8 +363,9 @@ Current bounded connector foundation:
 
 - `github_enterprise_rest` reuses the bounded GitHub REST adapter contract with
   an explicit HTTPS API base, gateway-side token lookup, and the same
-  `github.read_issue`, `github.create_pr`, and `github.comment_issue` operation
-  limits.
+  `github.read_issue`, `github.create_branch`, `github.commit_file`,
+  `github.create_pr`, `github.update_pr`, `github.comment_issue`, and
+  `github.comment_report` operation limits.
 - GitLab, Jira, Feishu, WeCom, DingTalk, Gitee, CODING, database, internal HTTP,
   and SIEM export connectors are opt-in configuration and policy-template
   contracts. They fail closed for live execution with structured unsupported

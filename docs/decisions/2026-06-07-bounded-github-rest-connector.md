@@ -16,12 +16,21 @@ Add a bounded `github_rest` connector for configured task-file tools only.
 The connector supports:
 
 - `github.read_issue`
+- `github.create_branch`
+- `github.commit_file`
 - `github.create_pr`
+- `github.update_pr`
 - `github.comment_issue`
+- `github.comment_report`
 
-`github.create_pr` calls the GitHub pull request creation API with an existing
-`head` and `base`. It does not create branches, commits, pushes, or compare
-changes.
+The connector is limited to a bounded issue-to-branch-to-PR workflow:
+`github.create_branch` creates `refs/heads/<branch>` from a safe source ref,
+`github.commit_file` writes one repository-relative file through the GitHub
+Contents API with bounded content and optional SHA, `github.create_pr` creates
+a PR from safe refs, `github.update_pr` updates bounded title/body/state/base
+fields, and `github.comment_report` posts a structured PR report comment. It
+does not push arbitrary git objects, apply multi-file patch sets, compare
+changes, or execute unregistered GitHub operations.
 
 Raw GitHub tokens stay gateway-side. The environment-backed secret broker reads
 `TASKFENCE_GATEWAY_SECRET_<NORMALIZED_SECRET_NAME>` only after registry, policy,
@@ -42,8 +51,10 @@ receiver, or sidecar.
 - Missing environment secrets fail closed with structured
   `SecretUnavailable` evidence before any live API call.
 - Unsupported GitHub operations fail closed as `UnsupportedTool`.
-- Future branch/commit creation, GitHub Enterprise, GitLab, Jira, SDK,
-  webhook, listener, sidecar, and arbitrary HTTP behavior need separate
+- GitHub Enterprise reuses this bounded adapter contract with an explicit
+  HTTPS API base.
+- Multi-file patch application, raw git pushes, GitLab, Jira, SDK, webhook,
+  production MCP server, sidecar, and arbitrary HTTP behavior need separate
   connector slices and tests.
 
 ## Validation And Rollback

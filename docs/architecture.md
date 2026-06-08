@@ -45,9 +45,10 @@ approval-required tool calls, known-tool registry checks, and redacted gateway
 secret references. The executable gateway surface is currently limited to
 configured task-file tools through `taskfence gateway call`: deterministic
 local fixtures, bounded GitHub/GitHub Enterprise REST connectors for
-`github.read_issue`, `github.create_pr`, and `github.comment_issue`, and
-contract-only enterprise connector surfaces that fail closed for live
-execution. A bounded agent-facing request/response spool prototype is processed
+`github.read_issue`, `github.create_branch`, `github.commit_file`,
+`github.create_pr`, `github.update_pr`, `github.comment_issue`, and
+`github.comment_report`, and contract-only enterprise connector surfaces that
+fail closed for live execution. A bounded agent-facing request/response spool prototype is processed
 by `taskfence gateway spool process`. The spool path is task-local, mounted
 separately into Docker only for tasks with configured gateway tools, and
 produces typed responses plus structured evidence. `taskfence gateway listen`
@@ -60,10 +61,10 @@ leases, Postgres state config validation, artifact-root containment, validated
 but unsupported audit-export sink contracts, and local-to-team migration
 planning from structured `.taskfence` files exist without starting a server or
 live database. Production MCP servers, arbitrary HTTP proxying, SDK/webhook
-connectors, branch/commit creation, persistent API server, live Postgres
-backend, deterministic replay execution, persistent team-server, Slack, and
-live enterprise connector behavior beyond the bounded GitHub REST family are
-not implemented yet.
+connectors, branch/commit behavior outside the bounded GitHub REST family,
+persistent API server, live Postgres backend, deterministic replay execution,
+persistent team-server, Slack, and live enterprise connector behavior beyond
+the bounded GitHub REST family are not implemented yet.
 The local review foundation is CLI-owned: it can render file-backed evidence as
 a static or foreground-served loopback HTML page, resolve pending
 workspace-local approvals from that page, and plan replay inputs without
@@ -250,13 +251,14 @@ configured, and a CLI-owned local fixture execution path. The local fixture path
 executes only configured task-file tools and currently models GitHub-shaped
 `github.read_issue` and `github.create_pr` behavior without network access or
 raw credentials. The live `github_rest` and `github_enterprise_rest` connector
-contracts support only `github.read_issue`, `github.create_pr`, and
-`github.comment_issue`; PR creation assumes the requested `head` and `base`
-already exist and does not create branches or commits. GitLab, Jira, Feishu,
-WeCom, DingTalk, Gitee, CODING, database, internal HTTP, and SIEM export are
-opt-in connector contracts that validate configuration, policy templates,
-approval-sensitive operation sets, redacted secret references, and structured
-unsupported live execution. The agent-facing spool prototype creates
+contracts support only `github.read_issue`, `github.create_branch`,
+`github.commit_file`, `github.create_pr`, `github.update_pr`,
+`github.comment_issue`, and `github.comment_report`. Write operations require
+explicit tool policy and bounded parameters before a gateway-side token can be
+used. GitLab, Jira, Feishu, WeCom, DingTalk, Gitee, CODING, database, internal
+HTTP, and SIEM export are opt-in connector contracts that validate
+configuration, policy templates, approval-sensitive operation sets, redacted
+secret references, and structured unsupported live execution. The agent-facing spool prototype creates
 `gateway-spool/requests`, `gateway-spool/responses`, and a generated
 `taskfence-gateway-submit` wrapper under the task evidence directory; Docker
 mounts only that dedicated spool path at `/taskfence/gateway-spool` when
@@ -271,9 +273,9 @@ fail before policy evaluation and record an audit error. The foreground
 bounded `http egress.fetch` action can make gateway-side HTTPS GET/HEAD
 requests for policy-allowlisted hosts. It does not implement production MCP
 servers, arbitrary HTTP proxying, SDK/webhook connectors, branch/commit
-creation, persistent Web/API server behavior, deterministic replay execution,
-team-server, Slack, or live enterprise connector behavior beyond the bounded
-GitHub REST family yet.
+behavior outside the bounded GitHub REST family, persistent Web/API server
+behavior, deterministic replay execution, team-server, Slack, or live
+enterprise connector behavior beyond the bounded GitHub REST family yet.
 
 Supported gateway surfaces can include:
 

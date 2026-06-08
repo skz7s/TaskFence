@@ -76,7 +76,8 @@ execution isolation.
 TaskFence is designed around two complementary modes. The local Docker runner is
 implemented first. Gateway-enhanced execution is currently limited to a
 deterministic local fixture command, a bounded GitHub/GitHub Enterprise REST
-connector for three operations, contract-only enterprise connector definitions,
+connector for a narrow issue-to-branch-to-PR workflow, contract-only
+enterprise connector definitions,
 executor-backed MCP/HTTP adapter entry points, configured tool policy decisions,
 optional approval mediation, known-tool registry checks, redacted secret
 references, structured evidence, and unsupported-action errors.
@@ -141,7 +142,9 @@ This mode answers the stronger question:
 The current executable gateway surfaces are intentionally narrower than that
 future mode. `taskfence gateway call` executes only configured task-file tools:
 deterministic local fixtures, or a bounded GitHub REST connector for
-`github.read_issue`, `github.create_pr`, and `github.comment_issue`.
+`github.read_issue`, `github.create_branch`, `github.commit_file`,
+`github.create_pr`, `github.update_pr`, `github.comment_issue`, and
+`github.comment_report`.
 `taskfence gateway spool process` processes one request from a task-local
 `gateway-spool/requests` directory and writes one typed response under
 `gateway-spool/responses`; the generated sandbox wrapper is only a thin
@@ -149,8 +152,8 @@ request writer over that spool. `taskfence gateway listen` starts a foreground
 loopback listener for task-scoped JSON tool actions, and the bounded
 `http egress.fetch` action can perform gateway-side GET/HEAD requests only for
 policy-allowlisted HTTPS hosts. These paths do not start a production MCP
-server, proxy arbitrary HTTP traffic, implement SDK/webhook connectors, create
-branches or commits, or expose a raw token to the sandbox.
+server, proxy arbitrary HTTP traffic, implement SDK/webhook connectors, or
+expose a raw token to the sandbox.
 
 ## Example Task
 
@@ -241,12 +244,17 @@ agent process, and does not send network traffic.
 
 A task can opt into the bounded live GitHub REST connector with
 `connector.type: github_rest`. That connector currently supports
-`github.read_issue`, `github.create_pr`, and `github.comment_issue` only. Raw
-tokens are read by the gateway-side secret broker from
-`TASKFENCE_GATEWAY_SECRET_<NORMALIZED_SECRET_NAME>` after policy, registry, and
-approval checks; the token is not written to task files, sandbox parameters,
-audit events, reports, or artifacts. For the example secret name
-`github_token`, set `TASKFENCE_GATEWAY_SECRET_GITHUB_TOKEN`.
+`github.read_issue`, `github.create_branch`, `github.commit_file`,
+`github.create_pr`, `github.update_pr`, `github.comment_issue`, and
+`github.comment_report` only. Write operations require explicit tool policy
+and remain approval-sensitive in the example. Branch names, refs,
+repository-relative file paths, optional file SHAs, report URLs, and comment
+sizes are bounded before any live API call. Raw tokens are read by the
+gateway-side secret broker from
+`TASKFENCE_GATEWAY_SECRET_<NORMALIZED_SECRET_NAME>` after policy, registry,
+approval, and planned budget checks; the token is not written to task files,
+sandbox parameters, audit events, reports, or artifacts. For the example secret
+name `github_token`, set `TASKFENCE_GATEWAY_SECRET_GITHUB_TOKEN`.
 
 GitHub Enterprise task tools can opt into
 `connector.type: github_enterprise_rest` with an explicit HTTPS `api_base`; it
@@ -417,8 +425,9 @@ The first implementation currently includes:
     with fail-closed policy, explicit approval, redacted secret references,
     structured audit events, local artifacts, and Markdown report evidence.
 11. A bounded live GitHub REST connector for configured `github_rest` task-file
-    tools. It supports `github.read_issue`, `github.create_pr` against an
-    existing `head`/`base`, and `github.comment_issue`; it uses gateway-side
+    tools. It supports `github.read_issue`, `github.create_branch`,
+    `github.commit_file`, `github.create_pr`, `github.update_pr`,
+    `github.comment_issue`, and `github.comment_report`; it uses gateway-side
     environment secrets only after policy, registry, approval, and planned
     `gateway_calls` budget checks.
 12. Enterprise connector foundations: `github_enterprise_rest` reuses the

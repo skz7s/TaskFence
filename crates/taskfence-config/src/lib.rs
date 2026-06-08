@@ -1174,6 +1174,156 @@ gateway:
     }
 
     #[test]
+    fn parses_expanded_github_rest_workflow_tools() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("repo")).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        let yaml = r#"
+goal: Test expanded GitHub REST connector
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+permissions:
+  tools:
+    allow:
+      - github.read_issue
+    approval_required:
+      - github.create_branch
+      - github.commit_file
+      - github.create_pr
+      - github.update_pr
+      - github.comment_issue
+      - github.comment_report
+secrets:
+  available_to_gateway:
+    - name: github_token
+      use_for:
+        - github.read_issue
+        - github.create_branch
+        - github.commit_file
+        - github.create_pr
+        - github.update_pr
+        - github.comment_issue
+        - github.comment_report
+gateway:
+  tools:
+    - protocol: mcp
+      tool: github
+      operation: read_issue
+      connector:
+        type: github_rest
+        repository: owner/repo
+      secret_refs:
+        - name: github_token
+          parameter: authorization
+          scope: github.read_issue
+    - protocol: mcp
+      tool: github
+      operation: create_branch
+      connector:
+        type: github_rest
+        repository: owner/repo
+      secret_refs:
+        - name: github_token
+          parameter: authorization
+          scope: github.create_branch
+    - protocol: mcp
+      tool: github
+      operation: commit_file
+      connector:
+        type: github_rest
+        repository: owner/repo
+      secret_refs:
+        - name: github_token
+          parameter: authorization
+          scope: github.commit_file
+    - protocol: mcp
+      tool: github
+      operation: create_pr
+      connector:
+        type: github_rest
+        repository: owner/repo
+      secret_refs:
+        - name: github_token
+          parameter: authorization
+          scope: github.create_pr
+    - protocol: mcp
+      tool: github
+      operation: update_pr
+      connector:
+        type: github_rest
+        repository: owner/repo
+      secret_refs:
+        - name: github_token
+          parameter: authorization
+          scope: github.update_pr
+    - protocol: mcp
+      tool: github
+      operation: comment_issue
+      connector:
+        type: github_rest
+        repository: owner/repo
+      secret_refs:
+        - name: github_token
+          parameter: authorization
+          scope: github.comment_issue
+    - protocol: mcp
+      tool: github
+      operation: comment_report
+      connector:
+        type: github_rest
+        repository: owner/repo
+      secret_refs:
+        - name: github_token
+          parameter: authorization
+          scope: github.comment_report
+"#;
+
+        let task = parse_task_file(&task_file, yaml).unwrap();
+
+        assert_eq!(
+            task.permissions.tools.approval_required,
+            vec![
+                "github.create_branch",
+                "github.commit_file",
+                "github.create_pr",
+                "github.update_pr",
+                "github.comment_issue",
+                "github.comment_report"
+            ]
+        );
+        let operations = task
+            .gateway
+            .tools
+            .iter()
+            .map(|tool| tool.operation.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            operations,
+            vec![
+                "read_issue",
+                "create_branch",
+                "commit_file",
+                "create_pr",
+                "update_pr",
+                "comment_issue",
+                "comment_report"
+            ]
+        );
+        assert!(task
+            .gateway
+            .tools
+            .iter()
+            .all(|tool| matches!(tool.connector, GatewayConnectorConfig::GitHubRest { .. })));
+        assert_eq!(
+            task.gateway.tools[6].secret_refs[0].scope,
+            "github.comment_report"
+        );
+    }
+
+    #[test]
     fn parses_local_listener_gateway_egress_contract() {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir(temp.path().join("repo")).unwrap();

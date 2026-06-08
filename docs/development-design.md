@@ -473,8 +473,9 @@ implemented as a task-local file contract over configured gateway action
 execution. A foreground loopback `gateway listen` path and bounded
 `http egress.fetch` gateway-side HTTPS GET/HEAD action are implemented for
 task-scoped local mediation. Production MCP servers, arbitrary HTTP proxying,
-SDK/webhook connectors, branch/commit creation, and live enterprise connectors
-beyond the bounded GitHub REST family still need separate plans.
+SDK/webhook connectors, branch/commit behavior outside the bounded GitHub REST
+family, and live enterprise connectors beyond the bounded GitHub REST family
+still need separate plans.
 
 ### `taskfence-report`
 
@@ -1027,8 +1028,9 @@ The first usable version is complete when:
 Current unsupported surfaces must remain explicit in docs and errors: Docker
 domain allowlists without the configured local gateway egress boundary,
 production MCP servers, arbitrary HTTP proxying, SDK/webhook connectors,
-branch/commit creation, arbitrary in-container command observation, persistent
-Web/API server behavior, SQLite-backed state migration, live Postgres backend,
-deterministic replay execution, persistent team server,
+branch/commit behavior outside the bounded GitHub REST family, arbitrary
+in-container command observation, persistent Web/API server behavior,
+SQLite-backed state migration, live Postgres backend, deterministic replay
+execution, persistent team server,
 live audit export sink, Slack, and live enterprise behavior beyond the bounded
 GitHub REST family.
