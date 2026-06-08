@@ -98,9 +98,14 @@ The current local runner can enforce:
 - file diffs
 - task reports
 
-Local Docker does not enforce domain-level allowlists. If a task configures
-`permissions.network.allow_domains`, TaskFence fails closed until an enforcing
-proxy or gateway-backed network path is implemented.
+Local Docker does not enforce domain-level allowlists by itself. If a task
+configures `permissions.network.allow_domains`, TaskFence fails closed unless
+the task also opts into `gateway.mode: local_listener`,
+`gateway.egress.allow_domains: true`, and a registered `http egress.fetch`
+gateway tool. In that mode the Docker container still runs with
+`--network none`; allowlisted egress is expected to go through the task-scoped
+gateway boundary, where the destination host is checked by policy before the
+gateway-side request is executed.
 
 Task files can name future runner families with `sandbox.type` values
 `remote_ssh`, `kubernetes_job`, `microvm`, or `managed_cloud`. These are
@@ -140,7 +145,10 @@ deterministic local fixtures, or a bounded GitHub REST connector for
 `taskfence gateway spool process` processes one request from a task-local
 `gateway-spool/requests` directory and writes one typed response under
 `gateway-spool/responses`; the generated sandbox wrapper is only a thin
-request writer over that spool. These paths do not start a production MCP
+request writer over that spool. `taskfence gateway listen` starts a foreground
+loopback listener for task-scoped JSON tool actions, and the bounded
+`http egress.fetch` action can perform gateway-side GET/HEAD requests only for
+policy-allowlisted HTTPS hosts. These paths do not start a production MCP
 server, proxy arbitrary HTTP traffic, implement SDK/webhook connectors, create
 branches or commits, or expose a raw token to the sandbox.
 
@@ -249,6 +257,22 @@ only: `gitlab`, `jira`, `feishu`, `wecom`, `dingtalk`, `gitee`, `coding`,
 execution while still proving registry, policy, approval, redacted
 secret-reference, and unsupported-action evidence. See
 `examples/enterprise-connectors-task.yaml`.
+
+For local domain allowlists, the example GitHub REST task opts into the
+task-scoped gateway egress boundary. The sandbox still has Docker networking
+disabled; the configured `http egress.fetch` gateway action is the only local
+path that may perform gateway-side GET/HEAD requests after host policy checks.
+You can validate the configuration without Docker:
+
+```bash
+cargo run -p taskfence-cli -- validate examples/github-rest-task.yaml
+```
+
+You can also start the foreground local listener for configured tool calls:
+
+```bash
+cargo run -p taskfence-cli -- gateway listen examples/github-rest-task.yaml --once --port 0
+```
 
 The demo requires Docker and the configured image to be available locally. The
 runner uses `docker run --pull=never`, so it does not silently acquire images at

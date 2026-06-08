@@ -401,8 +401,11 @@ Branches:
 
 - Docker missing: return environment error with installation guidance.
 - Image missing: pull only if policy allows network/image pull, otherwise fail.
-- Network allowlist unsupported on local Docker: fail closed or start a gateway
-  proxy mode that enforces domains.
+- Network allowlist unsupported on raw local Docker: fail closed unless the task
+  opts into the local gateway egress boundary. In that boundary Docker still
+  uses `--network none`; the gateway mediates configured `http egress.fetch`
+  requests and checks the destination host through policy before gateway-side
+  HTTPS GET/HEAD execution.
 - Remote SSH, Kubernetes, microVM, or managed cloud runner unavailable: fail
   closed with the exact missing isolation, network, secret, limit, or artifact
   capability instead of starting a weaker runner.
@@ -467,10 +470,11 @@ This crate can start with contracts and deterministic local fixtures, but the
 contracts must stay aligned with Phase 3 so policy and audit are not limited to
 shell commands. The bounded agent-facing request/response spool prototype is
 implemented as a task-local file contract over configured gateway action
-execution. MCP/HTTP listener or proxy servers, SDK/webhook connectors,
-arbitrary HTTP proxying, branch/commit creation, live enterprise connectors
-beyond the bounded GitHub REST family, and sidecar/listener behavior still need
-separate plans.
+execution. A foreground loopback `gateway listen` path and bounded
+`http egress.fetch` gateway-side HTTPS GET/HEAD action are implemented for
+task-scoped local mediation. Production MCP servers, arbitrary HTTP proxying,
+SDK/webhook connectors, branch/commit creation, and live enterprise connectors
+beyond the bounded GitHub REST family still need separate plans.
 
 ### `taskfence-report`
 
@@ -1021,10 +1025,10 @@ The first usable version is complete when:
 - Tests cover the main success path and the important failure branches.
 
 Current unsupported surfaces must remain explicit in docs and errors: Docker
-domain allowlists without an enforcing proxy, MCP/HTTP listener or proxy
-servers, SDK/webhook connectors, arbitrary HTTP proxying, branch/commit
-creation, sidecar/listener behavior, arbitrary in-container command
-observation, persistent Web/API server behavior, SQLite-backed state migration,
-live Postgres backend, deterministic replay execution, persistent team server,
+domain allowlists without the configured local gateway egress boundary,
+production MCP servers, arbitrary HTTP proxying, SDK/webhook connectors,
+branch/commit creation, arbitrary in-container command observation, persistent
+Web/API server behavior, SQLite-backed state migration, live Postgres backend,
+deterministic replay execution, persistent team server,
 live audit export sink, Slack, and live enterprise behavior beyond the bounded
 GitHub REST family.

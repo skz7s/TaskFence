@@ -15,14 +15,16 @@ use taskfence_core::{
     GatewayConnectorConfig, LogStream, NetworkDefault, Orchestrator, RedactedValue,
     ReportGenerator, ResolvedTask, RiskLevel, Runner, StateStore, TaskFenceError, TaskId,
     TaskStatus, TaskValidation, ToolAction, ToolExecution, ToolExecutionContext,
-    ToolExecutionErrorKind,
+    ToolExecutionErrorKind, GATEWAY_EGRESS_TOOL_NAME, GATEWAY_EGRESS_TOOL_OPERATION,
+    GATEWAY_EGRESS_TOOL_PROTOCOL,
 };
 use taskfence_gateway::{
     gateway_spool_request_id_from_path, normalize_tool_action, read_gateway_spool_request,
-    write_gateway_spool_response, EnvironmentSecretBroker, GatewayExecutor, GatewaySpoolPaths,
-    GatewaySpoolResponse, GatewaySpoolResponseState, GitHubRestAdapter, InMemoryToolRegistry,
-    LocalFixtureToolAdapter, LocalRedactedSecretBroker, RegisteredTool, SecretBroker, ToolAdapter,
-    UnsupportedGatewayAdapter, UreqGitHubClient,
+    write_gateway_spool_response, EnvironmentSecretBroker, GatewayEgressAdapter, GatewayExecutor,
+    GatewaySpoolPaths, GatewaySpoolResponse, GatewaySpoolResponseState, GitHubRestAdapter,
+    InMemoryToolRegistry, LocalFixtureToolAdapter, LocalRedactedSecretBroker, RegisteredTool,
+    SecretBroker, ToolAdapter, UnsupportedGatewayAdapter, UreqGatewayEgressClient,
+    UreqGitHubClient,
 };
 use taskfence_policy::BuiltInPolicyEngine;
 use taskfence_report::MarkdownReportGenerator;
@@ -237,6 +239,23 @@ enum GatewayCommand {
         #[arg(long)]
         external_approval: bool,
     },
+    /// Start a foreground task-scoped local gateway listener.
+    Listen {
+        /// TaskFence YAML task file.
+        task_file: Utf8PathBuf,
+        /// Resolve approval-required listener calls with a local approved decision.
+        #[arg(long)]
+        approve: bool,
+        /// Wait for taskfence approve/deny to resolve approval-required listener calls.
+        #[arg(long)]
+        external_approval: bool,
+        /// Port for the loopback listener, or 0 to ask the OS for an available port.
+        #[arg(long, default_value_t = 0)]
+        port: u16,
+        /// Stop after this many requests. Defaults to foreground server mode.
+        #[arg(long)]
+        once: bool,
+    },
     /// Process agent-facing gateway spool requests.
     Spool {
         #[command(subcommand)]
@@ -318,6 +337,27 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
                     GatewayApprovalMode::FailClosed
                 };
                 run_gateway_call(task_file, protocol, tool, operation, params, approval_mode)
+            }
+            GatewayCommand::Listen {
+                task_file,
+                approve,
+                external_approval,
+                port,
+                once,
+            } => {
+                if approve && external_approval {
+                    return Err(TaskFenceError::Config(
+                        "--approve and --external-approval cannot be used together".into(),
+                    ));
+                }
+                let approval_mode = if approve {
+                    GatewayApprovalMode::Approved
+                } else if external_approval {
+                    GatewayApprovalMode::External
+                } else {
+                    GatewayApprovalMode::FailClosed
+                };
+                run_gateway_listener(task_file, approval_mode, port, once)
             }
             GatewayCommand::Spool {
                 command:
@@ -1764,58 +1804,19 @@ fn run_gateway_call(
         task_dir: Some(artifact_refs.task_dir.clone()),
         artifact_dir: Some(artifact_refs.task_dir.join("artifacts")),
     };
-    let execution = match approval_mode {
-        GatewayApprovalMode::FailClosed => {
-            let approval = LocalApprovalEngine::fail_closed()
-                .with_actor("gateway")
-                .with_source("local-fail-closed");
-            execute_gateway_action(
-                &task,
-                action,
-                context,
-                &policy,
-                &audit,
-                &registry,
-                supported_protocols,
-                &approval,
-                adapter.as_ref(),
-                secret_broker.as_ref(),
-            )?
-        }
-        GatewayApprovalMode::Approved => {
-            let approval = LocalApprovalEngine::preconfigured(ApprovalDecision::Approved)
-                .with_actor("gateway")
-                .with_source("local-approved");
-            execute_gateway_action(
-                &task,
-                action,
-                context,
-                &policy,
-                &audit,
-                &registry,
-                supported_protocols,
-                &approval,
-                adapter.as_ref(),
-                secret_broker.as_ref(),
-            )?
-        }
-        GatewayApprovalMode::External => {
-            let approval = LocalExternalApprovalEngine::new(task.workspace_host_path.clone())
-                .with_actor("gateway");
-            execute_gateway_action(
-                &task,
-                action,
-                context,
-                &policy,
-                &audit,
-                &registry,
-                supported_protocols,
-                &approval,
-                adapter.as_ref(),
-                secret_broker.as_ref(),
-            )?
-        }
-    };
+    let approval = gateway_approval_engine(&task, approval_mode, "local");
+    let execution = execute_gateway_action(
+        &task,
+        action,
+        context,
+        &policy,
+        &audit,
+        &registry,
+        supported_protocols,
+        approval.as_ref(),
+        adapter.as_ref(),
+        secret_broker.as_ref(),
+    )?;
 
     gateway_transition(&audit, &state, &task.id, TaskStatus::CollectingArtifacts)?;
     record_gateway_artifacts(&audit, &task, &execution)?;
@@ -1847,6 +1848,235 @@ fn run_gateway_call(
             "gateway call {} finished with status {status:?}",
             task.id.0
         ))),
+    }
+}
+
+fn run_gateway_listener(
+    task_file: Utf8PathBuf,
+    approval_mode: GatewayApprovalMode,
+    port: u16,
+    once: bool,
+) -> taskfence_core::Result<()> {
+    let task = load_task_file(&task_file)?;
+    if task.gateway.tools.is_empty() {
+        return Err(TaskFenceError::Gateway(
+            "gateway listener requires configured gateway.tools".into(),
+        ));
+    }
+    let artifacts = LocalArtifactStore::in_workspace();
+    let artifact_refs = artifacts.create_task_dir(&task)?;
+    artifacts.write_resolved_task(&task)?;
+    let events_path = artifact_refs
+        .events
+        .clone()
+        .unwrap_or_else(|| artifact_refs.task_dir.join("events.jsonl"));
+    let jsonl = LocalJsonlAuditLogger::new(events_path)?;
+    let audit = CollectingAuditLogger::new(&jsonl);
+    let state = InMemoryStateStore::new();
+
+    gateway_transition(&audit, &state, &task.id, TaskStatus::Created)?;
+    audit.record(AuditEvent::TaskCreated {
+        task_id: task.id.clone(),
+        at: time::OffsetDateTime::now_utc(),
+        goal: task.goal.clone(),
+    })?;
+    gateway_transition(&audit, &state, &task.id, TaskStatus::Running)?;
+
+    let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|err| {
+        TaskFenceError::Gateway(format!("failed to bind local gateway listener: {err}"))
+    })?;
+    let address = listener.local_addr().map_err(|err| {
+        TaskFenceError::Gateway(format!("failed to inspect local gateway listener: {err}"))
+    })?;
+    println!("Gateway listener serving");
+    println!("  url: http://{address}/tool");
+    println!("  task: {}", task.id.0);
+    println!("  artifacts: {}", artifact_refs.task_dir);
+
+    let mut handled = 0usize;
+    for stream in listener.incoming() {
+        let stream = stream.map_err(|err| {
+            TaskFenceError::Gateway(format!("gateway listener connection failed: {err}"))
+        })?;
+        handle_gateway_listener_stream(
+            stream,
+            &task,
+            &artifact_refs,
+            &audit,
+            &state,
+            approval_mode,
+        )?;
+        handled += 1;
+        if once {
+            break;
+        }
+    }
+
+    gateway_transition(&audit, &state, &task.id, TaskStatus::Reporting)?;
+    let report = MarkdownReportGenerator::new();
+    let report_path = report.generate(&task, &artifact_refs, &audit.events()?)?;
+    audit.record(AuditEvent::Artifact {
+        task_id: task.id.clone(),
+        at: time::OffsetDateTime::now_utc(),
+        kind: "report".into(),
+        path: report_path.clone(),
+    })?;
+    gateway_transition(&audit, &state, &task.id, TaskStatus::Succeeded)?;
+    println!("Gateway listener stopped");
+    println!("  handled: {handled}");
+    println!("  report: {report_path}");
+    Ok(())
+}
+
+fn handle_gateway_listener_stream(
+    mut stream: TcpStream,
+    task: &ResolvedTask,
+    artifact_refs: &ArtifactRefs,
+    audit: &CollectingAuditLogger<'_>,
+    state: &dyn StateStore,
+    approval_mode: GatewayApprovalMode,
+) -> taskfence_core::Result<()> {
+    let mut reader = BufReader::new(stream.try_clone().map_err(|err| {
+        TaskFenceError::Gateway(format!("failed to clone gateway listener stream: {err}"))
+    })?);
+    let action = match read_gateway_listener_action(&mut reader) {
+        Ok(action) => normalize_tool_action(action)?,
+        Err(err) => {
+            let body = serde_json::json!({ "error": err.to_string() }).to_string();
+            let response =
+                http_response("400 Bad Request", "application/json; charset=utf-8", &body);
+            stream.write_all(response.as_bytes()).map_err(|write_err| {
+                TaskFenceError::Gateway(format!(
+                    "failed to write gateway listener response: {write_err}"
+                ))
+            })?;
+            return Ok(());
+        }
+    };
+
+    let registry = gateway_tool_registry(task)?;
+    let supported_protocols = task
+        .gateway
+        .tools
+        .iter()
+        .map(|tool| tool.protocol.clone())
+        .collect::<Vec<_>>();
+    let policy = BuiltInPolicyEngine;
+    let adapter = gateway_adapter_for(task, &action);
+    let secret_broker = gateway_secret_broker_for(task, &action);
+    let approval = gateway_approval_engine(task, approval_mode, "listener");
+    let context = ToolExecutionContext {
+        task_dir: Some(artifact_refs.task_dir.clone()),
+        artifact_dir: Some(artifact_refs.task_dir.join("artifacts")),
+    };
+
+    let execution = execute_gateway_action(
+        task,
+        action,
+        context,
+        &policy,
+        audit,
+        &registry,
+        supported_protocols,
+        approval.as_ref(),
+        adapter.as_ref(),
+        secret_broker.as_ref(),
+    )?;
+    record_gateway_artifacts(audit, task, &execution)?;
+    let status = gateway_execution_status(&execution);
+    gateway_transition(audit, state, &task.id, status.clone())?;
+
+    let body = serde_json::to_string_pretty(&execution).map_err(|err| {
+        TaskFenceError::Gateway(format!(
+            "failed to serialize gateway listener response: {err}"
+        ))
+    })?;
+    let response = http_response(
+        gateway_listener_http_status(&status),
+        "application/json; charset=utf-8",
+        &body,
+    );
+    stream.write_all(response.as_bytes()).map_err(|err| {
+        TaskFenceError::Gateway(format!("failed to write gateway listener response: {err}"))
+    })
+}
+
+fn read_gateway_listener_action(reader: &mut impl BufRead) -> taskfence_core::Result<ToolAction> {
+    let mut request_line = String::new();
+    reader.read_line(&mut request_line).map_err(|err| {
+        TaskFenceError::Gateway(format!(
+            "failed to read gateway listener request line: {err}"
+        ))
+    })?;
+    let parts = request_line.split_whitespace().collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return Err(TaskFenceError::Gateway(
+            "gateway listener request line is malformed".into(),
+        ));
+    }
+    if parts[0] != "POST" || parts[1] != "/tool" {
+        drain_gateway_listener_headers(reader)?;
+        return Err(TaskFenceError::Gateway(
+            "gateway listener accepts only POST /tool".into(),
+        ));
+    }
+
+    let mut content_length = None;
+    loop {
+        let mut header = String::new();
+        let read = reader.read_line(&mut header).map_err(|err| {
+            TaskFenceError::Gateway(format!("failed to read gateway listener header: {err}"))
+        })?;
+        if read == 0 || header == "\r\n" || header == "\n" {
+            break;
+        }
+        if let Some((name, value)) = header.split_once(':') {
+            if name.trim().eq_ignore_ascii_case("content-length") {
+                content_length = Some(value.trim().parse::<usize>().map_err(|err| {
+                    TaskFenceError::Gateway(format!(
+                        "gateway listener content-length is invalid: {err}"
+                    ))
+                })?);
+            }
+        }
+    }
+
+    let content_length = content_length.ok_or_else(|| {
+        TaskFenceError::Gateway("gateway listener request is missing content-length".into())
+    })?;
+    if content_length > 128 * 1024 {
+        return Err(TaskFenceError::Gateway(
+            "gateway listener request body is too large".into(),
+        ));
+    }
+    let mut body = vec![0u8; content_length];
+    reader.read_exact(&mut body).map_err(|err| {
+        TaskFenceError::Gateway(format!("failed to read gateway listener body: {err}"))
+    })?;
+    serde_json::from_slice::<ToolAction>(&body).map_err(|err| {
+        TaskFenceError::Gateway(format!("malformed gateway listener tool action: {err}"))
+    })
+}
+
+fn drain_gateway_listener_headers(reader: &mut impl BufRead) -> taskfence_core::Result<()> {
+    loop {
+        let mut header = String::new();
+        let read = reader.read_line(&mut header).map_err(|err| {
+            TaskFenceError::Gateway(format!("failed to read gateway listener header: {err}"))
+        })?;
+        if read == 0 || header == "\r\n" || header == "\n" {
+            return Ok(());
+        }
+    }
+}
+
+fn gateway_listener_http_status(status: &TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Succeeded => "200 OK",
+        TaskStatus::Denied => "403 Forbidden",
+        TaskStatus::TimedOut => "408 Request Timeout",
+        TaskStatus::Cancelled => "409 Conflict",
+        _ => "502 Bad Gateway",
     }
 }
 
@@ -1946,58 +2176,19 @@ fn run_gateway_spool_process(
         task_dir: Some(artifact_refs.task_dir.clone()),
         artifact_dir: Some(artifact_refs.task_dir.join("artifacts")),
     };
-    let execution = match approval_mode {
-        GatewayApprovalMode::FailClosed => {
-            let approval = LocalApprovalEngine::fail_closed()
-                .with_actor("gateway")
-                .with_source("spool-fail-closed");
-            execute_gateway_action(
-                &task,
-                request.action.clone(),
-                context,
-                &policy,
-                &audit,
-                &registry,
-                supported_protocols,
-                &approval,
-                adapter.as_ref(),
-                secret_broker.as_ref(),
-            )?
-        }
-        GatewayApprovalMode::Approved => {
-            let approval = LocalApprovalEngine::preconfigured(ApprovalDecision::Approved)
-                .with_actor("gateway")
-                .with_source("spool-approved");
-            execute_gateway_action(
-                &task,
-                request.action.clone(),
-                context,
-                &policy,
-                &audit,
-                &registry,
-                supported_protocols,
-                &approval,
-                adapter.as_ref(),
-                secret_broker.as_ref(),
-            )?
-        }
-        GatewayApprovalMode::External => {
-            let approval = LocalExternalApprovalEngine::new(task.workspace_host_path.clone())
-                .with_actor("gateway");
-            execute_gateway_action(
-                &task,
-                request.action.clone(),
-                context,
-                &policy,
-                &audit,
-                &registry,
-                supported_protocols,
-                &approval,
-                adapter.as_ref(),
-                secret_broker.as_ref(),
-            )?
-        }
-    };
+    let approval = gateway_approval_engine(&task, approval_mode, "spool");
+    let execution = execute_gateway_action(
+        &task,
+        request.action.clone(),
+        context,
+        &policy,
+        &audit,
+        &registry,
+        supported_protocols,
+        approval.as_ref(),
+        adapter.as_ref(),
+        secret_broker.as_ref(),
+    )?;
 
     gateway_transition(&audit, &state, &task.id, TaskStatus::CollectingArtifacts)?;
     record_gateway_artifacts(&audit, &task, &execution)?;
@@ -2134,7 +2325,36 @@ fn gateway_tool_registry(task: &ResolvedTask) -> taskfence_core::Result<InMemory
     Ok(InMemoryToolRegistry::new(tools))
 }
 
+fn gateway_approval_engine(
+    task: &ResolvedTask,
+    mode: GatewayApprovalMode,
+    source_prefix: &str,
+) -> Box<dyn ApprovalEngine> {
+    match mode {
+        GatewayApprovalMode::FailClosed => Box::new(
+            LocalApprovalEngine::fail_closed()
+                .with_actor("gateway")
+                .with_source(format!("{source_prefix}-fail-closed")),
+        ),
+        GatewayApprovalMode::Approved => Box::new(
+            LocalApprovalEngine::preconfigured(ApprovalDecision::Approved)
+                .with_actor("gateway")
+                .with_source(format!("{source_prefix}-approved")),
+        ),
+        GatewayApprovalMode::External => Box::new(
+            LocalExternalApprovalEngine::new(task.workspace_host_path.clone())
+                .with_actor("gateway"),
+        ),
+    }
+}
+
 fn gateway_adapter_for(task: &ResolvedTask, action: &ToolAction) -> Box<dyn ToolAdapter> {
+    if action.protocol == GATEWAY_EGRESS_TOOL_PROTOCOL
+        && action.tool == GATEWAY_EGRESS_TOOL_NAME
+        && action.operation == GATEWAY_EGRESS_TOOL_OPERATION
+    {
+        return Box::new(GatewayEgressAdapter::new(UreqGatewayEgressClient));
+    }
     task.gateway
         .tools
         .iter()
@@ -2557,6 +2777,77 @@ mod tests {
             }
             other => panic!("expected gateway call command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_gateway_listen() {
+        let cli = Cli::try_parse_from([
+            "taskfence",
+            "gateway",
+            "listen",
+            "task.yaml",
+            "--approve",
+            "--port",
+            "0",
+            "--once",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Gateway {
+                command:
+                    GatewayCommand::Listen {
+                        task_file,
+                        approve,
+                        external_approval,
+                        port,
+                        once,
+                    },
+            } => {
+                assert_eq!(task_file, Utf8PathBuf::from("task.yaml"));
+                assert!(approve);
+                assert!(!external_approval);
+                assert_eq!(port, 0);
+                assert!(once);
+            }
+            other => panic!("expected gateway listen command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gateway_listener_parses_post_tool_action() {
+        let body = serde_json::to_string(&ToolAction {
+            protocol: "http".into(),
+            tool: "egress".into(),
+            operation: "fetch".into(),
+            parameters: BTreeMap::from([(
+                "url".into(),
+                RedactedValue::Plain("https://api.github.com/".into()),
+            )]),
+        })
+        .unwrap();
+        let request = format!(
+            "POST /tool HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let mut reader = BufReader::new(request.as_bytes());
+
+        let action = read_gateway_listener_action(&mut reader).unwrap();
+
+        assert_eq!(action.protocol, "http");
+        assert_eq!(action.tool, "egress");
+        assert_eq!(action.operation, "fetch");
+    }
+
+    #[test]
+    fn gateway_listener_rejects_wrong_method_or_path() {
+        let request = "GET /tool HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+        let mut reader = BufReader::new(request.as_bytes());
+
+        let err = read_gateway_listener_action(&mut reader).unwrap_err();
+
+        assert!(err.to_string().contains("POST /tool"));
     }
 
     #[test]

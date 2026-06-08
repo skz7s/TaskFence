@@ -50,7 +50,12 @@ Implemented boundaries:
 - Docker execution runs with `--pull=never`, controlled mounts, no inherited
   host environment, no host home or socket passthrough by default, captured
   stdout/stderr, timeout handling, and structured exit status.
-- Local Docker domain allowlists fail closed until an enforcing proxy exists.
+- Local Docker domain allowlists fail closed unless the task explicitly opts
+  into the task-scoped local gateway egress boundary with
+  `gateway.mode: local_listener`, `gateway.egress.allow_domains: true`, and a
+  registered `http egress.fetch` tool. Docker still runs with `--network none`
+  for allowlisted domains; gateway-side egress checks the destination host
+  through policy before performing bounded HTTPS GET/HEAD requests.
 - Local approval is fail-closed by default; `taskfence run --interactive-approval`
   enables in-process terminal approval for approval-required actions, and
   `taskfence run --external-approval` waits for workspace-local
@@ -178,6 +183,14 @@ Current implemented gateway coverage:
 - the Docker runner mounts only the dedicated gateway spool path at
   `/taskfence/gateway-spool` when gateway tools are configured, and rejects
   broader read/write mounts that would also expose that spool
+- `taskfence gateway listen <task-file>` starts a foreground loopback listener
+  for task-scoped JSON tool actions and executes them through the same registry,
+  policy, approval, secret-broker, audit, and report path as `gateway call`
+- the bounded `http egress.fetch` gateway action supports gateway-side HTTPS
+  GET/HEAD requests only after URL validation, network destination policy, tool
+  policy, budget policy, and registry checks; it rejects userinfo, fragments,
+  parent-path escapes, secret-like query material, unregistered tools, and
+  non-allowlisted domains
 - `taskfence gateway spool process <task-file> <request-file>` validates one
   request file under the task spool, executes one mediated local fixture action,
   writes one typed response, and records structured evidence for success,
@@ -201,10 +214,10 @@ Current implemented gateway coverage:
 - reports render tool-call decisions, approvals, local fixture executions, and
   denied tool actions from structured audit events without rendering raw
   parameter values
-- MCP/HTTP listener or proxy servers, SDK/webhook connectors, arbitrary HTTP
-  proxying, branch/commit creation, persistent Web/API server behavior,
-  deterministic replay execution, team-server, and live enterprise connector
-  execution beyond the bounded GitHub REST family remain future work
+- production MCP servers, arbitrary HTTP proxying, SDK/webhook connectors,
+  branch/commit creation, persistent Web/API server behavior, deterministic
+  replay execution, team-server, and live enterprise connector execution beyond
+  the bounded GitHub REST family remain future work
 
 Current local fixture demo:
 

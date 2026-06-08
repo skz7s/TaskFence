@@ -50,16 +50,20 @@ contract-only enterprise connector surfaces that fail closed for live
 execution. A bounded agent-facing request/response spool prototype is processed
 by `taskfence gateway spool process`. The spool path is task-local, mounted
 separately into Docker only for tasks with configured gateway tools, and
-produces typed responses plus structured evidence. The team-server foundation is
-currently contract-only: typed API resources, RBAC decisions, approval-owner
-checks, local development worker leases, Postgres state config validation,
-artifact-root containment, validated but unsupported audit-export sink
-contracts, and local-to-team migration planning from structured `.taskfence`
-files exist without starting a server or live database. MCP/HTTP listener or
-proxy servers, SDK/webhook connectors, arbitrary HTTP proxying, branch/commit
-creation, persistent API server, live Postgres backend, deterministic replay
-execution, persistent team-server, Slack, and live enterprise connector
-behavior beyond the bounded GitHub REST family are not implemented yet.
+produces typed responses plus structured evidence. `taskfence gateway listen`
+starts a foreground loopback listener for task-scoped JSON tool actions, and
+the bounded `http egress.fetch` action performs gateway-side HTTPS GET/HEAD
+requests only after registry, tool, budget, and network-destination policy
+checks. The team-server foundation is currently contract-only: typed API
+resources, RBAC decisions, approval-owner checks, local development worker
+leases, Postgres state config validation, artifact-root containment, validated
+but unsupported audit-export sink contracts, and local-to-team migration
+planning from structured `.taskfence` files exist without starting a server or
+live database. Production MCP servers, arbitrary HTTP proxying, SDK/webhook
+connectors, branch/commit creation, persistent API server, live Postgres
+backend, deterministic replay execution, persistent team-server, Slack, and
+live enterprise connector behavior beyond the bounded GitHub REST family are
+not implemented yet.
 The local review foundation is CLI-owned: it can render file-backed evidence as
 a static or foreground-served loopback HTML page, resolve pending
 workspace-local approvals from that page, and plan replay inputs without
@@ -262,11 +266,14 @@ the task spool root, rejects parent components and symlink escapes, executes one
 mediated configured action, and writes typed success, denied, timeout,
 cancellation, malformed-request, unsupported-action, or failure responses with
 structured evidence. When a registry is configured, unregistered tool actions
-fail before policy evaluation and record an audit error. It does not implement
-MCP/HTTP listener or proxy servers, SDK/webhook connectors, arbitrary HTTP
-proxying, branch/commit creation, persistent Web/API server behavior,
-deterministic replay execution, team-server, Slack, or live enterprise
-connector behavior beyond the bounded GitHub REST family yet.
+fail before policy evaluation and record an audit error. The foreground
+`gateway listen` path accepts task-scoped JSON tool actions on loopback and the
+bounded `http egress.fetch` action can make gateway-side HTTPS GET/HEAD
+requests for policy-allowlisted hosts. It does not implement production MCP
+servers, arbitrary HTTP proxying, SDK/webhook connectors, branch/commit
+creation, persistent Web/API server behavior, deterministic replay execution,
+team-server, Slack, or live enterprise connector behavior beyond the bounded
+GitHub REST family yet.
 
 Supported gateway surfaces can include:
 

@@ -28,10 +28,13 @@ permissions:
     allow:
       - "/usr/bin/true"
   network:
-    default: "disabled"
+    default: "deny"
+    allow_domains:
+      - "api.github.com"
   tools:
     allow:
       - "github.read_issue"
+      - "egress.fetch"
     approval_required:
       - "github.create_pr"
       - "github.comment_issue"
@@ -50,7 +53,16 @@ secrets:
         - "github.comment_issue"
 
 gateway:
+  mode: "local_listener"
+  egress:
+    allow_domains: true
   tools:
+    - protocol: "http"
+      tool: "egress"
+      operation: "fetch"
+      connector:
+        type: "unsupported"
+        kind: "egress"
     - protocol: "mcp"
       tool: "github"
       operation: "read_issue"

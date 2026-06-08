@@ -7,9 +7,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use taskfence_core::{
-    AgentInvocation, ExitStatus, MountMode, MountPlan, NetworkDefault, NetworkPermissions,
-    PreparedRun, ResolvedTask, RunOutput, Runner, RunningTask, SandboxKind, TaskFenceError, TaskId,
-    GATEWAY_SPOOL_CONTAINER_PATH, GATEWAY_SPOOL_DIR_NAME,
+    AgentInvocation, ExitStatus, GatewayMode, MountMode, MountPlan, NetworkDefault,
+    PreparedGateway, PreparedGatewayEgress, PreparedRun, ResolvedTask, RunOutput, Runner,
+    RunningTask, SandboxKind, TaskFenceError, TaskId, GATEWAY_EGRESS_TOOL_NAME,
+    GATEWAY_EGRESS_TOOL_OPERATION, GATEWAY_EGRESS_TOOL_PROTOCOL, GATEWAY_SPOOL_CONTAINER_PATH,
+    GATEWAY_SPOOL_DIR_NAME, TASKFENCE_GATEWAY_EGRESS_ALLOW_DOMAINS_ENV, TASKFENCE_GATEWAY_MODE_ENV,
+    TASKFENCE_GATEWAY_SPOOL_ENV,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -78,11 +81,12 @@ pub struct RunnerCapabilityReport {
 }
 
 impl RunnerCapabilityReport {
-    pub fn docker(network: &NetworkPermissions) -> Self {
+    pub fn docker(task: &ResolvedTask) -> Self {
         let mut missing = Vec::new();
-        if !network.allow_domains.is_empty() {
+        let can_enforce_domain_allowlist = docker_gateway_egress_enabled(task);
+        if !task.permissions.network.allow_domains.is_empty() && !can_enforce_domain_allowlist {
             missing.push(
-                "local Docker cannot enforce domain allowlists; configure an enforcing proxy before allowing domains"
+                "local Docker cannot enforce domain allowlists without gateway.mode=local_listener, gateway.egress.allow_domains=true, and a registered http egress.fetch tool"
                     .into(),
             );
         }
@@ -93,7 +97,7 @@ impl RunnerCapabilityReport {
             can_isolate_secrets: true,
             can_disable_network: true,
             can_enforce_default_deny_network: true,
-            can_enforce_domain_allowlist: false,
+            can_enforce_domain_allowlist,
             can_enforce_limits: true,
             can_capture_output: true,
             missing,
@@ -223,7 +227,7 @@ impl ExpandedRunner {
 
     pub fn capability_report(&self, task: &ResolvedTask) -> RunnerCapabilityReport {
         match RunnerKind::from_sandbox(&task.sandbox.kind) {
-            RunnerKind::Docker => RunnerCapabilityReport::docker(&task.permissions.network),
+            RunnerKind::Docker => RunnerCapabilityReport::docker(task),
             kind => UnsupportedRunner::new(kind).capability_report(),
         }
     }
@@ -323,7 +327,8 @@ impl DockerRunner {
         ensure_docker_task(task)?;
         let mounts = self.build_mount_plan(task)?;
         let env = self.build_env_plan(task)?;
-        let network = self.build_network_plan(&task.permissions.network)?;
+        let gateway = build_prepared_gateway(task);
+        let network = self.build_network_plan(task)?;
 
         Ok(DockerRunPlan {
             prepared: PreparedRun {
@@ -332,6 +337,7 @@ impl DockerRunner {
                 mounts,
                 env,
                 network: task.permissions.network.clone(),
+                gateway,
                 limits: task.sandbox.limits.clone(),
             },
             network,
@@ -356,7 +362,7 @@ impl DockerRunner {
         reject_mixed_mode_overlaps(&read_paths, &write_paths)?;
 
         let mut mounts = Vec::new();
-        let gateway_spool_path = if !task.gateway.tools.is_empty() {
+        let gateway_spool_path = if docker_gateway_spool_required(task) {
             let spool_path = gateway_spool_host_path(task)?;
             self.validate_mount_path(task, &spool_path)?;
             reject_permission_mounts_cover_gateway_spool(&read_paths, &write_paths, &spool_path)?;
@@ -407,18 +413,42 @@ impl DockerRunner {
                 env.insert(name.clone(), value.clone());
             }
         }
+        if docker_gateway_spool_required(task) {
+            env.insert(
+                TASKFENCE_GATEWAY_SPOOL_ENV.into(),
+                GATEWAY_SPOOL_CONTAINER_PATH.into(),
+            );
+        }
+        match task.gateway.mode {
+            GatewayMode::SpoolOnly => {}
+            GatewayMode::LocalListener => {
+                env.insert(TASKFENCE_GATEWAY_MODE_ENV.into(), "local_listener".into());
+                if docker_gateway_egress_enabled(task) {
+                    env.insert(
+                        TASKFENCE_GATEWAY_EGRESS_ALLOW_DOMAINS_ENV.into(),
+                        task.permissions.network.allow_domains.join(","),
+                    );
+                }
+            }
+        }
         Ok(env)
     }
 
     pub fn build_network_plan(
         &self,
-        network: &NetworkPermissions,
+        task: &ResolvedTask,
     ) -> taskfence_core::Result<DockerNetworkPlan> {
+        let network = &task.permissions.network;
         if !network.allow_domains.is_empty() {
-            return Err(TaskFenceError::Runner(
-                "local Docker cannot enforce domain allowlists; configure an enforcing proxy before allowing domains"
-                    .into(),
-            ));
+            if !docker_gateway_egress_enabled(task) {
+                return Err(TaskFenceError::Runner(
+                    "local Docker cannot enforce domain allowlists without gateway.mode=local_listener, gateway.egress.allow_domains=true, and a registered http egress.fetch tool"
+                        .into(),
+                ));
+            }
+            return Ok(DockerNetworkPlan {
+                mode: DockerNetworkMode::None,
+            });
         }
 
         let mode = match &network.default {
@@ -549,7 +579,7 @@ impl DockerRunner {
             "--workdir".into(),
             invocation.working_dir.to_string(),
             "--network".into(),
-            docker_network_arg(&prepared.network)?.into(),
+            docker_network_arg(prepared)?.into(),
         ];
 
         for mount in &prepared.mounts {
@@ -693,14 +723,17 @@ fn exit_signal(_status: &std::process::ExitStatus) -> Option<String> {
     None
 }
 
-fn docker_network_arg(network: &NetworkPermissions) -> taskfence_core::Result<&'static str> {
-    if !network.allow_domains.is_empty() {
+fn docker_network_arg(prepared: &PreparedRun) -> taskfence_core::Result<&'static str> {
+    if !prepared.network.allow_domains.is_empty() {
+        if prepared.gateway.egress.is_some() {
+            return Ok("none");
+        }
         return Err(TaskFenceError::Runner(
-            "local Docker cannot enforce domain allowlists; configure an enforcing proxy before allowing domains"
+            "local Docker cannot enforce domain allowlists without a prepared gateway egress plan"
                 .into(),
         ));
     }
-    match network.default {
+    match prepared.network.default {
         NetworkDefault::Disabled | NetworkDefault::Deny => Ok("none"),
         NetworkDefault::Allow => Ok("bridge"),
     }
@@ -851,6 +884,7 @@ impl Runner for FakeRunner {
             mounts: Vec::new(),
             env: BTreeMap::new(),
             network: task.permissions.network.clone(),
+            gateway: build_prepared_gateway(task),
             limits: task.sandbox.limits.clone(),
         })
     }
@@ -1036,6 +1070,38 @@ fn gateway_spool_host_path(task: &ResolvedTask) -> taskfence_core::Result<Utf8Pa
         .join(GATEWAY_SPOOL_DIR_NAME))
 }
 
+fn docker_gateway_spool_required(task: &ResolvedTask) -> bool {
+    !task.gateway.tools.is_empty() || docker_gateway_egress_enabled(task)
+}
+
+fn docker_gateway_egress_enabled(task: &ResolvedTask) -> bool {
+    task.gateway.mode == GatewayMode::LocalListener
+        && task.gateway.egress.allow_domains
+        && !task.permissions.network.allow_domains.is_empty()
+        && gateway_egress_tool_configured(task)
+}
+
+fn build_prepared_gateway(task: &ResolvedTask) -> PreparedGateway {
+    let spool_container_path = docker_gateway_spool_required(task)
+        .then(|| Utf8PathBuf::from(GATEWAY_SPOOL_CONTAINER_PATH));
+    let egress = docker_gateway_egress_enabled(task).then(|| PreparedGatewayEgress {
+        allow_domains: task.permissions.network.allow_domains.clone(),
+    });
+    PreparedGateway {
+        mode: task.gateway.mode.clone(),
+        spool_container_path,
+        egress,
+    }
+}
+
+pub fn gateway_egress_tool_configured(task: &ResolvedTask) -> bool {
+    task.gateway.tools.iter().any(|tool| {
+        tool.protocol == GATEWAY_EGRESS_TOOL_PROTOCOL
+            && tool.tool == GATEWAY_EGRESS_TOOL_NAME
+            && tool.operation == GATEWAY_EGRESS_TOOL_OPERATION
+    })
+}
+
 fn validate_env_name(name: &str) -> taskfence_core::Result<()> {
     if name.is_empty() || name.contains('=') || name.contains('\0') {
         Err(TaskFenceError::Runner(format!(
@@ -1114,8 +1180,8 @@ mod tests {
     use super::*;
     use taskfence_core::{
         AgentConfig, AgentKind, ApprovalConfig, AuditConfig, EnvPermissions, GatewayConfig,
-        GatewayConnectorConfig, GatewayToolConfig, LimitConfig, PathPermissions, PermissionConfig,
-        SandboxConfig, SecretConfig, TaskId,
+        GatewayConnectorConfig, GatewayEgressConfig, GatewayToolConfig, LimitConfig,
+        NetworkPermissions, PathPermissions, PermissionConfig, SandboxConfig, SecretConfig, TaskId,
     };
 
     fn task() -> ResolvedTask {
@@ -1200,6 +1266,8 @@ mod tests {
         task.permissions.paths.read = vec!["/tmp/repo/README.md".into()];
         task.permissions.paths.write = vec!["/tmp/repo/src".into()];
         task.gateway = GatewayConfig {
+            mode: GatewayMode::SpoolOnly,
+            egress: GatewayEgressConfig::default(),
             tools: vec![GatewayToolConfig {
                 protocol: "mcp".into(),
                 tool: "github".into(),
@@ -1233,6 +1301,8 @@ mod tests {
         task.permissions.paths.read.clear();
         task.permissions.paths.write = vec!["/tmp/repo".into()];
         task.gateway = GatewayConfig {
+            mode: GatewayMode::SpoolOnly,
+            egress: GatewayEgressConfig::default(),
             tools: vec![GatewayToolConfig {
                 protocol: "mcp".into(),
                 tool: "github".into(),
@@ -1270,6 +1340,61 @@ mod tests {
         let err = runner().prepare(&task).unwrap_err();
 
         assert!(err.to_string().contains("domain allowlists"));
+    }
+
+    #[test]
+    fn gateway_egress_domain_allowlist_uses_dedicated_gateway_path() {
+        let mut task = task();
+        task.permissions.network.default = NetworkDefault::Deny;
+        task.permissions.network.allow_domains = vec!["api.github.com".into()];
+        task.gateway = GatewayConfig {
+            mode: GatewayMode::LocalListener,
+            egress: GatewayEgressConfig {
+                allow_domains: true,
+            },
+            tools: vec![GatewayToolConfig {
+                protocol: GATEWAY_EGRESS_TOOL_PROTOCOL.into(),
+                tool: GATEWAY_EGRESS_TOOL_NAME.into(),
+                operation: GATEWAY_EGRESS_TOOL_OPERATION.into(),
+                connector: GatewayConnectorConfig::Unsupported {
+                    kind: "egress".into(),
+                },
+                secret_refs: Vec::new(),
+            }],
+        };
+
+        let plan = runner().build_run_plan(&task).unwrap();
+        let args = runner()
+            .build_docker_run_args(
+                "taskfence-test",
+                &plan.prepared,
+                &AgentInvocation {
+                    executable: "codex".into(),
+                    args: Vec::new(),
+                    env: BTreeMap::new(),
+                    working_dir: "/workspace".into(),
+                },
+            )
+            .unwrap();
+        let joined = args.join(" ");
+
+        assert_eq!(plan.network.mode, DockerNetworkMode::None);
+        assert_eq!(
+            plan.prepared.gateway.egress.unwrap().allow_domains,
+            vec!["api.github.com"]
+        );
+        assert_eq!(
+            plan.prepared.env.get(TASKFENCE_GATEWAY_MODE_ENV),
+            Some(&"local_listener".into())
+        );
+        assert_eq!(
+            plan.prepared
+                .env
+                .get(TASKFENCE_GATEWAY_EGRESS_ALLOW_DOMAINS_ENV),
+            Some(&"api.github.com".into())
+        );
+        assert!(joined.contains("--network none"));
+        assert!(joined.contains(GATEWAY_SPOOL_CONTAINER_PATH));
     }
 
     #[test]
@@ -1339,12 +1464,12 @@ mod tests {
 
     #[test]
     fn default_allow_network_uses_bridge_when_no_domain_rules_exist() {
-        let plan = runner()
-            .build_network_plan(&NetworkPermissions {
-                default: NetworkDefault::Allow,
-                allow_domains: Vec::new(),
-            })
-            .unwrap();
+        let mut task = task();
+        task.permissions.network = NetworkPermissions {
+            default: NetworkDefault::Allow,
+            allow_domains: Vec::new(),
+        };
+        let plan = runner().build_network_plan(&task).unwrap();
 
         assert_eq!(plan.mode, DockerNetworkMode::Bridge);
     }

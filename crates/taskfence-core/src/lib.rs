@@ -12,6 +12,13 @@ pub const GATEWAY_SPOOL_REQUESTS_DIR_NAME: &str = "requests";
 pub const GATEWAY_SPOOL_RESPONSES_DIR_NAME: &str = "responses";
 pub const GATEWAY_SPOOL_WRAPPER_FILE_NAME: &str = "taskfence-gateway-submit";
 pub const GATEWAY_SPOOL_CONTAINER_PATH: &str = "/taskfence/gateway-spool";
+pub const GATEWAY_EGRESS_TOOL_PROTOCOL: &str = "http";
+pub const GATEWAY_EGRESS_TOOL_NAME: &str = "egress";
+pub const GATEWAY_EGRESS_TOOL_OPERATION: &str = "fetch";
+pub const TASKFENCE_GATEWAY_MODE_ENV: &str = "TASKFENCE_GATEWAY_MODE";
+pub const TASKFENCE_GATEWAY_SPOOL_ENV: &str = "TASKFENCE_GATEWAY_SPOOL";
+pub const TASKFENCE_GATEWAY_EGRESS_ALLOW_DOMAINS_ENV: &str =
+    "TASKFENCE_GATEWAY_EGRESS_ALLOW_DOMAINS";
 
 #[derive(Debug, Error)]
 pub enum TaskFenceError {
@@ -292,7 +299,26 @@ impl Default for ApprovalConfig {
 #[serde(deny_unknown_fields)]
 pub struct GatewayConfig {
     #[serde(default)]
+    pub mode: GatewayMode,
+    #[serde(default)]
+    pub egress: GatewayEgressConfig,
+    #[serde(default)]
     pub tools: Vec<GatewayToolConfig>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayMode {
+    #[default]
+    SpoolOnly,
+    LocalListener,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GatewayEgressConfig {
+    #[serde(default)]
+    pub allow_domains: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -733,7 +759,22 @@ pub struct PreparedRun {
     pub mounts: Vec<MountPlan>,
     pub env: BTreeMap<String, String>,
     pub network: NetworkPermissions,
+    pub gateway: PreparedGateway,
     pub limits: LimitConfig,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreparedGateway {
+    pub mode: GatewayMode,
+    pub spool_container_path: Option<Utf8PathBuf>,
+    pub egress: Option<PreparedGatewayEgress>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreparedGatewayEgress {
+    pub allow_domains: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1814,6 +1855,7 @@ mod tests {
                 mounts: Vec::new(),
                 env: BTreeMap::new(),
                 network: task.permissions.network.clone(),
+                gateway: PreparedGateway::default(),
                 limits: task.sandbox.limits.clone(),
             })
         }

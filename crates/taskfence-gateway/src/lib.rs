@@ -2,13 +2,15 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
+use std::io::Read;
 
 use taskfence_core::{
     budget_limit_for, Action, ActionDecision, ApprovalDecision, ApprovalEngine, ApprovalRecord,
     AuditEvent, AuditLogger, BudgetUsage, BudgetUsageRecord, GatewayConnectorConfig,
     GatewaySecretReferenceConfig, GatewayToolConfig, PolicyEngine, RedactedValue, ResolvedTask,
     TaskFenceError, ToolAction, ToolAdapterIdentity, ToolExecution, ToolExecutionContext,
-    ToolExecutionError, ToolExecutionErrorKind, ToolRequest, ToolResult, GATEWAY_SPOOL_DIR_NAME,
+    ToolExecutionError, ToolExecutionErrorKind, ToolRequest, ToolResult, GATEWAY_EGRESS_TOOL_NAME,
+    GATEWAY_EGRESS_TOOL_OPERATION, GATEWAY_EGRESS_TOOL_PROTOCOL, GATEWAY_SPOOL_DIR_NAME,
     GATEWAY_SPOOL_REQUESTS_DIR_NAME, GATEWAY_SPOOL_RESPONSES_DIR_NAME,
 };
 use time::OffsetDateTime;
@@ -685,6 +687,17 @@ impl<'a> GatewayExecutor<'a> {
             }
         }
 
+        if let Some(error) = self.enforce_gateway_egress_policy(task, &request.action)? {
+            return self.record_finished(
+                task,
+                ToolExecution {
+                    request,
+                    result: None,
+                    error: Some(error),
+                },
+            );
+        }
+
         let (request, secret_bindings) =
             match self.attach_configured_secret_references(task, request.clone()) {
                 Ok(bound) => bound,
@@ -727,6 +740,55 @@ impl<'a> GatewayExecutor<'a> {
             },
         };
         self.record_finished(task, execution)
+    }
+
+    fn enforce_gateway_egress_policy(
+        &self,
+        task: &ResolvedTask,
+        action: &ToolAction,
+    ) -> taskfence_core::Result<Option<ToolExecutionError>> {
+        if !is_gateway_egress_action(action) {
+            return Ok(None);
+        }
+
+        let destination = match gateway_egress_destination(action) {
+            Ok(destination) => destination,
+            Err(error) => return Ok(Some(error)),
+        };
+        let wrapped = Action::Network {
+            host: destination.host.clone(),
+            port: destination.port,
+        };
+        let decision = self.mediator.policy.evaluate(task, &wrapped)?;
+        self.audit.record(AuditEvent::PolicyDecision {
+            task_id: task.id.clone(),
+            at: OffsetDateTime::now_utc(),
+            action: wrapped.clone(),
+            decision: decision.clone(),
+        })?;
+
+        match &decision {
+            ActionDecision::Allow { .. } => Ok(None),
+            ActionDecision::Deny { reason, .. } => Ok(Some(ToolExecutionError {
+                kind: ToolExecutionErrorKind::PolicyDenied,
+                message: reason.clone(),
+            })),
+            ActionDecision::RequireApproval { .. } => {
+                if self.mediator.approval.is_none() {
+                    return Ok(Some(ToolExecutionError {
+                        kind: ToolExecutionErrorKind::ApprovalDeniedOrTimedOut,
+                        message: "gateway egress approval engine is not configured".into(),
+                    }));
+                }
+                match self
+                    .mediator
+                    .request_tool_approval(task, wrapped, decision.clone())
+                {
+                    Ok(_) => Ok(None),
+                    Err(err) => Ok(Some(tool_execution_error_from_taskfence(&err))),
+                }
+            }
+        }
     }
 
     fn request(&self, action: ToolAction) -> ToolRequest {
@@ -832,6 +894,318 @@ impl<'a> GatewayExecutor<'a> {
             execution: execution.clone(),
         })?;
         Ok(execution)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GatewayEgressRequest {
+    pub method: String,
+    pub url: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GatewayEgressResponse {
+    pub status: u16,
+    pub body: String,
+}
+
+pub trait GatewayEgressClient {
+    fn fetch(
+        &self,
+        request: &GatewayEgressRequest,
+    ) -> std::result::Result<GatewayEgressResponse, ToolExecutionError>;
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct UreqGatewayEgressClient;
+
+impl GatewayEgressClient for UreqGatewayEgressClient {
+    fn fetch(
+        &self,
+        request: &GatewayEgressRequest,
+    ) -> std::result::Result<GatewayEgressResponse, ToolExecutionError> {
+        let response = match request.method.as_str() {
+            "GET" => ureq::get(&request.url)
+                .call()
+                .map_err(gateway_egress_ureq_error)?,
+            "HEAD" => ureq::head(&request.url)
+                .call()
+                .map_err(gateway_egress_ureq_error)?,
+            _ => {
+                return Err(ToolExecutionError {
+                    kind: ToolExecutionErrorKind::InvalidParameters,
+                    message: "gateway egress supports only GET and HEAD".into(),
+                });
+            }
+        };
+        let status = response.status();
+        let body = if request.method == "HEAD" {
+            String::new()
+        } else {
+            let mut body = String::new();
+            response
+                .into_reader()
+                .take(32 * 1024)
+                .read_to_string(&mut body)
+                .map_err(|err| ToolExecutionError {
+                    kind: ToolExecutionErrorKind::AdapterFailed,
+                    message: format!("failed to read gateway egress response: {err}"),
+                })?;
+            body
+        };
+        Ok(GatewayEgressResponse { status, body })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct GatewayEgressAdapter<C> {
+    client: C,
+}
+
+impl<C> GatewayEgressAdapter<C> {
+    pub fn new(client: C) -> Self {
+        Self { client }
+    }
+}
+
+impl<C> ToolAdapter for GatewayEgressAdapter<C>
+where
+    C: GatewayEgressClient,
+{
+    fn identity(&self) -> ToolAdapterIdentity {
+        ToolAdapterIdentity {
+            kind: "gateway_egress".into(),
+            name: "local".into(),
+        }
+    }
+
+    fn planned_budget_usage(
+        &self,
+        _task: &ResolvedTask,
+        action: &ToolAction,
+        _context: &ToolExecutionContext,
+    ) -> std::result::Result<Vec<BudgetUsage>, ToolExecutionError> {
+        if !is_gateway_egress_action(action) {
+            return Err(ToolExecutionError {
+                kind: ToolExecutionErrorKind::UnsupportedTool,
+                message: format!(
+                    "gateway egress adapter cannot execute {}.{}",
+                    action.tool, action.operation
+                ),
+            });
+        }
+        Ok(vec![BudgetUsage {
+            kind: "gateway_calls".into(),
+            amount: 1,
+            provider: Some("gateway".into()),
+            model: None,
+            operation: Some("egress.fetch".into()),
+            metadata: BTreeMap::new(),
+        }])
+    }
+
+    fn execute(
+        &self,
+        _task: &ResolvedTask,
+        action: &ToolAction,
+        _context: &ToolExecutionContext,
+    ) -> std::result::Result<ToolResult, ToolExecutionError> {
+        if !is_gateway_egress_action(action) {
+            return Err(ToolExecutionError {
+                kind: ToolExecutionErrorKind::UnsupportedTool,
+                message: format!(
+                    "gateway egress adapter cannot execute {}.{}",
+                    action.tool, action.operation
+                ),
+            });
+        }
+        let destination = gateway_egress_destination(action)?;
+        let response = self.client.fetch(&GatewayEgressRequest {
+            method: destination.method.clone(),
+            url: destination.url.clone(),
+        })?;
+        let body = redact_secret_like_text(&response.body);
+        Ok(ToolResult {
+            summary: format!(
+                "fetched {} with HTTP status {} through gateway egress",
+                destination.host, response.status
+            ),
+            values: BTreeMap::from([
+                ("method".into(), RedactedValue::Plain(destination.method)),
+                ("url".into(), RedactedValue::Plain(destination.url)),
+                ("host".into(), RedactedValue::Plain(destination.host)),
+                (
+                    "status".into(),
+                    RedactedValue::Plain(response.status.to_string()),
+                ),
+                ("body".into(), RedactedValue::Plain(body)),
+            ]),
+            artifacts: Vec::new(),
+            usage: Vec::new(),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GatewayEgressDestination {
+    method: String,
+    url: String,
+    host: String,
+    port: Option<u16>,
+}
+
+fn is_gateway_egress_action(action: &ToolAction) -> bool {
+    action.protocol == GATEWAY_EGRESS_TOOL_PROTOCOL
+        && action.tool == GATEWAY_EGRESS_TOOL_NAME
+        && action.operation == GATEWAY_EGRESS_TOOL_OPERATION
+}
+
+fn gateway_egress_destination(
+    action: &ToolAction,
+) -> std::result::Result<GatewayEgressDestination, ToolExecutionError> {
+    let method = plain_optional_parameter(action, "method")
+        .unwrap_or_else(|| "GET".into())
+        .trim()
+        .to_ascii_uppercase();
+    if !matches!(method.as_str(), "GET" | "HEAD") {
+        return Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::InvalidParameters,
+            message: "gateway egress supports only GET and HEAD".into(),
+        });
+    }
+    let url = plain_required_parameter(action, "url")?.to_owned();
+    parse_gateway_egress_url(method, url)
+}
+
+fn parse_gateway_egress_url(
+    method: String,
+    url: String,
+) -> std::result::Result<GatewayEgressDestination, ToolExecutionError> {
+    let trimmed = url.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if !lower.starts_with("https://") {
+        return Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::InvalidParameters,
+            message: "gateway egress URL must use https".into(),
+        });
+    }
+    if trimmed.chars().any(char::is_whitespace)
+        || trimmed.contains('@')
+        || trimmed.contains('#')
+        || secret_like_url(trimmed)
+    {
+        return Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::InvalidParameters,
+            message: "gateway egress URL must not contain userinfo, fragments, whitespace, or secret-like query material".into(),
+        });
+    }
+
+    let without_scheme = &trimmed["https://".len()..];
+    let authority_end = without_scheme
+        .find(['/', '?'])
+        .unwrap_or(without_scheme.len());
+    let authority = &without_scheme[..authority_end];
+    if authority.is_empty() || authority.starts_with('[') || authority.matches(':').count() > 1 {
+        return Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::InvalidParameters,
+            message: "gateway egress URL host is invalid".into(),
+        });
+    }
+
+    let (host, port) = match authority.split_once(':') {
+        Some((host, port)) => {
+            let port = port.parse::<u16>().map_err(|err| ToolExecutionError {
+                kind: ToolExecutionErrorKind::InvalidParameters,
+                message: format!("gateway egress URL port is invalid: {err}"),
+            })?;
+            (host, Some(port))
+        }
+        None => (authority, None),
+    };
+    let host = normalize_egress_host(host)?;
+    if has_parent_url_path(without_scheme, authority_end) {
+        return Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::InvalidParameters,
+            message: "gateway egress URL path must not contain '..'".into(),
+        });
+    }
+
+    Ok(GatewayEgressDestination {
+        method,
+        url: trimmed.into(),
+        host,
+        port,
+    })
+}
+
+fn normalize_egress_host(host: &str) -> std::result::Result<String, ToolExecutionError> {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty()
+        || host.contains('/')
+        || host.contains(':')
+        || host.contains('*')
+        || host.split('.').any(|label| label.is_empty())
+        || !host
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-'))
+    {
+        return Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::InvalidParameters,
+            message: "gateway egress URL host is invalid".into(),
+        });
+    }
+    Ok(host)
+}
+
+fn has_parent_url_path(without_scheme: &str, authority_end: usize) -> bool {
+    let path_start = without_scheme[authority_end..]
+        .find('/')
+        .map(|offset| authority_end + offset);
+    let Some(path_start) = path_start else {
+        return false;
+    };
+    let path_end = without_scheme[path_start..]
+        .find('?')
+        .map(|offset| path_start + offset)
+        .unwrap_or(without_scheme.len());
+    without_scheme[path_start..path_end]
+        .split('/')
+        .any(|segment| segment == ".." || segment.eq_ignore_ascii_case("%2e%2e"))
+}
+
+fn secret_like_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    [
+        "token=",
+        "password=",
+        "secret=",
+        "api_key=",
+        "authorization=",
+        "bearer%20",
+        "bearer+",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
+fn gateway_egress_ureq_error(err: ureq::Error) -> ToolExecutionError {
+    match err {
+        ureq::Error::Status(status, response) => {
+            let message = response
+                .into_string()
+                .unwrap_or_else(|_| "unable to read egress error response".into());
+            ToolExecutionError {
+                kind: ToolExecutionErrorKind::AdapterFailed,
+                message: format!(
+                    "gateway egress returned HTTP {status}: {}",
+                    redact_secret_like_text(&message)
+                ),
+            }
+        }
+        ureq::Error::Transport(transport) => ToolExecutionError {
+            kind: ToolExecutionErrorKind::AdapterFailed,
+            message: format!("gateway egress transport failed: {transport}"),
+        },
     }
 }
 
@@ -2448,6 +2822,24 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Debug, Default)]
+    struct RecordingEgressClient {
+        calls: Arc<Mutex<Vec<GatewayEgressRequest>>>,
+    }
+
+    impl GatewayEgressClient for RecordingEgressClient {
+        fn fetch(
+            &self,
+            request: &GatewayEgressRequest,
+        ) -> std::result::Result<GatewayEgressResponse, ToolExecutionError> {
+            self.calls.lock().unwrap().push(request.clone());
+            Ok(GatewayEgressResponse {
+                status: 200,
+                body: "ok token=secret-value".into(),
+            })
+        }
+    }
+
     #[derive(Debug)]
     struct StaticToolAdapter {
         outcome: Mutex<std::result::Result<ToolResult, ToolExecutionError>>,
@@ -2727,6 +3119,124 @@ mod tests {
             Some(ToolResult { summary, .. }) if summary == "http execution complete"
         ));
         assert_eq!(tool_adapter.call_count(), 1);
+    }
+
+    #[test]
+    fn gateway_egress_adapter_enforces_network_policy_and_redacts_response() {
+        let mut task = task_with_budget("gateway_calls", 2);
+        task.permissions.network.allow_domains = vec!["api.github.com".into()];
+        task.permissions.tools.allow = vec!["egress.fetch".into()];
+        let policy = BuiltInPolicyEngine;
+        let audit = RecordingAudit::default();
+        let registry =
+            InMemoryToolRegistry::new([RegisteredTool::new("http", "egress", "fetch").unwrap()]);
+        let client = RecordingEgressClient::default();
+        let calls = client.calls.clone();
+        let adapter = GatewayEgressAdapter::new(client);
+        let mediator = GatewayMediator::new(&policy, &audit)
+            .with_tool_registry(&registry)
+            .with_supported_protocols(["http"]);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter);
+
+        let execution = executor
+            .execute_tool_action(
+                &task,
+                ToolAction {
+                    protocol: "http".into(),
+                    tool: "egress".into(),
+                    operation: "fetch".into(),
+                    parameters: BTreeMap::from([(
+                        "url".into(),
+                        RedactedValue::Plain(
+                            "https://api.github.com/repos/taskfence/example".into(),
+                        ),
+                    )]),
+                },
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(execution.error.is_none());
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        let result = execution.result.unwrap();
+        assert!(matches!(
+            result.values.get("body"),
+            Some(RedactedValue::Plain(body)) if body.contains("[redacted]")
+        ));
+        assert!(audit.events.lock().unwrap().iter().any(|event| {
+            matches!(
+                event,
+                AuditEvent::PolicyDecision {
+                    action: Action::Network { host, .. },
+                    decision: ActionDecision::Allow { .. },
+                    ..
+                } if host == "api.github.com"
+            )
+        }));
+    }
+
+    #[test]
+    fn gateway_egress_denies_non_allowlisted_domain_before_client_call() {
+        let mut task = task_with_budget("gateway_calls", 2);
+        task.permissions.network.allow_domains = vec!["api.github.com".into()];
+        task.permissions.tools.allow = vec!["egress.fetch".into()];
+        let policy = BuiltInPolicyEngine;
+        let audit = RecordingAudit::default();
+        let registry =
+            InMemoryToolRegistry::new([RegisteredTool::new("http", "egress", "fetch").unwrap()]);
+        let client = RecordingEgressClient::default();
+        let calls = client.calls.clone();
+        let adapter = GatewayEgressAdapter::new(client);
+        let mediator = GatewayMediator::new(&policy, &audit)
+            .with_tool_registry(&registry)
+            .with_supported_protocols(["http"]);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter);
+
+        let execution = executor
+            .execute_tool_action(
+                &task,
+                ToolAction {
+                    protocol: "http".into(),
+                    tool: "egress".into(),
+                    operation: "fetch".into(),
+                    parameters: BTreeMap::from([(
+                        "url".into(),
+                        RedactedValue::Plain("https://example.com/".into()),
+                    )]),
+                },
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            execution.error,
+            Some(ToolExecutionError {
+                kind: ToolExecutionErrorKind::PolicyDenied,
+                ..
+            })
+        ));
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn gateway_egress_rejects_unsafe_urls() {
+        for url in [
+            "http://api.github.com/",
+            "https://token@api.github.com/",
+            "https://api.github.com/../secret",
+            "https://api.github.com/repos?token=secret",
+        ] {
+            let action = ToolAction {
+                protocol: "http".into(),
+                tool: "egress".into(),
+                operation: "fetch".into(),
+                parameters: BTreeMap::from([("url".into(), RedactedValue::Plain(url.into()))]),
+            };
+
+            let err = gateway_egress_destination(&action).unwrap_err();
+
+            assert_eq!(err.kind, ToolExecutionErrorKind::InvalidParameters);
+        }
     }
 
     #[test]

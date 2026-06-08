@@ -6,8 +6,8 @@ use taskfence_core::{
     ApprovalDecision, ApprovalEngine, ApprovalId, ApprovalRecord, ArtifactRefs, ArtifactStore,
     AuditConfig, AuditEvent, AuditLogger, CommandAction, EnvPermissions, ExitStatus, LimitConfig,
     LogStream, MountPlan, NetworkPermissions, PathPermissions, PermissionConfig, PolicyEngine,
-    PreparedRun, ReportGenerator, ResolvedTask, Result, RunOutput, RunningTask, SandboxConfig,
-    SandboxKind, SecretConfig, StateStore, TaskId, TaskStatus, WorkspaceBaseline,
+    PreparedGateway, PreparedRun, ReportGenerator, ResolvedTask, Result, RunOutput, RunningTask,
+    SandboxConfig, SandboxKind, SecretConfig, StateStore, TaskId, TaskStatus, WorkspaceBaseline,
 };
 use taskfence_runner::{RunnerCapabilityReport, RunnerKind};
 use time::OffsetDateTime;
@@ -212,6 +212,7 @@ impl taskfence_core::Runner for StaticRunner {
             mounts: Vec::<MountPlan>::new(),
             env: BTreeMap::new(),
             network: task.permissions.network.clone(),
+            gateway: PreparedGateway::default(),
             limits: task.sandbox.limits.clone(),
         })
     }

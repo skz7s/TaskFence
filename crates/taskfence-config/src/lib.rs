@@ -5,10 +5,10 @@ use std::io;
 use taskfence_core::{
     AgentConfig, AgentKind, ApprovalConfig, AuditConfig, BudgetLimit, BudgetPermissions,
     CaptureConfig, CommandPermissions, EnvPermissions, GatewayConfig, GatewayConnectorConfig,
-    GatewaySecretReferenceConfig, GatewayToolConfig, LimitConfig, NetworkDefault,
-    NetworkPermissions, PathPermissions, PermissionConfig, ReportConfig, ReportFormat,
-    ResolvedTask, SandboxConfig, SandboxKind, SecretConfig, SecretGrant, TaskFenceError, TaskId,
-    ToolPermissions,
+    GatewayEgressConfig, GatewayMode, GatewaySecretReferenceConfig, GatewayToolConfig, LimitConfig,
+    NetworkDefault, NetworkPermissions, PathPermissions, PermissionConfig, ReportConfig,
+    ReportFormat, ResolvedTask, SandboxConfig, SandboxKind, SecretConfig, SecretGrant,
+    TaskFenceError, TaskId, ToolPermissions,
 };
 
 pub fn load_task_file(path: impl AsRef<Utf8Path>) -> taskfence_core::Result<ResolvedTask> {
@@ -330,6 +330,10 @@ impl RawApproval {
 #[serde(deny_unknown_fields)]
 struct RawGateway {
     #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    egress: RawGatewayEgress,
+    #[serde(default)]
     tools: Vec<RawGatewayTool>,
 }
 
@@ -339,13 +343,45 @@ impl RawGateway {
         base_dir: &Utf8Path,
         workspace: &Utf8Path,
     ) -> taskfence_core::Result<GatewayConfig> {
+        let mode = match self.mode.as_deref() {
+            Some("spool_only") | None => GatewayMode::SpoolOnly,
+            Some("local_listener") => GatewayMode::LocalListener,
+            Some(other) => {
+                return Err(TaskFenceError::Config(format!(
+                    "gateway.mode must be spool_only or local_listener, got {other}"
+                )));
+            }
+        };
+        let egress = self.egress.resolve();
+        if egress.allow_domains && mode != GatewayMode::LocalListener {
+            return Err(TaskFenceError::Config(
+                "gateway.egress.allow_domains requires gateway.mode: local_listener".into(),
+            ));
+        }
         Ok(GatewayConfig {
+            mode,
+            egress,
             tools: self
                 .tools
                 .into_iter()
                 .map(|tool| tool.resolve(base_dir, workspace))
                 .collect::<taskfence_core::Result<Vec<_>>>()?,
         })
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawGatewayEgress {
+    #[serde(default)]
+    allow_domains: bool,
+}
+
+impl RawGatewayEgress {
+    fn resolve(self) -> GatewayEgressConfig {
+        GatewayEgressConfig {
+            allow_domains: self.allow_domains,
+        }
     }
 }
 
@@ -1135,6 +1171,80 @@ gateway:
                 repository,
             } if api_base == "https://api.github.example" && repository == "owner/repo"
         ));
+    }
+
+    #[test]
+    fn parses_local_listener_gateway_egress_contract() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("repo")).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        let yaml = r#"
+goal: Test gateway egress
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+permissions:
+  network:
+    default: deny
+    allow_domains:
+      - API.GitHub.COM.
+  tools:
+    allow:
+      - egress.fetch
+  budget:
+    allow:
+      - kind: gateway_calls
+        max_amount: 1
+gateway:
+  mode: local_listener
+  egress:
+    allow_domains: true
+  tools:
+    - protocol: http
+      tool: egress
+      operation: fetch
+      connector:
+        type: unsupported
+        kind: egress
+"#;
+
+        let task = parse_task_file(&task_file, yaml).unwrap();
+
+        assert_eq!(task.gateway.mode, GatewayMode::LocalListener);
+        assert!(task.gateway.egress.allow_domains);
+        assert_eq!(
+            task.permissions.network.allow_domains,
+            vec!["api.github.com"]
+        );
+        assert_eq!(task.gateway.tools[0].protocol, "http");
+        assert_eq!(task.gateway.tools[0].tool, "egress");
+        assert_eq!(task.gateway.tools[0].operation, "fetch");
+    }
+
+    #[test]
+    fn rejects_gateway_egress_without_local_listener_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("repo")).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        let yaml = r#"
+goal: Test invalid gateway egress
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+gateway:
+  egress:
+    allow_domains: true
+"#;
+
+        let err = parse_task_file(&task_file, yaml).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("gateway.egress.allow_domains requires gateway.mode"));
     }
 
     #[test]
