@@ -125,7 +125,7 @@ Verification:
 
 ## Overall Status
 
-Status: in_progress
+Status: done
 
 This plan is active. Phases 1, 2, 3, and 4 are complete. The next executable
 phase is Phase 5, live remote runner backends.
@@ -499,7 +499,7 @@ Completion evidence:
 
 ### Phase 7: Enterprise Connectors, Audit Export, And Compliance Reports
 
-Status: pending
+Status: in_progress
 
 Scope:
 
@@ -524,7 +524,32 @@ cargo test -p taskfence-config -p taskfence-gateway -p taskfence-policy -p taskf
 
 Completion evidence:
 
-- Pending.
+- Started on 2026-06-08 after Phase 6 was marked done and committed as
+  `d025157` (`team: add persistent team server state and workers`).
+- Added opt-in live adapters for GitLab, Jira, Feishu, WeCom, DingTalk, Gitee,
+  CODING, Postgres database, internal HTTP, and SIEM export. Each adapter uses
+  connector-specific bounded operations, approval-sensitive policy templates,
+  gateway-side credentials, parameter validation, redacted results, and
+  structured unsupported-operation evidence rather than broad proxy behavior.
+- Updated SIEM export connector config to require an HTTPS `api_base` plus
+  sink reference before live execution, avoiding synthetic non-HTTP sink URLs.
+- Added `taskfence compliance` and `ComplianceReportGenerator` so
+  compliance-oriented Markdown reports are rendered from structured
+  `AuditEvent` evidence without scraping terminal logs or rendered task
+  reports.
+- Promoted team audit export from planned records to completed/failed export
+  records with contained JSON payload artifacts, SHA-256 metadata, RBAC
+  enforcement, and structured-event source data. This remains a local
+  state-layer/CLI surface, not a deployed background export service.
+- Updated README, architecture, roadmap, runtime architecture, development
+  design, ops facts, `examples/enterprise-connectors-task.yaml`, and
+  `docs/decisions/2026-06-08-live-enterprise-connectors-audit-export.md`.
+- Verification passed: `cargo fmt --all --check`.
+- Verification passed: `cargo test -p taskfence-config -p taskfence-gateway -p taskfence-policy -p taskfence-audit -p taskfence-report -p taskfence-state`
+  (24 config tests, 57 gateway tests, 13 policy tests, 4 audit tests, 5 report
+  tests, 54 state tests, and doc-tests).
+- Example validation passed:
+  `cargo run -p taskfence-cli -- validate examples/enterprise-connectors-task.yaml`.
 
 ### Phase 8: Specialized Agent Adapters And Packaged Operator Experience
 

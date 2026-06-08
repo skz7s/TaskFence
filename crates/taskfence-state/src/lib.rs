@@ -481,6 +481,16 @@ pub struct TeamAuditExportRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamAuditExportPayload {
+    pub organization: String,
+    pub task_id: TaskId,
+    pub sink: AuditExportSinkConfig,
+    pub event_count: usize,
+    pub events: Vec<AuditEvent>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TeamAuditExportStatus {
     Planned,
     Completed { artifact: Utf8PathBuf },
@@ -530,6 +540,20 @@ pub trait TeamStateBackend {
         organization: &str,
         sink: AuditExportSinkConfig,
         requested_by: &str,
+    ) -> taskfence_core::Result<TeamAuditExportRecord>;
+    fn complete_audit_export(
+        &mut self,
+        organization: &str,
+        sink: AuditExportSinkConfig,
+        requested_by: &str,
+        artifact: Utf8PathBuf,
+    ) -> taskfence_core::Result<TeamAuditExportRecord>;
+    fn fail_audit_export(
+        &mut self,
+        organization: &str,
+        sink: AuditExportSinkConfig,
+        requested_by: &str,
+        reason: &str,
     ) -> taskfence_core::Result<TeamAuditExportRecord>;
 }
 
@@ -926,9 +950,77 @@ impl TeamStateBackend for PostgresTeamStateStore {
             .map_err(postgres_state_error)?;
         Ok(record)
     }
+
+    fn complete_audit_export(
+        &mut self,
+        organization: &str,
+        sink: AuditExportSinkConfig,
+        requested_by: &str,
+        artifact: Utf8PathBuf,
+    ) -> taskfence_core::Result<TeamAuditExportRecord> {
+        let organization = normalize_non_empty("organization", organization.to_owned())?;
+        let requested_by = normalize_non_empty("requested_by", requested_by.to_owned())?;
+        validate_completed_export_artifact(&artifact)?;
+        let record = TeamAuditExportRecord {
+            organization,
+            sink,
+            requested_by,
+            status: TeamAuditExportStatus::Completed { artifact },
+        };
+        self.insert_postgres_audit_export(&record)?;
+        Ok(record)
+    }
+
+    fn fail_audit_export(
+        &mut self,
+        organization: &str,
+        sink: AuditExportSinkConfig,
+        requested_by: &str,
+        reason: &str,
+    ) -> taskfence_core::Result<TeamAuditExportRecord> {
+        let organization = normalize_non_empty("organization", organization.to_owned())?;
+        let requested_by = normalize_non_empty("requested_by", requested_by.to_owned())?;
+        let reason = sanitize_export_failure_reason(reason)?;
+        let record = TeamAuditExportRecord {
+            organization,
+            sink,
+            requested_by,
+            status: TeamAuditExportStatus::Failed { reason },
+        };
+        self.insert_postgres_audit_export(&record)?;
+        Ok(record)
+    }
 }
 
 impl PostgresTeamStateStore {
+    fn insert_postgres_audit_export(
+        &mut self,
+        record: &TeamAuditExportRecord,
+    ) -> taskfence_core::Result<()> {
+        let schema = sql_ident(&self.schema)?;
+        let sink_json = serde_json::to_string(&record.sink).map_err(|err| {
+            TaskFenceError::State(format!("failed to serialize audit export sink: {err}"))
+        })?;
+        let status_json = serde_json::to_string(&record.status).map_err(|err| {
+            TaskFenceError::State(format!("failed to serialize audit export status: {err}"))
+        })?;
+        self.client
+            .execute(
+                &format!(
+                    "INSERT INTO {schema}.audit_exports (organization, sink_json, requested_by, status_json)
+                     VALUES ($1, $2, $3, $4)"
+                ),
+                &[
+                    &record.organization,
+                    &sink_json,
+                    &record.requested_by,
+                    &status_json,
+                ],
+            )
+            .map_err(postgres_state_error)?;
+        Ok(())
+    }
+
     fn finish_postgres_lease(
         &mut self,
         organization: &str,
@@ -1205,6 +1297,66 @@ impl TeamStateBackend for LocalTeamStateStore {
         self.persist()?;
         Ok(record)
     }
+
+    fn complete_audit_export(
+        &mut self,
+        organization: &str,
+        sink: AuditExportSinkConfig,
+        requested_by: &str,
+        artifact: Utf8PathBuf,
+    ) -> taskfence_core::Result<TeamAuditExportRecord> {
+        let organization = normalize_non_empty("organization", organization.to_owned())?;
+        let requested_by = normalize_non_empty("requested_by", requested_by.to_owned())?;
+        let request = TeamApiRequest {
+            organization: organization.clone(),
+            actor: requested_by.clone(),
+            method: TeamApiMethod::ExportAudit,
+            resource: TeamApiResource::AuditExport,
+        };
+        if let TeamAccessDecision::Deny { reason } = evaluate_team_access(&self.policy, &request) {
+            return Err(TaskFenceError::State(reason));
+        }
+        validate_completed_export_artifact(&artifact)?;
+        let record = TeamAuditExportRecord {
+            organization,
+            sink,
+            requested_by,
+            status: TeamAuditExportStatus::Completed { artifact },
+        };
+        self.state.audit_exports.push(record.clone());
+        self.persist()?;
+        Ok(record)
+    }
+
+    fn fail_audit_export(
+        &mut self,
+        organization: &str,
+        sink: AuditExportSinkConfig,
+        requested_by: &str,
+        reason: &str,
+    ) -> taskfence_core::Result<TeamAuditExportRecord> {
+        let organization = normalize_non_empty("organization", organization.to_owned())?;
+        let requested_by = normalize_non_empty("requested_by", requested_by.to_owned())?;
+        let request = TeamApiRequest {
+            organization: organization.clone(),
+            actor: requested_by.clone(),
+            method: TeamApiMethod::ExportAudit,
+            resource: TeamApiResource::AuditExport,
+        };
+        if let TeamAccessDecision::Deny { reason } = evaluate_team_access(&self.policy, &request) {
+            return Err(TaskFenceError::State(reason));
+        }
+        let reason = sanitize_export_failure_reason(reason)?;
+        let record = TeamAuditExportRecord {
+            organization,
+            sink,
+            requested_by,
+            status: TeamAuditExportStatus::Failed { reason },
+        };
+        self.state.audit_exports.push(record.clone());
+        self.persist()?;
+        Ok(record)
+    }
 }
 
 impl LocalTeamStateStore {
@@ -1376,6 +1528,89 @@ impl<B: TeamStateBackend> TeamStateService<B> {
         )?;
         self.backend
             .plan_audit_export(&self.policy.organization, sink, actor)
+    }
+
+    pub fn export_task_audit(
+        &mut self,
+        actor: &str,
+        task_id: &TaskId,
+        sink: AuditExportSinkConfig,
+    ) -> taskfence_core::Result<TeamAuditExportRecord> {
+        self.ensure_access(
+            actor,
+            TeamApiMethod::ExportAudit,
+            TeamApiResource::AuditExport,
+        )?;
+        let Some(task) = self.backend.get_task(&self.policy.organization, task_id)? else {
+            let failed = self.backend.fail_audit_export(
+                &self.policy.organization,
+                sink,
+                actor,
+                &format!("task {} is not registered in team state", task_id.0),
+            )?;
+            return Ok(failed);
+        };
+        let event_path = task.evidence_dir.join(EVENTS_FILE);
+        let events = match File::open(event_path.as_std_path())
+            .map_err(|err| TaskFenceError::State(format!("{err}")))
+            .and_then(|file| read_events_file(task_id, &event_path, file))
+        {
+            Ok(events) => events,
+            Err(err) => {
+                return self.backend.fail_audit_export(
+                    &self.policy.organization,
+                    sink,
+                    actor,
+                    &err.to_string(),
+                );
+            }
+        };
+        let payload = TeamAuditExportPayload {
+            organization: self.policy.organization.clone(),
+            task_id: task_id.clone(),
+            sink: sink.clone(),
+            event_count: events.len(),
+            events,
+        };
+        let bytes = serde_json::to_vec_pretty(&payload).map_err(|err| {
+            TaskFenceError::State(format!("failed to serialize audit export payload: {err}"))
+        })?;
+        let artifact_path = self.audit_export_artifact_path(task_id, &sink)?;
+        let artifact = self.write_audit_export_artifact(task_id, &artifact_path, &bytes)?;
+        self.backend
+            .complete_audit_export(&self.policy.organization, sink, actor, artifact.path)
+    }
+
+    fn audit_export_artifact_path(
+        &self,
+        task_id: &TaskId,
+        sink: &AuditExportSinkConfig,
+    ) -> taskfence_core::Result<Utf8PathBuf> {
+        validate_task_id_component(&task_id.0)?;
+        let sink_ref = export_artifact_component(&sink.destination_ref)?;
+        let Some(root) = self.policy.allowed_artifact_roots.first() else {
+            return Err(TaskFenceError::State(
+                "organization has no allowed artifact roots".into(),
+            ));
+        };
+        Ok(root
+            .join(&task_id.0)
+            .join("audit-export")
+            .join(format!("{sink_ref}.json")))
+    }
+
+    fn write_audit_export_artifact(
+        &mut self,
+        task_id: &TaskId,
+        path: &Utf8Path,
+        bytes: &[u8],
+    ) -> taskfence_core::Result<TeamArtifactRecord> {
+        match evaluate_artifact_storage_path(&self.policy, path) {
+            TeamArtifactDecision::Allow { .. } => {}
+            TeamArtifactDecision::Deny { reason } => return Err(TaskFenceError::State(reason)),
+        }
+        self.backend
+            .write_artifact(&self.policy.organization, task_id, path, bytes)
     }
 
     fn ensure_access(
@@ -2517,6 +2752,61 @@ fn validate_non_secret_ref(field: &str, value: &str) -> taskfence_core::Result<(
     Ok(())
 }
 
+fn validate_completed_export_artifact(path: &Utf8Path) -> taskfence_core::Result<()> {
+    if !path.is_absolute() || path_contains_parent_dir(path) {
+        return Err(TaskFenceError::State(format!(
+            "completed audit export artifact must be absolute without '..': {path}"
+        )));
+    }
+    Ok(())
+}
+
+fn export_artifact_component(value: &str) -> taskfence_core::Result<String> {
+    let mut output = String::with_capacity(value.len());
+    for ch in value.trim().chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+            output.push(ch);
+        } else {
+            output.push('_');
+        }
+    }
+    if output.is_empty() || output.contains("..") {
+        return Err(TaskFenceError::State(
+            "audit export destination_ref must produce a safe artifact name".into(),
+        ));
+    }
+    Ok(output)
+}
+
+fn sanitize_export_failure_reason(reason: &str) -> taskfence_core::Result<String> {
+    let cleaned = reason
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(512)
+        .collect::<String>();
+    let lower = cleaned.to_ascii_lowercase();
+    if cleaned.is_empty()
+        || cleaned.contains('@')
+        || lower.contains("token=")
+        || lower.contains("password=")
+        || lower.contains("secret=")
+        || lower.contains("api_key=")
+        || lower.contains("authorization=")
+        || lower.contains("bearer ")
+        || lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("postgres://")
+        || lower.starts_with("postgresql://")
+    {
+        return Err(TaskFenceError::State(
+            "audit export failure reason must not contain secret-like material".into(),
+        ));
+    }
+    Ok(cleaned)
+}
+
 fn read_task_summary(task_id: TaskId, task_dir: Utf8PathBuf) -> TaskSummary {
     let mut warnings = Vec::new();
     let goal = read_task_goal(&task_id, &task_dir, &mut warnings);
@@ -2884,7 +3174,8 @@ mod tests {
     use std::fs;
     use taskfence_core::{
         Action, ActionDecision, AgentConfig, AgentKind, ApprovalConfig, ApprovalDecision,
-        AuditConfig, LimitConfig, PermissionConfig, RiskLevel, SandboxConfig, SandboxKind,
+        AuditConfig, CommandAction, LimitConfig, PermissionConfig, RiskLevel, SandboxConfig,
+        SandboxKind,
     };
     use time::macros::datetime;
 
@@ -3424,6 +3715,100 @@ mod tests {
                 .requested_by,
             "auditor"
         );
+    }
+
+    #[test]
+    fn team_state_service_exports_task_audit_as_completed_artifact() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().join("artifacts")).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        let evidence_dir =
+            Utf8PathBuf::from_path_buf(temp.path().join("evidence/team-task")).unwrap();
+        fs::create_dir_all(&evidence_dir).unwrap();
+        let task_id = TaskId("team-task".into());
+        let event = AuditEvent::PolicyDecision {
+            task_id: task_id.clone(),
+            at: datetime!(2024-01-01 00:00 UTC),
+            action: Action::Command(CommandAction::parse("cargo test")),
+            decision: ActionDecision::Allow {
+                rule_id: Some("allow-test".into()),
+                reason: "command matched allow rule".into(),
+            },
+        };
+        fs::write(
+            evidence_dir.join("events.jsonl"),
+            format!("{}\n", serde_json::to_string(&event).unwrap()),
+        )
+        .unwrap();
+        let state_file = Utf8PathBuf::from_path_buf(temp.path().join("team/state.json")).unwrap();
+        let mut policy = team_policy();
+        policy.allowed_artifact_roots = vec![root.clone()];
+        let backend = LocalTeamStateStore::open(policy.clone(), state_file).unwrap();
+        let mut service = TeamStateService::new(policy, backend);
+        service
+            .put_task(
+                "operator",
+                TeamTaskRecord {
+                    organization: "acme".into(),
+                    task_id: task_id.clone(),
+                    status: Some(TaskStatus::Succeeded),
+                    goal: Some("export evidence".into()),
+                    evidence_dir,
+                },
+            )
+            .unwrap();
+
+        let export = service
+            .export_task_audit(
+                "auditor",
+                &task_id,
+                AuditExportSinkConfig::new(
+                    AuditExportSinkKind::Siem,
+                    "soc-pipeline",
+                    "TASKFENCE_AUDIT_EXPORT_TOKEN",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let TeamAuditExportStatus::Completed { artifact } = export.status else {
+            panic!("expected completed export: {export:?}");
+        };
+        assert!(artifact.starts_with(root));
+        let payload = fs::read_to_string(artifact).unwrap();
+        assert!(payload.contains("\"event_count\": 1"));
+        assert!(payload.contains("\"soc-pipeline\""));
+    }
+
+    #[test]
+    fn team_state_service_records_failed_audit_export_for_missing_task() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().join("artifacts")).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        let state_file = Utf8PathBuf::from_path_buf(temp.path().join("team/state.json")).unwrap();
+        let mut policy = team_policy();
+        policy.allowed_artifact_roots = vec![root];
+        let backend = LocalTeamStateStore::open(policy.clone(), state_file).unwrap();
+        let mut service = TeamStateService::new(policy, backend);
+
+        let export = service
+            .export_task_audit(
+                "auditor",
+                &TaskId("missing-task".into()),
+                AuditExportSinkConfig::new(
+                    AuditExportSinkKind::Siem,
+                    "soc-pipeline",
+                    "TASKFENCE_AUDIT_EXPORT_TOKEN",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            export.status,
+            TeamAuditExportStatus::Failed { reason }
+                if reason.contains("not registered in team state")
+        ));
     }
 
     #[test]

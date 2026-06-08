@@ -464,7 +464,7 @@ Responsibilities:
   through the gateway executor when the normalized action is explicitly
   configured.
 - Execute configured deterministic local fixture adapters, the bounded
-  `github_rest` / `github_enterprise_rest` adapters, and contract-only
+  `github_rest` / `github_enterprise_rest` adapters, and prioritized live
   enterprise connector surfaces through typed request, result, failure,
   approval, redaction, audit, artifact, and report contracts.
 - Keep live GitHub/GitHub Enterprise REST credentials gateway-side via
@@ -472,9 +472,9 @@ Responsibilities:
   out-of-band to the connector client after policy, registry, and approval
   checks.
 - Keep GitLab, Jira, Feishu, WeCom, DingTalk, Gitee, CODING, database,
-  internal HTTP, and SIEM export connectors opt-in and fail-closed until each
-  has a live adapter with connector-specific mocked tests and explicit
-  credential handling.
+  internal HTTP, and SIEM export connectors opt-in, bounded to documented
+  operation sets, and fail-closed for unsupported operations with
+  connector-specific mocked tests and explicit credential handling.
 - Emit structured audit events.
 
 This crate can start with contracts and deterministic local fixtures, but the
@@ -484,8 +484,8 @@ implemented as a task-local file contract over configured gateway action
 execution. A foreground loopback `gateway listen` path and bounded
 `http egress.fetch` gateway-side HTTPS GET/HEAD action are implemented for
 task-scoped local mediation. Production MCP servers, arbitrary HTTP proxying,
-SDK/webhook connectors, branch/commit behavior outside the bounded GitHub REST
-family, and live enterprise connectors beyond the bounded GitHub REST family
+SDK/webhook connectors, branch/commit behavior outside the bounded implemented
+connectors, and Slack/business-tool connectors beyond the implemented families
 still need separate plans.
 
 ### `taskfence-report`
@@ -538,10 +538,11 @@ The team-state foundation lives here as state-layer service functions before a
 deployed service exists. It defines typed team API resources, RBAC and
 organization-policy decisions, approval-owner enforcement, team artifact-root
 containment, durable worker lease storage, local JSON and Postgres-backed state
-backends, planned audit-export records, and local-to-team migration/import from
-structured `.taskfence` evidence. Migration plans must not treat rendered
-Markdown reports as source-of-truth state. This is not a live worker daemon,
-SSO flow, object-storage adapter, or audit-export sink.
+backends, completed/failed audit-export records with contained payload
+artifacts, and local-to-team migration/import from structured `.taskfence`
+evidence. Migration plans must not treat rendered Markdown reports as
+source-of-truth state. This is not a live worker daemon, SSO flow,
+object-storage adapter, or background audit-export service.
 
 Responsibilities:
 
@@ -1027,7 +1028,7 @@ The first usable version is complete when:
   paths are limited to `taskfence gateway call` and one-request
   `taskfence gateway spool process` handling against configured local fixture
   adapters, the bounded `github_rest` / `github_enterprise_rest` adapter, or
-  contract-only enterprise connectors that fail closed for live execution, not
+  prioritized live enterprise connectors with bounded operation sets, not
   arbitrary external tool execution.
 - `taskfence state index` can persist a workspace-local JSON index from
   structured evidence, and `taskfence review --serve` exposes loopback-only
@@ -1047,14 +1048,16 @@ The first usable version is complete when:
   approval-denied pre-run decisions also write local evidence and a report when
   artifact creation succeeds.
 - A Markdown report is generated from structured evidence.
+- A compliance-oriented Markdown report can be generated from structured
+  events without scraping terminal logs.
 - Tests cover the main success path and the important failure branches.
 
 Current unsupported surfaces must remain explicit in docs and errors: Docker
 domain allowlists without the configured local gateway egress boundary,
 production MCP servers, arbitrary HTTP proxying, SDK/webhook connectors,
-branch/commit behavior outside the bounded GitHub REST family, arbitrary
+branch/commit behavior outside the bounded implemented connector operations, arbitrary
 in-container command observation, long-lived persistent Web/API daemon
 behavior, SQLite-backed state migration, replay for unsupported live connector
 effects, deployed team-server daemon, live worker service, SSO,
-object-storage adapter, live audit export sink, Slack, and live enterprise
-behavior beyond the bounded GitHub REST family.
+object-storage adapter, background audit-export service, Slack, and business
+tool behavior beyond the implemented connector families.

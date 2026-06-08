@@ -1325,6 +1325,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "camino",
+ "postgres",
  "serde",
  "serde_json",
  "taskfence-core",

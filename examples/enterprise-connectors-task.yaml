@@ -286,6 +286,7 @@ gateway:
       operation: "export_events"
       connector:
         type: "siem_export"
+        api_base: "https://siem.example/api"
         sink: "soc-pipeline"
       secret_refs:
         - name: "siem_export_token"

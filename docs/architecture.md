@@ -47,8 +47,9 @@ configured task-file tools through `taskfence gateway call`: deterministic
 local fixtures, bounded GitHub/GitHub Enterprise REST connectors for
 `github.read_issue`, `github.create_branch`, `github.commit_file`,
 `github.create_pr`, `github.update_pr`, `github.comment_issue`, and
-`github.comment_report`, and contract-only enterprise connector surfaces that
-fail closed for live execution. A bounded agent-facing request/response spool prototype is processed
+`github.comment_report`, plus prioritized live connectors for GitLab, Jira,
+Feishu, WeCom, DingTalk, Gitee, CODING, Postgres database, internal HTTP, and
+SIEM export. A bounded agent-facing request/response spool prototype is processed
 by `taskfence gateway spool process`. The spool path is task-local, mounted
 separately into Docker only for tasks with configured gateway tools, and
 produces typed responses plus structured evidence. `taskfence gateway listen`
@@ -58,17 +59,16 @@ requests only after registry, tool, budget, and network-destination policy
 checks. The team-state foundation now exposes state-layer service functions and
 local CLI commands for typed API resources, RBAC decisions, approval-owner
 checks, durable worker leases, local JSON state, Postgres-backed state storage,
-artifact-root containment with SHA-256 metadata, validated audit-export plans,
-and local-to-team migration from structured `.taskfence` files. It does not
-start a deployed team HTTP daemon, SSO flow, object-store adapter, or live
-audit-export sink. The local state/review path now has a durable JSON index at
+artifact-root containment with SHA-256 metadata, team-owned audit export
+artifacts, and local-to-team migration from structured `.taskfence` files. It
+does not start a deployed team HTTP daemon, SSO flow, object-store adapter, or
+background export service. The local state/review path now has a durable JSON index at
 `.taskfence/state/local-index.json`, a `taskfence state index` command, and
 loopback-only review API routes while the foreground review server is running.
 Production MCP servers, arbitrary HTTP proxying, SDK/webhook connectors,
-branch/commit behavior outside the bounded GitHub REST family, long-lived
-persistent API daemon, replay for unsupported live connector effects, deployed
-team-server daemon, Slack, SSO, object storage, live audit export, and live
-enterprise connector behavior beyond the bounded GitHub REST family are not
+branch/commit behavior outside the bounded implemented connector operations,
+long-lived persistent API daemon, replay for unsupported live connector
+effects, deployed team-server daemon, Slack, SSO, and object storage are not
 implemented yet.
 The local review foundation is CLI-owned: it can render file-backed evidence as
 a static or foreground-served loopback HTML page, refresh a structured local
@@ -282,9 +282,10 @@ contracts support only `github.read_issue`, `github.create_branch`,
 `github.comment_issue`, and `github.comment_report`. Write operations require
 explicit tool policy and bounded parameters before a gateway-side token can be
 used. GitLab, Jira, Feishu, WeCom, DingTalk, Gitee, CODING, database, internal
-HTTP, and SIEM export are opt-in connector contracts that validate
-configuration, policy templates, approval-sensitive operation sets, redacted
-secret references, and structured unsupported live execution. The agent-facing spool prototype creates
+HTTP, and SIEM export are opt-in live connector adapters with bounded operation
+sets, explicit approval-sensitive operations, gateway-side credential lookup,
+parameter validation, response redaction, and structured unsupported-operation
+evidence. The agent-facing spool prototype creates
 `gateway-spool/requests`, `gateway-spool/responses`, and a generated
 `taskfence-gateway-submit` wrapper under the task evidence directory; Docker
 mounts only that dedicated spool path at `/taskfence/gateway-spool` when
@@ -299,9 +300,8 @@ fail before policy evaluation and record an audit error. The foreground
 bounded `http egress.fetch` action can make gateway-side HTTPS GET/HEAD
 requests for policy-allowlisted hosts. It does not implement production MCP
 servers, arbitrary HTTP proxying, SDK/webhook connectors, branch/commit
-behavior outside the bounded GitHub REST family, long-lived Web/API daemon
-behavior, replay for live connector effects, team-server, Slack, or live
-enterprise connector behavior beyond the bounded GitHub REST family yet.
+behavior outside the bounded implemented connectors, long-lived Web/API daemon
+behavior, replay for live connector effects, Slack, SSO, or object storage yet.
 
 Supported gateway surfaces can include:
 
@@ -442,8 +442,9 @@ worker id, completed, or failed; wrong-worker, duplicate, unleased, and
 already-terminal transitions are rejected by both the local JSON state backend
 and the Postgres backend. This is persistent team state, not a live worker
 daemon or remote-runner-backed team execution service. Audit export is an
-RBAC/API boundary with validated sink contracts and planned export records; a
-concrete live export sink is still not implemented.
+RBAC/API boundary with validated sink contracts, completed/failed export
+records, and contained payload artifacts from structured events; a background
+export service is still not implemented.
 
 ## Security Boundary
 

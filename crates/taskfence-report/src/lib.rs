@@ -41,6 +41,36 @@ impl ReportGenerator for MarkdownReportGenerator {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ComplianceReportGenerator;
+
+impl ComplianceReportGenerator {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn render_markdown(
+        &self,
+        task: &ResolvedTask,
+        artifacts: &ArtifactRefs,
+        events: &[AuditEvent],
+    ) -> String {
+        render_compliance_markdown(task, artifacts, events)
+    }
+
+    pub fn generate(
+        &self,
+        task: &ResolvedTask,
+        artifacts: &ArtifactRefs,
+        events: &[AuditEvent],
+        output: &Utf8Path,
+    ) -> Result<Utf8PathBuf> {
+        let report = self.render_markdown(task, artifacts, events);
+        atomic_write(output, report.as_bytes())?;
+        Ok(output.to_path_buf())
+    }
+}
+
 fn render_markdown(task: &ResolvedTask, artifacts: &ArtifactRefs, events: &[AuditEvent]) -> String {
     let data = ReportData::from_events(events);
     let mut md = String::new();
@@ -196,6 +226,117 @@ fn render_markdown(task: &ResolvedTask, artifacts: &ArtifactRefs, events: &[Audi
     md.push_str("No structured test results recorded.\n\n");
 
     md.push_str("## Artifacts\n\n");
+    let artifact_rows = artifact_rows(artifacts, &data.artifacts);
+    push_table_or_none(&mut md, &artifact_rows, &["Kind", "Path"]);
+
+    md.push_str("## Residual Risks\n\n");
+    let risks = residual_risks(events, artifacts, &data);
+    if risks.is_empty() {
+        md.push_str("No residual risks were identified from structured evidence.\n");
+    } else {
+        for risk in risks {
+            md.push_str(&format!("- {}\n", text(&risk)));
+        }
+    }
+
+    md
+}
+
+fn render_compliance_markdown(
+    task: &ResolvedTask,
+    artifacts: &ArtifactRefs,
+    events: &[AuditEvent],
+) -> String {
+    let data = ReportData::from_events(events);
+    let mut md = String::new();
+
+    md.push_str(&format!(
+        "# TaskFence Compliance Evidence: {}\n\n",
+        inline(&task.id.0)
+    ));
+    md.push_str("## Scope\n\n");
+    md.push_str(&format!("- Task ID: {}\n", inline(&task.id.0)));
+    md.push_str(&format!("- Goal: {}\n", text(&task.goal)));
+    md.push_str(&format!(
+        "- Workspace: {}\n",
+        inline_path(&task.workspace_host_path)
+    ));
+    md.push_str(&format!(
+        "- Event source: {}\n",
+        artifacts
+            .events
+            .as_deref()
+            .map(inline_path)
+            .unwrap_or_else(|| "Not recorded".into())
+    ));
+    md.push_str(&format!("- Structured events: {}\n\n", events.len()));
+
+    md.push_str("## Control Summary\n\n");
+    md.push_str(&format!("- Allowed policy decisions: {}\n", data.allowed));
+    md.push_str(&format!(
+        "- Approval-required policy decisions: {}\n",
+        data.approval_required
+    ));
+    md.push_str(&format!("- Denied policy decisions: {}\n", data.denied));
+    md.push_str(&format!("- Approval records: {}\n", data.approvals.len()));
+    md.push_str(&format!(
+        "- Tool execution records: {}\n",
+        data.tool_executions.len()
+    ));
+    md.push_str(&format!(
+        "- Budget records: {}\n\n",
+        data.budget_usage.len()
+    ));
+
+    md.push_str("## Policy Decisions\n\n");
+    push_table_or_none(&mut md, &data.commands, &["Command", "Decision", "Reason"]);
+    push_table_or_none(
+        &mut md,
+        &data.tool_calls,
+        &["Tool", "Operation", "Decision"],
+    );
+    push_table_or_none(&mut md, &data.network, &["Host", "Port", "Decision"]);
+
+    md.push_str("## Approval Evidence\n\n");
+    push_table_or_none(
+        &mut md,
+        &data.approvals,
+        &["Approval ID", "Actor", "Decision"],
+    );
+
+    md.push_str("## Gateway Evidence\n\n");
+    push_table_or_none(
+        &mut md,
+        &data.tool_executions,
+        &["Tool", "Adapter", "Outcome", "Summary"],
+    );
+
+    md.push_str("## Budget Evidence\n\n");
+    push_table_or_none(
+        &mut md,
+        &data.budget_usage,
+        &[
+            "Kind",
+            "Amount",
+            "Limit",
+            "Provider",
+            "Model",
+            "Operation",
+            "Decision",
+        ],
+    );
+
+    md.push_str("## Denied Actions\n\n");
+    if data.denied_actions.is_empty() {
+        md.push_str("None recorded.\n\n");
+    } else {
+        for denied in &data.denied_actions {
+            md.push_str(&format!("- {}\n", text(denied)));
+        }
+        md.push('\n');
+    }
+
+    md.push_str("## Evidence Artifacts\n\n");
     let artifact_rows = artifact_rows(artifacts, &data.artifacts);
     push_table_or_none(&mut md, &artifact_rows, &["Kind", "Path"]);
 
@@ -940,6 +1081,51 @@ mod tests {
         assert!(contents.contains("| approval-tool-1 | gateway | approved |"));
         assert!(!contents.contains("ghp_secret_should_not_render"));
         assert!(!contents.contains("sk-secret-should-not-render"));
+    }
+
+    #[test]
+    fn compliance_report_uses_structured_events_without_raw_parameters() {
+        let temp = tempfile::tempdir().unwrap();
+        let task_dir = Utf8PathBuf::from_path_buf(temp.path().join("task")).unwrap();
+        fs::create_dir_all(&task_dir).unwrap();
+        let task = sample_task();
+        let artifacts = ArtifactRefs {
+            task_dir: task_dir.clone(),
+            resolved_task: Some(task_dir.join("task.resolved.json")),
+            events: Some(task_dir.join("events.jsonl")),
+            stdout: None,
+            stderr: None,
+            diff: None,
+            report: None,
+            gateway_spool: None,
+        };
+        let action = Action::ToolCall(ToolAction {
+            protocol: "mcp".into(),
+            tool: "database".into(),
+            operation: "write".into(),
+            parameters: BTreeMap::from([(
+                "query".into(),
+                RedactedValue::Plain("select token=raw-secret".into()),
+            )]),
+        });
+        let events = vec![AuditEvent::PolicyDecision {
+            task_id: task.id.clone(),
+            at: datetime!(2024-01-01 00:01 UTC),
+            action,
+            decision: ActionDecision::RequireApproval {
+                approval_kind: "tool_call".into(),
+                rule_id: Some("database-write".into()),
+                reason: "database writes require review".into(),
+                risk: RiskLevel::High,
+            },
+        }];
+
+        let contents = ComplianceReportGenerator::new().render_markdown(&task, &artifacts, &events);
+
+        assert!(contents.contains("TaskFence Compliance Evidence"));
+        assert!(contents.contains("Approval-required policy decisions: 1"));
+        assert!(contents.contains("| mcp:database | write | approval required |"));
+        assert!(!contents.contains("raw-secret"));
     }
 
     #[test]

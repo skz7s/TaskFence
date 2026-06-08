@@ -17,15 +17,14 @@ records what happened, and creates evidence that can be reviewed later.
 > isolation and accepts the SSH runner's unsupported controls. Both paths write
 > structured audit events, local artifacts, and Markdown reports. It also
 > contains a CLI-owned
-> `taskfence gateway call` path for configured local fixture tools and a
-> bounded GitHub REST connector, plus a request/response gateway spool
-> prototype for sandboxed agents. GitHub Enterprise REST can reuse that
-> bounded GitHub adapter contract; GitLab, Jira, Feishu, WeCom, DingTalk,
-> Gitee, CODING, database, internal HTTP, and SIEM export are opt-in
-> contract-only connector surfaces that validate configuration, policy
-> templates, approval boundaries, redacted secret references, and unsupported
-> live execution. These paths prove policy, approval, registry, gateway-side
-> secret brokering, audit, and report behavior.
+> `taskfence gateway call` path for configured local fixture tools, bounded
+> GitHub/GitHub Enterprise REST operations, and prioritized live enterprise
+> connectors for GitLab, Jira, Feishu, WeCom, DingTalk, Gitee, CODING,
+> Postgres database, internal HTTP, and SIEM export, plus a request/response
+> gateway spool prototype for sandboxed agents. These paths prove policy,
+> approval, registry, gateway-side secret brokering, audit, redaction, and
+> unsupported-operation behavior without exposing raw credentials to the
+> sandbox.
 > The local review foundation persists a workspace-local structured index at
 > `.taskfence/state/local-index.json`, can render workspace evidence as a
 > static or foreground-served HTML page, exposes loopback-only JSON API routes
@@ -36,13 +35,13 @@ records what happened, and creates evidence that can be reviewed later.
 > functions and `taskfence team` local commands for organization-scoped task
 > records, RBAC decisions, approval-owner checks, durable worker leases,
 > local JSON state, a Postgres-backed state backend, artifact-root containment
-> with SHA-256 metadata, validated audit-export plans, and local-to-team
-> migration from structured evidence. MCP/HTTP listener or proxy servers,
-> SDK/webhook connectors, long-lived persistent API daemon, replay for
-> unsupported live connector effects, Kubernetes, microVM, or managed cloud
-> runner execution, deployed team server daemon, SSO, live audit export sink,
-> and live enterprise connector execution beyond the bounded GitHub REST family
-> remain future work.
+> with SHA-256 metadata, team-owned audit export artifacts, compliance reports
+> rendered from structured events, and local-to-team migration from structured
+> evidence. Production MCP servers, arbitrary HTTP proxying, SDK/webhook
+> connectors, long-lived persistent API daemon, replay for unsupported live
+> connector effects, Kubernetes, microVM, or managed cloud runner execution,
+> deployed team server daemon, SSO, Slack, and object storage adapters remain
+> future work.
 
 ## Why TaskFence
 
@@ -82,12 +81,11 @@ execution isolation.
 
 TaskFence is designed around two complementary modes. The local Docker runner is
 implemented first. Gateway-enhanced execution is currently limited to a
-deterministic local fixture command, a bounded GitHub/GitHub Enterprise REST
-connector for a narrow issue-to-branch-to-PR workflow, contract-only
-enterprise connector definitions,
-executor-backed MCP/HTTP adapter entry points, configured tool policy decisions,
-optional approval mediation, known-tool registry checks, redacted secret
-references, structured evidence, and unsupported-action errors.
+deterministic local fixture command, bounded GitHub/GitHub Enterprise REST
+operations, prioritized live enterprise connectors, executor-backed MCP/HTTP
+adapter entry points, configured tool policy decisions, optional approval
+mediation, known-tool registry checks, redacted secret references, structured
+evidence, and unsupported-action errors.
 
 ### 1. Generic Sandbox Mode
 
@@ -156,10 +154,13 @@ This mode answers the stronger question:
 
 The current executable gateway surfaces are intentionally narrower than that
 future mode. `taskfence gateway call` executes only configured task-file tools:
-deterministic local fixtures, or a bounded GitHub REST connector for
+deterministic local fixtures, a bounded GitHub REST connector for
 `github.read_issue`, `github.create_branch`, `github.commit_file`,
 `github.create_pr`, `github.update_pr`, `github.comment_issue`, and
-`github.comment_report`.
+`github.comment_report`, or prioritized live enterprise connectors for
+GitLab/Jira issue workflows, Feishu/WeCom/DingTalk messages, Feishu docs,
+Gitee/CODING issue and merge-request workflows, bounded Postgres database
+reads/writes, internal HTTP calls, and SIEM event export.
 `taskfence gateway spool process` processes one request from a task-local
 `gateway-spool/requests` directory and writes one typed response under
 `gateway-spool/responses`; the generated sandbox wrapper is only a thin
@@ -402,7 +403,8 @@ from an environment variable name and schema, can connect a Postgres-backed
 state store when that database is available, models RBAC and approval-owner
 decisions, persists team task records and durable worker leases, bounds team
 artifact writes to configured absolute roots with SHA-256 metadata, plans
-validated audit exports, and imports structured `.taskfence/tasks` files into
+validated audit exports, writes completed/failed audit export payload artifacts
+from structured events, and imports structured `.taskfence/tasks` files into
 team state. Rendered Markdown reports are explicitly treated as migration
 artifacts rather than source-of-truth state. Local task execution remains
 independent and does not require team state.
@@ -475,9 +477,10 @@ The first implementation currently includes:
 12. Enterprise connector foundations: `github_enterprise_rest` reuses the
     bounded GitHub REST adapter contract, while `gitlab`, `jira`, `feishu`,
     `wecom`, `dingtalk`, `gitee`, `coding`, `database`, `internal_http`, and
-    `siem_export` provide opt-in config parsing, connector-specific policy
-    templates, approval-sensitive operation sets, redacted secret-reference
-    handling, and explicit unsupported live execution.
+    `siem_export` provide opt-in live adapters with connector-specific policy
+    templates, approval-sensitive operation sets, gateway-side credentials,
+    bounded parameters, redacted results, and explicit unsupported-operation
+    evidence.
 13. An agent-facing gateway spool prototype: task artifact setup creates
     `gateway-spool/requests`, `gateway-spool/responses`, and a generated
     `taskfence-gateway-submit` wrapper; the Docker runner mounts only the
@@ -514,10 +517,11 @@ The first implementation currently includes:
     approval-owner enforcement, durable local JSON and Postgres state backends,
     worker lease storage with duplicate, wrong-worker, unleased, and terminal
     state protections, team artifact root containment checks with SHA-256
-    metadata, validated audit-export plans, and migration from structured local
-    `.taskfence` evidence without treating rendered reports as source of truth.
-    A deployed team HTTP daemon, SSO, object-store adapter, and live export sink
-    are still not implemented.
+    metadata, completed/failed audit-export records, contained export payload
+    artifacts, and migration from structured local `.taskfence` evidence
+    without treating rendered reports as source of truth. A deployed team HTTP
+    daemon, SSO, object-store adapter, and background export service are still
+    not implemented.
 
 ## Non-Goals
 

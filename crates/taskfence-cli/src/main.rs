@@ -21,20 +21,22 @@ use taskfence_core::{
 };
 use taskfence_gateway::{
     gateway_spool_request_id_from_path, normalize_tool_action, read_gateway_spool_request,
-    write_gateway_spool_response, EnvironmentSecretBroker, GatewayEgressAdapter, GatewayExecutor,
-    GatewaySpoolPaths, GatewaySpoolResponse, GatewaySpoolResponseState, GitHubRestAdapter,
-    InMemoryToolRegistry, LocalFixtureToolAdapter, LocalRedactedSecretBroker, RegisteredTool,
-    SecretBroker, ToolAdapter, UnsupportedGatewayAdapter, UreqGatewayEgressClient,
-    UreqGitHubClient,
+    write_gateway_spool_response, DatabaseConnectorAdapter, EnterpriseConnectorAdapter,
+    EnvironmentSecretBroker, GatewayEgressAdapter, GatewayExecutor, GatewaySpoolPaths,
+    GatewaySpoolResponse, GatewaySpoolResponseState, GitHubRestAdapter, InMemoryToolRegistry,
+    LocalFixtureToolAdapter, LocalRedactedSecretBroker, PostgresDatabaseClient, RegisteredTool,
+    SecretBroker, ToolAdapter, UnsupportedGatewayAdapter, UreqEnterpriseHttpClient,
+    UreqGatewayEgressClient, UreqGitHubClient,
 };
 use taskfence_policy::BuiltInPolicyEngine;
-use taskfence_report::MarkdownReportGenerator;
+use taskfence_report::{ComplianceReportGenerator, MarkdownReportGenerator};
 use taskfence_runner::ExpandedRunner;
 use taskfence_state::{
-    InMemoryStateStore, LocalReviewIndex, LocalTaskComparison, LocalTaskEvidenceStore,
-    LocalTaskReview, LocalTeamStateStore, OrganizationPolicy, RbacGrant, ReplayEvaluation,
-    ReplayPlan, ReplayRunRecord, TaskArtifactKind, TaskArtifacts, TaskEvents, TaskLogs,
-    TaskSummary, TeamRole, TeamStateService, TeamTaskRecord, WorkerLeaseState,
+    AuditExportSinkConfig, AuditExportSinkKind, InMemoryStateStore, LocalReviewIndex,
+    LocalTaskComparison, LocalTaskEvidenceStore, LocalTaskReview, LocalTeamStateStore,
+    OrganizationPolicy, RbacGrant, ReplayEvaluation, ReplayPlan, ReplayRunRecord, TaskArtifactKind,
+    TaskArtifacts, TaskEvents, TaskLogs, TaskSummary, TeamAuditExportStatus, TeamRole,
+    TeamStateService, TeamTaskRecord, WorkerLeaseState,
 };
 
 #[derive(Debug, Parser)]
@@ -146,6 +148,17 @@ enum Command {
         /// Workspace that owns the .taskfence task evidence directory.
         #[arg(long, default_value = ".")]
         workspace: Utf8PathBuf,
+    },
+    /// Render compliance evidence from structured local task events.
+    Compliance {
+        /// Task ID to report.
+        task_id: String,
+        /// Workspace that owns the .taskfence task evidence directory.
+        #[arg(long, default_value = ".")]
+        workspace: Utf8PathBuf,
+        /// Output Markdown path. Defaults to the task artifact directory.
+        #[arg(long)]
+        output: Option<Utf8PathBuf>,
     },
     /// Build a local review page from workspace evidence.
     Review {
@@ -282,11 +295,41 @@ enum TeamCommand {
         #[arg(long, default_value = "operator")]
         actor: String,
     },
+    /// Export a registered task's structured audit events to a team-owned sink artifact.
+    AuditExport {
+        /// Task ID already registered in team state.
+        task_id: String,
+        /// Durable local team state JSON file.
+        #[arg(long, default_value = ".taskfence/team/state.json")]
+        state_file: Utf8PathBuf,
+        /// Organization name.
+        #[arg(long, default_value = "default")]
+        organization: String,
+        /// Actor requesting the export.
+        #[arg(long, default_value = "auditor")]
+        actor: String,
+        /// Sink family.
+        #[arg(long, value_enum, default_value_t = AuditExportSinkArg::Siem)]
+        sink_kind: AuditExportSinkArg,
+        /// Non-secret destination reference such as soc-pipeline.
+        #[arg(long)]
+        destination_ref: String,
+        /// Environment variable name that will hold the sink credential in deployments.
+        #[arg(long, default_value = "TASKFENCE_AUDIT_EXPORT_TOKEN")]
+        credential_env: String,
+    },
     /// Manage durable worker leases.
     Worker {
         #[command(subcommand)]
         command: TeamWorkerCommand,
     },
+}
+
+#[derive(Clone, Debug, clap::ValueEnum)]
+enum AuditExportSinkArg {
+    Siem,
+    Webhook,
+    ObjectStorage,
 }
 
 #[derive(Debug, Subcommand)]
@@ -520,6 +563,11 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
         } => show_compare(workspace, left_task_id, right_task_id),
         Command::Status { task_id, workspace } => show_status(workspace, task_id),
         Command::Events { task_id, workspace } => show_events(workspace, task_id),
+        Command::Compliance {
+            task_id,
+            workspace,
+            output,
+        } => show_compliance(workspace, task_id, output),
         Command::Review {
             workspace,
             output,
@@ -552,6 +600,23 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
                 organization,
                 actor,
             } => migrate_local_to_team(workspace, state_file, organization, actor),
+            TeamCommand::AuditExport {
+                task_id,
+                state_file,
+                organization,
+                actor,
+                sink_kind,
+                destination_ref,
+                credential_env,
+            } => team_audit_export(
+                state_file,
+                organization,
+                actor,
+                task_id,
+                sink_kind,
+                destination_ref,
+                credential_env,
+            ),
             TeamCommand::Worker { command } => match command {
                 TeamWorkerCommand::Enqueue {
                     task_id,
@@ -809,6 +874,54 @@ fn show_events(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::Resul
     Ok(())
 }
 
+fn show_compliance(
+    workspace: Utf8PathBuf,
+    task_id: String,
+    output: Option<Utf8PathBuf>,
+) -> taskfence_core::Result<()> {
+    let workspace = make_absolute_utf8(&workspace)?;
+    let task_id = TaskId(task_id);
+    let store = LocalTaskEvidenceStore::new(workspace);
+    let inputs = store.read_inputs(&task_id)?;
+    let events = store.read_events(&task_id)?;
+    let artifacts = artifact_refs_from_task_dir(&events.task_dir);
+    let output = match output {
+        Some(path) => make_absolute_utf8(&path)?,
+        None => events
+            .task_dir
+            .join("artifacts")
+            .join("compliance-report.md"),
+    };
+    let generator = ComplianceReportGenerator::new();
+    let path = generator.generate(&inputs.task, &artifacts, &events.events, &output)?;
+    println!("Compliance report written");
+    println!("  task: {}", task_id.0);
+    println!("  events: {}", events.events.len());
+    println!("  report: {path}");
+    Ok(())
+}
+
+fn artifact_refs_from_task_dir(task_dir: &Utf8PathBuf) -> ArtifactRefs {
+    let maybe = |name: &str| {
+        let path = task_dir.join(name);
+        path.is_file().then_some(path)
+    };
+    let gateway_spool = task_dir
+        .join("gateway-spool")
+        .exists()
+        .then_some(task_dir.join("gateway-spool"));
+    ArtifactRefs {
+        task_dir: task_dir.clone(),
+        resolved_task: maybe("task.resolved.json"),
+        events: maybe("events.jsonl"),
+        stdout: maybe("stdout.log"),
+        stderr: maybe("stderr.log"),
+        diff: maybe("diff.patch"),
+        report: maybe("report.md"),
+        gateway_spool,
+    }
+}
+
 fn show_review(
     workspace: Utf8PathBuf,
     output: Option<Utf8PathBuf>,
@@ -932,6 +1045,50 @@ fn team_worker_enqueue(
     let lease = service.enqueue_task(&actor, TaskId(task_id))?;
     print_worker_lease("Team task enqueued", &lease);
     Ok(())
+}
+
+fn team_audit_export(
+    state_file: Utf8PathBuf,
+    organization: String,
+    actor: String,
+    task_id: String,
+    sink_kind: AuditExportSinkArg,
+    destination_ref: String,
+    credential_env: String,
+) -> taskfence_core::Result<()> {
+    let mut service = open_local_team_service(state_file, organization)?;
+    let sink = AuditExportSinkConfig::new(
+        audit_export_sink_kind(sink_kind),
+        destination_ref,
+        credential_env,
+    )?;
+    let record = service.export_task_audit(&actor, &TaskId(task_id), sink)?;
+    println!("Team audit export recorded");
+    println!("  organization: {}", record.organization);
+    println!("  requested_by: {}", record.requested_by);
+    println!("  sink: {}", record.sink.destination_ref);
+    match record.status {
+        TeamAuditExportStatus::Completed { artifact } => {
+            println!("  status: completed");
+            println!("  artifact: {artifact}");
+        }
+        TeamAuditExportStatus::Failed { reason } => {
+            println!("  status: failed");
+            println!("  reason: {reason}");
+        }
+        TeamAuditExportStatus::Planned => {
+            println!("  status: planned");
+        }
+    }
+    Ok(())
+}
+
+fn audit_export_sink_kind(kind: AuditExportSinkArg) -> AuditExportSinkKind {
+    match kind {
+        AuditExportSinkArg::Siem => AuditExportSinkKind::Siem,
+        AuditExportSinkArg::Webhook => AuditExportSinkKind::Webhook,
+        AuditExportSinkArg::ObjectStorage => AuditExportSinkKind::ObjectStorage,
+    }
 }
 
 fn team_worker_lease(
@@ -3306,12 +3463,14 @@ fn gateway_adapter_for(task: &ResolvedTask, action: &ToolAction) -> Box<dyn Tool
             | GatewayConnectorConfig::DingTalk { .. }
             | GatewayConnectorConfig::Gitee { .. }
             | GatewayConnectorConfig::Coding { .. }
-            | GatewayConnectorConfig::Database { .. }
             | GatewayConnectorConfig::InternalHttp { .. }
-            | GatewayConnectorConfig::SiemExport { .. } => {
-                Box::new(UnsupportedGatewayAdapter::for_contract_tool(tool.clone()))
-                    as Box<dyn ToolAdapter>
-            }
+            | GatewayConnectorConfig::SiemExport { .. } => Box::new(
+                EnterpriseConnectorAdapter::new(tool.clone(), UreqEnterpriseHttpClient),
+            ) as Box<dyn ToolAdapter>,
+            GatewayConnectorConfig::Database { .. } => Box::new(DatabaseConnectorAdapter::new(
+                tool.clone(),
+                PostgresDatabaseClient,
+            )) as Box<dyn ToolAdapter>,
             GatewayConnectorConfig::Unsupported { kind } => {
                 Box::new(UnsupportedGatewayAdapter::new("unsupported", kind.clone()))
                     as Box<dyn ToolAdapter>
@@ -3334,6 +3493,16 @@ fn gateway_secret_broker_for(task: &ResolvedTask, action: &ToolAction) -> Box<dy
                 tool.connector,
                 GatewayConnectorConfig::GitHubRest { .. }
                     | GatewayConnectorConfig::GitHubEnterpriseRest { .. }
+                    | GatewayConnectorConfig::GitLab { .. }
+                    | GatewayConnectorConfig::Jira { .. }
+                    | GatewayConnectorConfig::Feishu { .. }
+                    | GatewayConnectorConfig::WeCom { .. }
+                    | GatewayConnectorConfig::DingTalk { .. }
+                    | GatewayConnectorConfig::Gitee { .. }
+                    | GatewayConnectorConfig::Coding { .. }
+                    | GatewayConnectorConfig::Database { .. }
+                    | GatewayConnectorConfig::InternalHttp { .. }
+                    | GatewayConnectorConfig::SiemExport { .. }
             )
     });
 
@@ -4072,6 +4241,33 @@ mod tests {
     }
 
     #[test]
+    fn parses_compliance_output_command() {
+        let cli = Cli::try_parse_from([
+            "taskfence",
+            "compliance",
+            "task-123",
+            "--workspace",
+            "repo",
+            "--output",
+            "compliance.md",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Compliance {
+                task_id,
+                workspace,
+                output,
+            } => {
+                assert_eq!(task_id, "task-123");
+                assert_eq!(workspace, Utf8PathBuf::from("repo"));
+                assert_eq!(output, Some(Utf8PathBuf::from("compliance.md")));
+            }
+            other => panic!("expected compliance command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_review_output_and_serve_options() {
         let cli = Cli::try_parse_from([
             "taskfence",
@@ -4225,6 +4421,53 @@ mod tests {
                 assert_eq!(organization, "acme");
             }
             other => panic!("expected team state command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_team_audit_export_command() {
+        let cli = Cli::try_parse_from([
+            "taskfence",
+            "team",
+            "audit-export",
+            "task-123",
+            "--state-file",
+            "team.json",
+            "--organization",
+            "acme",
+            "--actor",
+            "auditor",
+            "--sink-kind",
+            "siem",
+            "--destination-ref",
+            "soc-pipeline",
+            "--credential-env",
+            "TASKFENCE_AUDIT_EXPORT_TOKEN",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Team {
+                command:
+                    TeamCommand::AuditExport {
+                        task_id,
+                        state_file,
+                        organization,
+                        actor,
+                        sink_kind,
+                        destination_ref,
+                        credential_env,
+                    },
+            } => {
+                assert_eq!(task_id, "task-123");
+                assert_eq!(state_file, Utf8PathBuf::from("team.json"));
+                assert_eq!(organization, "acme");
+                assert_eq!(actor, "auditor");
+                assert!(matches!(sink_kind, AuditExportSinkArg::Siem));
+                assert_eq!(destination_ref, "soc-pipeline");
+                assert_eq!(credential_env, "TASKFENCE_AUDIT_EXPORT_TOKEN");
+            }
+            other => panic!("expected team audit-export command, got {other:?}"),
         }
     }
 

@@ -205,11 +205,11 @@ Current implemented gateway coverage:
   `github.comment_report`; write operations require explicit tool policy,
   gateway-side secrets, planned `gateway_calls` budget checks, and bounded
   parameters before any live API call
-- opt-in enterprise connector contracts exist for GitLab, Jira, Feishu, WeCom,
+- opt-in enterprise connector adapters exist for GitLab, Jira, Feishu, WeCom,
   DingTalk, Gitee, CODING, database, internal HTTP, and SIEM export; these
-  currently validate configuration, connector-specific policy templates,
-  approval-sensitive operation sets, redacted secret references, and explicit
-  unsupported live execution rather than calling live services
+  validate configuration, connector-specific policy templates,
+  approval-sensitive operation sets, gateway-side credentials, bounded
+  parameters, redacted results, and explicit unsupported-operation evidence
 - MCP and HTTP adapter entry points normalize protocol-shaped requests into
   `ToolAction` values and execute through the existing gateway executor when
   the action is explicitly configured
@@ -217,10 +217,9 @@ Current implemented gateway coverage:
   denied tool actions from structured audit events without rendering raw
   parameter values
 - production MCP servers, arbitrary HTTP proxying, SDK/webhook connectors,
-  branch/commit behavior outside the bounded GitHub REST family, persistent
-  Web/API server behavior, replay for unsupported live connector effects,
-  team-server, and live enterprise connector execution beyond the bounded
-  GitHub REST family remain future work
+  branch/commit behavior outside the bounded implemented connector operations,
+  persistent Web/API server behavior, replay for unsupported live connector
+  effects, deployed team server, Slack, and object storage remain future work
 
 Current local fixture demo:
 
@@ -357,11 +356,12 @@ Current team-server foundation:
   structured task input and event files without treating rendered Markdown
   reports as source-of-truth state
 - implemented: audit export as an RBAC/API boundary with validated sink
-  contracts and planned export records
+  contracts, completed/failed export records, and contained team artifact
+  payloads based on structured events
 - remaining: deployed team API server, live worker service,
   remote-runner-backed team execution, SSO, team quota/chargeback, object
-  storage adapter, live SIEM export sink, and live GitHub Enterprise/GitLab
-  team integrations
+  storage adapter, background export service, and team-owned business-tool
+  integrations beyond the local CLI surface
 
 ## Phase 7: Broader Enterprise Agent Gateway
 
@@ -385,12 +385,15 @@ Current bounded connector foundation:
   `github.create_pr`, `github.update_pr`, `github.comment_issue`, and
   `github.comment_report` operation limits.
 - GitLab, Jira, Feishu, WeCom, DingTalk, Gitee, CODING, database, internal HTTP,
-  and SIEM export connectors are opt-in configuration and policy-template
-  contracts. They fail closed for live execution with structured unsupported
-  evidence after registry, policy, approval, and redacted secret-reference
-  handling.
-- Live service-specific clients, Slack, department-level policy packs, managed
-  runner execution, and compliance report exports remain future work.
+  and SIEM export connectors are opt-in live adapters with bounded operation
+  sets, approval-sensitive writes, gateway-side credentials, response
+  redaction, and unsupported-operation evidence.
+- Compliance-oriented Markdown reports can be rendered from structured local
+  events with `taskfence compliance`; team audit export records can write
+  contained structured payload artifacts through the team state service.
+- Slack, department-level policy packs, managed runner execution, production
+  MCP servers, arbitrary HTTP proxying, SDK/webhook connectors, and replay of
+  live connector side effects remain future work.
 
 ## Open Questions
 

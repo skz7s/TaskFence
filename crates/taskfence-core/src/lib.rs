@@ -424,6 +424,7 @@ pub enum GatewayConnectorConfig {
         service: String,
     },
     SiemExport {
+        api_base: String,
         sink: String,
     },
     Unsupported {

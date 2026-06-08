@@ -1961,6 +1961,363 @@ where
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnterpriseHttpRequest {
+    pub method: String,
+    pub url: String,
+    pub bearer_token: String,
+    pub body: serde_json::Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnterpriseHttpResponse {
+    pub status: u16,
+    pub body: serde_json::Value,
+}
+
+pub trait EnterpriseHttpClient {
+    fn execute(
+        &self,
+        request: &EnterpriseHttpRequest,
+    ) -> std::result::Result<EnterpriseHttpResponse, ToolExecutionError>;
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct UreqEnterpriseHttpClient;
+
+impl EnterpriseHttpClient for UreqEnterpriseHttpClient {
+    fn execute(
+        &self,
+        request: &EnterpriseHttpRequest,
+    ) -> std::result::Result<EnterpriseHttpResponse, ToolExecutionError> {
+        let builder = match request.method.as_str() {
+            "GET" => ureq::get(&request.url),
+            "POST" => ureq::post(&request.url),
+            "PATCH" => ureq::patch(&request.url),
+            other => {
+                return Err(ToolExecutionError {
+                    kind: ToolExecutionErrorKind::InvalidParameters,
+                    message: format!("enterprise HTTP method {other} is not supported"),
+                });
+            }
+        };
+        let response = builder
+            .set("Authorization", &format!("Bearer {}", request.bearer_token))
+            .set("Accept", "application/json")
+            .set("Content-Type", "application/json")
+            .set("User-Agent", "taskfence-gateway")
+            .send_json(request.body.clone())
+            .map_err(enterprise_http_ureq_error)?;
+        let status = response.status();
+        let body = response
+            .into_json::<serde_json::Value>()
+            .unwrap_or_else(|_| serde_json::Value::Null);
+        Ok(EnterpriseHttpResponse { status, body })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct EnterpriseConnectorAdapter<C> {
+    tool: GatewayToolConfig,
+    client: C,
+}
+
+impl<C> EnterpriseConnectorAdapter<C> {
+    pub fn new(tool: GatewayToolConfig, client: C) -> Self {
+        Self { tool, client }
+    }
+}
+
+impl<C> ToolAdapter for EnterpriseConnectorAdapter<C>
+where
+    C: EnterpriseHttpClient,
+{
+    fn identity(&self) -> ToolAdapterIdentity {
+        connector_identity(&self.tool.connector)
+    }
+
+    fn secret_references(&self) -> &[GatewaySecretReferenceConfig] {
+        &self.tool.secret_refs
+    }
+
+    fn planned_budget_usage(
+        &self,
+        _task: &ResolvedTask,
+        action: &ToolAction,
+        _context: &ToolExecutionContext,
+    ) -> std::result::Result<Vec<BudgetUsage>, ToolExecutionError> {
+        let connector = connector_kind(&self.tool.connector);
+        if !connector_supports_operation(&self.tool.connector, &action.tool, &action.operation) {
+            return Err(ToolExecutionError {
+                kind: ToolExecutionErrorKind::UnsupportedTool,
+                message: format!(
+                    "{} connector template does not support {}.{}",
+                    connector, action.tool, action.operation
+                ),
+            });
+        }
+        Ok(vec![BudgetUsage {
+            kind: "gateway_calls".into(),
+            amount: 1,
+            provider: Some(connector.clone()),
+            model: None,
+            operation: Some(format!("{}.{}", action.tool, action.operation)),
+            metadata: BTreeMap::from([("connector".into(), RedactedValue::Plain(connector))]),
+        }])
+    }
+
+    fn execute(
+        &self,
+        task: &ResolvedTask,
+        action: &ToolAction,
+        context: &ToolExecutionContext,
+    ) -> std::result::Result<ToolResult, ToolExecutionError> {
+        self.execute_with_secrets(task, action, context, &[])
+    }
+
+    fn execute_with_secrets(
+        &self,
+        _task: &ResolvedTask,
+        action: &ToolAction,
+        _context: &ToolExecutionContext,
+        secrets: &[GatewaySecretBinding],
+    ) -> std::result::Result<ToolResult, ToolExecutionError> {
+        ensure_tool_matches_config(&self.tool, action)?;
+        let token = live_secret_from_bindings(secrets, &action.tool)?;
+        let request = enterprise_http_request(&self.tool.connector, action, token)?;
+        let response = self.client.execute(&request)?;
+        if !(200..300).contains(&response.status) {
+            return Err(ToolExecutionError {
+                kind: ToolExecutionErrorKind::AdapterFailed,
+                message: format!(
+                    "{} connector returned HTTP {}",
+                    connector_kind(&self.tool.connector),
+                    response.status
+                ),
+            });
+        }
+        enterprise_http_result(&self.tool.connector, action, &request, response)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DatabaseStatement {
+    pub engine: String,
+    pub database_ref: String,
+    pub sql: String,
+    pub read_only: bool,
+    pub max_rows: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DatabaseStatementResult {
+    pub rows_affected: u64,
+    pub rows: Vec<BTreeMap<String, String>>,
+}
+
+pub trait DatabaseConnectorClient {
+    fn execute(
+        &self,
+        credential: &str,
+        statement: DatabaseStatement,
+    ) -> std::result::Result<DatabaseStatementResult, ToolExecutionError>;
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PostgresDatabaseClient;
+
+impl DatabaseConnectorClient for PostgresDatabaseClient {
+    fn execute(
+        &self,
+        credential: &str,
+        statement: DatabaseStatement,
+    ) -> std::result::Result<DatabaseStatementResult, ToolExecutionError> {
+        if statement.engine != "postgres" {
+            return Err(ToolExecutionError {
+                kind: ToolExecutionErrorKind::UnsupportedTool,
+                message: format!("database engine {} is not supported", statement.engine),
+            });
+        }
+        let mut client = postgres::Client::connect(credential, postgres::NoTls).map_err(|err| {
+            ToolExecutionError {
+                kind: ToolExecutionErrorKind::AdapterFailed,
+                message: format!("failed to connect to Postgres database: {err}"),
+            }
+        })?;
+        if statement.read_only {
+            let rows = client
+                .query(&statement.sql, &[])
+                .map_err(|err| ToolExecutionError {
+                    kind: ToolExecutionErrorKind::AdapterFailed,
+                    message: format!("Postgres read failed: {err}"),
+                })?;
+            let mut values = Vec::new();
+            for row in rows.into_iter().take(statement.max_rows as usize) {
+                let mut rendered = BTreeMap::new();
+                for column in row.columns() {
+                    let name = column.name();
+                    let value = row
+                        .try_get::<_, String>(name)
+                        .or_else(|_| row.try_get::<_, i64>(name).map(|value| value.to_string()))
+                        .or_else(|_| row.try_get::<_, bool>(name).map(|value| value.to_string()))
+                        .unwrap_or_else(|_| "<unrendered>".into());
+                    rendered.insert(name.to_owned(), redact_secret_like_text(&value));
+                }
+                values.push(rendered);
+            }
+            Ok(DatabaseStatementResult {
+                rows_affected: values.len() as u64,
+                rows: values,
+            })
+        } else {
+            let rows_affected =
+                client
+                    .execute(&statement.sql, &[])
+                    .map_err(|err| ToolExecutionError {
+                        kind: ToolExecutionErrorKind::AdapterFailed,
+                        message: format!("Postgres write failed: {err}"),
+                    })?;
+            Ok(DatabaseStatementResult {
+                rows_affected,
+                rows: Vec::new(),
+            })
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct DatabaseConnectorAdapter<C> {
+    tool: GatewayToolConfig,
+    client: C,
+}
+
+impl<C> DatabaseConnectorAdapter<C> {
+    pub fn new(tool: GatewayToolConfig, client: C) -> Self {
+        Self { tool, client }
+    }
+}
+
+impl<C> ToolAdapter for DatabaseConnectorAdapter<C>
+where
+    C: DatabaseConnectorClient,
+{
+    fn identity(&self) -> ToolAdapterIdentity {
+        connector_identity(&self.tool.connector)
+    }
+
+    fn secret_references(&self) -> &[GatewaySecretReferenceConfig] {
+        &self.tool.secret_refs
+    }
+
+    fn planned_budget_usage(
+        &self,
+        _task: &ResolvedTask,
+        action: &ToolAction,
+        _context: &ToolExecutionContext,
+    ) -> std::result::Result<Vec<BudgetUsage>, ToolExecutionError> {
+        if !connector_supports_operation(&self.tool.connector, &action.tool, &action.operation) {
+            return Err(ToolExecutionError {
+                kind: ToolExecutionErrorKind::UnsupportedTool,
+                message: format!(
+                    "database connector template does not support {}.{}",
+                    action.tool, action.operation
+                ),
+            });
+        }
+        Ok(vec![BudgetUsage {
+            kind: "gateway_calls".into(),
+            amount: 1,
+            provider: Some("database".into()),
+            model: None,
+            operation: Some(format!("database.{}", action.operation)),
+            metadata: BTreeMap::from([(
+                "connector".into(),
+                RedactedValue::Plain("database".into()),
+            )]),
+        }])
+    }
+
+    fn execute(
+        &self,
+        task: &ResolvedTask,
+        action: &ToolAction,
+        context: &ToolExecutionContext,
+    ) -> std::result::Result<ToolResult, ToolExecutionError> {
+        self.execute_with_secrets(task, action, context, &[])
+    }
+
+    fn execute_with_secrets(
+        &self,
+        _task: &ResolvedTask,
+        action: &ToolAction,
+        _context: &ToolExecutionContext,
+        secrets: &[GatewaySecretBinding],
+    ) -> std::result::Result<ToolResult, ToolExecutionError> {
+        ensure_tool_matches_config(&self.tool, action)?;
+        let GatewayConnectorConfig::Database {
+            engine,
+            database_ref,
+        } = &self.tool.connector
+        else {
+            return Err(ToolExecutionError {
+                kind: ToolExecutionErrorKind::UnsupportedTool,
+                message: "gateway connector is not a database connector".into(),
+            });
+        };
+        let read_only = match action.operation.as_str() {
+            "read" => true,
+            "write" => false,
+            _ => {
+                return Err(ToolExecutionError {
+                    kind: ToolExecutionErrorKind::UnsupportedTool,
+                    message: format!("database connector does not support {}", action.operation),
+                });
+            }
+        };
+        let sql = bounded_plain_parameter(action, "query", 32 * 1024)?;
+        validate_sql_statement(&sql, read_only)?;
+        let statement = DatabaseStatement {
+            engine: engine.clone(),
+            database_ref: database_ref.clone(),
+            sql,
+            read_only,
+            max_rows: optional_u32_parameter(action, "max_rows")?
+                .unwrap_or(100)
+                .min(1000),
+        };
+        let credential = live_secret_from_bindings(secrets, &action.tool)?;
+        let result = self.client.execute(credential, statement)?;
+        let rows_json = serde_json::to_string(&result.rows).map_err(|err| ToolExecutionError {
+            kind: ToolExecutionErrorKind::AdapterFailed,
+            message: format!("failed to serialize database rows: {err}"),
+        })?;
+        Ok(ToolResult {
+            summary: format!(
+                "executed database {} against {}",
+                if read_only { "read" } else { "write" },
+                database_ref
+            ),
+            values: BTreeMap::from([
+                (
+                    "database_ref".into(),
+                    RedactedValue::Plain(database_ref.clone()),
+                ),
+                ("engine".into(), RedactedValue::Plain(engine.clone())),
+                (
+                    "rows_affected".into(),
+                    RedactedValue::Plain(result.rows_affected.to_string()),
+                ),
+                (
+                    "rows".into(),
+                    RedactedValue::Plain(redact_secret_like_text(&rows_json)),
+                ),
+            ]),
+            artifacts: Vec::new(),
+            usage: Vec::new(),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalFixtureToolAdapter {
     tool: GatewayToolConfig,
 }
@@ -2206,7 +2563,7 @@ pub fn connector_name(connector: &GatewayConnectorConfig) -> String {
         GatewayConnectorConfig::Coding { project, .. } => project.clone(),
         GatewayConnectorConfig::Database { database_ref, .. } => database_ref.clone(),
         GatewayConnectorConfig::InternalHttp { service, .. } => service.clone(),
-        GatewayConnectorConfig::SiemExport { sink } => sink.clone(),
+        GatewayConnectorConfig::SiemExport { sink, .. } => sink.clone(),
         GatewayConnectorConfig::Unsupported { kind } => kind.clone(),
     }
 }
@@ -2340,13 +2697,20 @@ fn tool_execution_error_from_taskfence(err: &TaskFenceError) -> ToolExecutionErr
 fn github_token_from_bindings(
     secrets: &[GatewaySecretBinding],
 ) -> std::result::Result<&str, ToolExecutionError> {
+    live_secret_from_bindings(secrets, "github_rest")
+}
+
+fn live_secret_from_bindings<'a>(
+    secrets: &'a [GatewaySecretBinding],
+    connector: &str,
+) -> std::result::Result<&'a str, ToolExecutionError> {
     let binding = secrets
         .iter()
         .find(|binding| binding.parameter == "authorization" || binding.parameter == "token")
         .or_else(|| secrets.first())
         .ok_or_else(|| ToolExecutionError {
             kind: ToolExecutionErrorKind::SecretUnavailable,
-            message: "github_rest connector requires a gateway-side token secret".into(),
+            message: format!("{connector} connector requires a gateway-side secret"),
         })?;
     if binding.reference.handle.starts_with("taskfence://")
         || binding.reference.handle.trim().is_empty()
@@ -2354,7 +2718,7 @@ fn github_token_from_bindings(
         return Err(ToolExecutionError {
             kind: ToolExecutionErrorKind::SecretUnavailable,
             message: format!(
-                "gateway secret {} for {} is not backed by a live token",
+                "gateway secret {} for {} is not backed by a live credential",
                 binding.reference.name, binding.reference.scope
             ),
         });
@@ -2462,8 +2826,408 @@ fn github_ureq_error(err: ureq::Error) -> ToolExecutionError {
     }
 }
 
+fn enterprise_http_ureq_error(err: ureq::Error) -> ToolExecutionError {
+    match err {
+        ureq::Error::Status(status, response) => {
+            let message = response
+                .into_string()
+                .unwrap_or_else(|_| "unable to read enterprise connector error response".into());
+            ToolExecutionError {
+                kind: ToolExecutionErrorKind::AdapterFailed,
+                message: format!(
+                    "enterprise connector returned HTTP {status}: {}",
+                    redact_secret_like_text(&message)
+                ),
+            }
+        }
+        ureq::Error::Transport(transport) => ToolExecutionError {
+            kind: ToolExecutionErrorKind::AdapterFailed,
+            message: format!("enterprise connector transport failed: {transport}"),
+        },
+    }
+}
+
 fn json_u64_field(value: &serde_json::Value, key: &str) -> Option<u64> {
     value.get(key).and_then(serde_json::Value::as_u64)
+}
+
+fn ensure_tool_matches_config(
+    tool: &GatewayToolConfig,
+    action: &ToolAction,
+) -> std::result::Result<(), ToolExecutionError> {
+    if tool.protocol != action.protocol
+        || tool.tool != action.tool
+        || tool.operation != action.operation
+    {
+        return Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::UnsupportedTool,
+            message: format!(
+                "{} adapter {}.{} cannot execute {}.{}",
+                connector_kind(&tool.connector),
+                tool.tool,
+                tool.operation,
+                action.tool,
+                action.operation
+            ),
+        });
+    }
+    if !connector_supports_operation(&tool.connector, &action.tool, &action.operation) {
+        return Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::UnsupportedTool,
+            message: format!(
+                "{} connector template does not support {}.{}",
+                connector_kind(&tool.connector),
+                action.tool,
+                action.operation
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn enterprise_http_request(
+    connector: &GatewayConnectorConfig,
+    action: &ToolAction,
+    token: &str,
+) -> std::result::Result<EnterpriseHttpRequest, ToolExecutionError> {
+    match connector {
+        GatewayConnectorConfig::GitLab { api_base, project } => {
+            let encoded_project = path_encode(project);
+            match (action.tool.as_str(), action.operation.as_str()) {
+                ("gitlab", "read_issue") => {
+                    let iid = plain_u64_parameter(action, "iid")?;
+                    Ok(json_request(
+                        "GET",
+                        &format!("{api_base}/projects/{encoded_project}/issues/{iid}"),
+                        token,
+                        serde_json::Value::Null,
+                    ))
+                }
+                ("gitlab", "create_merge_request") => {
+                    let body = serde_json::json!({
+                        "title": bounded_plain_parameter(action, "title", 512)?,
+                        "source_branch": safe_git_ref_parameter(action, "source_branch")?,
+                        "target_branch": safe_git_ref_parameter(action, "target_branch")?,
+                        "description": optional_bounded_plain_parameter(action, "description", 65_536)?.unwrap_or_default(),
+                    });
+                    Ok(json_request(
+                        "POST",
+                        &format!("{api_base}/projects/{encoded_project}/merge_requests"),
+                        token,
+                        body,
+                    ))
+                }
+                ("gitlab", "comment_issue") => {
+                    let iid = plain_u64_parameter(action, "iid")?;
+                    let body = serde_json::json!({
+                        "body": bounded_plain_parameter(action, "body", 65_536)?,
+                    });
+                    Ok(json_request(
+                        "POST",
+                        &format!("{api_base}/projects/{encoded_project}/issues/{iid}/notes"),
+                        token,
+                        body,
+                    ))
+                }
+                _ => unsupported_connector_action("gitlab", action),
+            }
+        }
+        GatewayConnectorConfig::Jira {
+            api_base,
+            project_key,
+        } => match (action.tool.as_str(), action.operation.as_str()) {
+            ("jira", "read_issue") => {
+                let issue_key = safe_connector_key_parameter(action, "issue_key")?;
+                Ok(json_request(
+                    "GET",
+                    &format!("{api_base}/issue/{issue_key}"),
+                    token,
+                    serde_json::Value::Null,
+                ))
+            }
+            ("jira", "create_issue") => {
+                let body = serde_json::json!({
+                    "fields": {
+                        "project": { "key": project_key },
+                        "summary": bounded_plain_parameter(action, "summary", 512)?,
+                        "description": jira_doc_text(optional_bounded_plain_parameter(action, "description", 16 * 1024)?.unwrap_or_default()),
+                        "issuetype": { "name": optional_bounded_plain_parameter(action, "issue_type", 64)?.unwrap_or_else(|| "Task".into()) },
+                    }
+                });
+                Ok(json_request(
+                    "POST",
+                    &format!("{api_base}/issue"),
+                    token,
+                    body,
+                ))
+            }
+            ("jira", "comment_issue") => {
+                let issue_key = safe_connector_key_parameter(action, "issue_key")?;
+                let body = serde_json::json!({
+                    "body": jira_doc_text(bounded_plain_parameter(action, "body", 16 * 1024)?),
+                });
+                Ok(json_request(
+                    "POST",
+                    &format!("{api_base}/issue/{issue_key}/comment"),
+                    token,
+                    body,
+                ))
+            }
+            _ => unsupported_connector_action("jira", action),
+        },
+        GatewayConnectorConfig::Feishu { api_base, app } => {
+            enterprise_message_request(api_base, token, app, "feishu", action)
+        }
+        GatewayConnectorConfig::WeCom { api_base, corp_id } => {
+            enterprise_message_request(api_base, token, corp_id, "wecom", action)
+        }
+        GatewayConnectorConfig::DingTalk { api_base, tenant } => {
+            enterprise_message_request(api_base, token, tenant, "dingtalk", action)
+        }
+        GatewayConnectorConfig::Gitee {
+            api_base,
+            repository,
+        } => match (action.tool.as_str(), action.operation.as_str()) {
+            ("gitee", "read_issue") => {
+                let number = plain_u64_parameter(action, "number")?;
+                Ok(json_request(
+                    "GET",
+                    &format!("{api_base}/repos/{repository}/issues/{number}"),
+                    token,
+                    serde_json::Value::Null,
+                ))
+            }
+            ("gitee", "create_pr") => {
+                let body = serde_json::json!({
+                    "title": bounded_plain_parameter(action, "title", 512)?,
+                    "head": safe_git_ref_parameter(action, "head")?,
+                    "base": safe_git_ref_parameter(action, "base")?,
+                    "body": optional_bounded_plain_parameter(action, "body", 65_536)?.unwrap_or_default(),
+                });
+                Ok(json_request(
+                    "POST",
+                    &format!("{api_base}/repos/{repository}/pulls"),
+                    token,
+                    body,
+                ))
+            }
+            ("gitee", "comment_issue") => {
+                let number = plain_u64_parameter(action, "number")?;
+                let body = serde_json::json!({
+                    "body": bounded_plain_parameter(action, "body", 65_536)?,
+                });
+                Ok(json_request(
+                    "POST",
+                    &format!("{api_base}/repos/{repository}/issues/{number}/comments"),
+                    token,
+                    body,
+                ))
+            }
+            _ => unsupported_connector_action("gitee", action),
+        },
+        GatewayConnectorConfig::Coding { api_base, project } => {
+            let encoded_project = path_encode(project);
+            match (action.tool.as_str(), action.operation.as_str()) {
+                ("coding", "read_issue") => {
+                    let number = plain_u64_parameter(action, "number")?;
+                    Ok(json_request(
+                        "GET",
+                        &format!("{api_base}/projects/{encoded_project}/issues/{number}"),
+                        token,
+                        serde_json::Value::Null,
+                    ))
+                }
+                ("coding", "create_merge_request") => {
+                    let body = serde_json::json!({
+                        "title": bounded_plain_parameter(action, "title", 512)?,
+                        "source_branch": safe_git_ref_parameter(action, "source_branch")?,
+                        "target_branch": safe_git_ref_parameter(action, "target_branch")?,
+                        "description": optional_bounded_plain_parameter(action, "description", 65_536)?.unwrap_or_default(),
+                    });
+                    Ok(json_request(
+                        "POST",
+                        &format!("{api_base}/projects/{encoded_project}/merge_requests"),
+                        token,
+                        body,
+                    ))
+                }
+                ("coding", "comment_issue") => {
+                    let number = plain_u64_parameter(action, "number")?;
+                    let body = serde_json::json!({
+                        "body": bounded_plain_parameter(action, "body", 65_536)?,
+                    });
+                    Ok(json_request(
+                        "POST",
+                        &format!("{api_base}/projects/{encoded_project}/issues/{number}/comments"),
+                        token,
+                        body,
+                    ))
+                }
+                _ => unsupported_connector_action("coding", action),
+            }
+        }
+        GatewayConnectorConfig::InternalHttp { api_base, service } => {
+            if action.tool != "internal_http" || action.operation != "call" {
+                return unsupported_connector_action("internal_http", action);
+            }
+            let path = safe_http_path_parameter(action, "path")?;
+            let method =
+                optional_http_method_parameter(action, "method")?.unwrap_or_else(|| "POST".into());
+            let body = optional_bounded_plain_parameter(action, "body", 64 * 1024)?
+                .map(|body| serde_json::json!({ "body": body }))
+                .unwrap_or_else(|| serde_json::json!({}));
+            Ok(json_request(
+                &method,
+                &format!("{api_base}/{service}/{path}"),
+                token,
+                body,
+            ))
+        }
+        GatewayConnectorConfig::SiemExport { api_base, sink } => {
+            if action.tool != "siem" || action.operation != "export_events" {
+                return unsupported_connector_action("siem_export", action);
+            }
+            let events_json = bounded_plain_parameter(action, "events_json", 256 * 1024)?;
+            let events: serde_json::Value =
+                serde_json::from_str(&events_json).map_err(|err| ToolExecutionError {
+                    kind: ToolExecutionErrorKind::InvalidParameters,
+                    message: format!("siem.export_events events_json must be valid JSON: {err}"),
+                })?;
+            let body = serde_json::json!({
+                "sink": sink,
+                "task_id": bounded_plain_parameter(action, "task_id", 256)?,
+                "events": events,
+                "summary": optional_bounded_plain_parameter(action, "summary", 16 * 1024)?.unwrap_or_default(),
+            });
+            Ok(json_request(
+                "POST",
+                &format!("{api_base}/sinks/{}/events", path_encode(sink)),
+                token,
+                body,
+            ))
+        }
+        _ => Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::UnsupportedTool,
+            message: format!(
+                "{} connector is not handled by the enterprise HTTP adapter",
+                connector_kind(connector)
+            ),
+        }),
+    }
+}
+
+fn enterprise_http_result(
+    connector: &GatewayConnectorConfig,
+    action: &ToolAction,
+    request: &EnterpriseHttpRequest,
+    response: EnterpriseHttpResponse,
+) -> std::result::Result<ToolResult, ToolExecutionError> {
+    let connector_kind = connector_kind(connector);
+    let resource_id = response
+        .body
+        .get("id")
+        .or_else(|| response.body.get("iid"))
+        .or_else(|| response.body.get("key"))
+        .or_else(|| response.body.get("number"))
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "-".into());
+    Ok(ToolResult {
+        summary: format!(
+            "executed {}.{} through {} connector",
+            action.tool, action.operation, connector_kind
+        ),
+        values: BTreeMap::from([
+            ("connector".into(), RedactedValue::Plain(connector_kind)),
+            (
+                "method".into(),
+                RedactedValue::Plain(request.method.clone()),
+            ),
+            (
+                "url".into(),
+                RedactedValue::Plain(redact_secret_like_text(&request.url)),
+            ),
+            (
+                "status".into(),
+                RedactedValue::Plain(response.status.to_string()),
+            ),
+            (
+                "resource_id".into(),
+                RedactedValue::Plain(redact_secret_like_text(&resource_id)),
+            ),
+            (
+                "response".into(),
+                RedactedValue::Plain(redact_secret_like_text(&response.body.to_string())),
+            ),
+        ]),
+        artifacts: Vec::new(),
+        usage: Vec::new(),
+    })
+}
+
+fn enterprise_message_request(
+    api_base: &str,
+    token: &str,
+    tenant: &str,
+    tool: &str,
+    action: &ToolAction,
+) -> std::result::Result<EnterpriseHttpRequest, ToolExecutionError> {
+    match (action.tool.as_str(), action.operation.as_str()) {
+        (_, "send_message") if action.tool == tool => {
+            let channel = safe_connector_key_parameter(action, "channel")?;
+            let body = serde_json::json!({
+                "tenant": tenant,
+                "channel": channel,
+                "text": bounded_plain_parameter(action, "text", 16 * 1024)?,
+            });
+            Ok(json_request(
+                "POST",
+                &format!("{api_base}/{tool}/messages"),
+                token,
+                body,
+            ))
+        }
+        ("feishu", "create_doc") if tool == "feishu" => {
+            let body = serde_json::json!({
+                "app": tenant,
+                "title": bounded_plain_parameter(action, "title", 512)?,
+                "content": bounded_plain_parameter(action, "content", 128 * 1024)?,
+            });
+            Ok(json_request(
+                "POST",
+                &format!("{api_base}/feishu/docs"),
+                token,
+                body,
+            ))
+        }
+        _ => unsupported_connector_action(tool, action),
+    }
+}
+
+fn json_request(
+    method: &str,
+    url: &str,
+    token: &str,
+    body: serde_json::Value,
+) -> EnterpriseHttpRequest {
+    EnterpriseHttpRequest {
+        method: method.into(),
+        url: url.into(),
+        bearer_token: token.into(),
+        body,
+    }
+}
+
+fn unsupported_connector_action<T>(
+    connector: &str,
+    action: &ToolAction,
+) -> std::result::Result<T, ToolExecutionError> {
+    Err(ToolExecutionError {
+        kind: ToolExecutionErrorKind::UnsupportedTool,
+        message: format!(
+            "{connector} connector does not support {}.{}",
+            action.tool, action.operation
+        ),
+    })
 }
 
 fn execute_github_read_issue(
@@ -2599,6 +3363,20 @@ fn plain_u64_parameter(
         kind: ToolExecutionErrorKind::InvalidParameters,
         message: format!("parameter {key} must be an integer: {err}"),
     })
+}
+
+fn optional_u32_parameter(
+    action: &ToolAction,
+    key: &str,
+) -> std::result::Result<Option<u32>, ToolExecutionError> {
+    plain_optional_parameter(action, key)
+        .map(|value| {
+            value.parse::<u32>().map_err(|err| ToolExecutionError {
+                kind: ToolExecutionErrorKind::InvalidParameters,
+                message: format!("parameter {key} must be an integer: {err}"),
+            })
+        })
+        .transpose()
 }
 
 fn plain_required_parameter<'a>(
@@ -2775,6 +3553,150 @@ fn optional_pr_state_parameter(
             }
         })
         .transpose()
+}
+
+fn safe_connector_key_parameter(
+    action: &ToolAction,
+    key: &str,
+) -> std::result::Result<String, ToolExecutionError> {
+    let value = plain_required_parameter(action, key)?;
+    if value.is_empty()
+        || value.contains("..")
+        || value.contains('/')
+        || value.contains('\\')
+        || value.chars().any(char::is_whitespace)
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+    {
+        return Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::InvalidParameters,
+            message: format!("parameter {key} must be a safe connector identifier"),
+        });
+    }
+    Ok(value.to_owned())
+}
+
+fn safe_http_path_parameter(
+    action: &ToolAction,
+    key: &str,
+) -> std::result::Result<String, ToolExecutionError> {
+    let value = plain_required_parameter(action, key)?.trim_matches('/');
+    if value.is_empty()
+        || value.contains("..")
+        || value.contains('\\')
+        || value.contains('?')
+        || value.contains('#')
+        || value.chars().any(char::is_whitespace)
+        || value.split('/').any(|segment| {
+            segment.is_empty()
+                || !segment
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+        })
+    {
+        return Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::InvalidParameters,
+            message: format!("parameter {key} must be a safe relative HTTP path"),
+        });
+    }
+    Ok(value.to_owned())
+}
+
+fn optional_http_method_parameter(
+    action: &ToolAction,
+    key: &str,
+) -> std::result::Result<Option<String>, ToolExecutionError> {
+    plain_optional_parameter(action, key)
+        .map(|value| {
+            let method = value.to_ascii_uppercase();
+            if matches!(method.as_str(), "GET" | "POST" | "PATCH") {
+                Ok(method)
+            } else {
+                Err(ToolExecutionError {
+                    kind: ToolExecutionErrorKind::InvalidParameters,
+                    message: format!("parameter {key} must be GET, POST, or PATCH"),
+                })
+            }
+        })
+        .transpose()
+}
+
+fn validate_sql_statement(
+    sql: &str,
+    read_only: bool,
+) -> std::result::Result<(), ToolExecutionError> {
+    let trimmed = sql.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if trimmed.is_empty()
+        || trimmed.contains('\0')
+        || trimmed.contains("--")
+        || trimmed.contains("/*")
+        || trimmed.contains("*/")
+        || trimmed.matches(';').count() > usize::from(trimmed.ends_with(';'))
+    {
+        return Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::InvalidParameters,
+            message: "database query must be one bounded statement without comments".into(),
+        });
+    }
+    if read_only {
+        if !(lower.starts_with("select ") || lower.starts_with("with ")) {
+            return Err(ToolExecutionError {
+                kind: ToolExecutionErrorKind::InvalidParameters,
+                message: "database.read supports only SELECT or WITH statements".into(),
+            });
+        }
+        for forbidden in [
+            " insert ",
+            " update ",
+            " delete ",
+            " drop ",
+            " alter ",
+            " create ",
+            " truncate ",
+            " grant ",
+            " revoke ",
+            " copy ",
+        ] {
+            if lower.contains(forbidden) {
+                return Err(ToolExecutionError {
+                    kind: ToolExecutionErrorKind::InvalidParameters,
+                    message: "database.read query contains a mutating keyword".into(),
+                });
+            }
+        }
+    } else if lower.starts_with("drop ")
+        || lower.starts_with("alter ")
+        || lower.starts_with("truncate ")
+        || lower.starts_with("grant ")
+        || lower.starts_with("revoke ")
+        || lower.starts_with("copy ")
+    {
+        return Err(ToolExecutionError {
+            kind: ToolExecutionErrorKind::InvalidParameters,
+            message: "database.write does not allow schema or privilege operations".into(),
+        });
+    }
+    Ok(())
+}
+
+fn path_encode(value: &str) -> String {
+    value.replace('/', "%2F")
+}
+
+fn jira_doc_text(text: String) -> serde_json::Value {
+    serde_json::json!({
+        "type": "doc",
+        "version": 1,
+        "content": [{
+            "type": "paragraph",
+            "content": [{
+                "type": "text",
+                "text": redact_secret_like_text(&text),
+            }],
+        }],
+    })
 }
 
 fn report_comment_body(action: &ToolAction) -> std::result::Result<String, ToolExecutionError> {
@@ -3484,6 +4406,53 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Debug, Default)]
+    struct RecordingEnterpriseHttpClient {
+        calls: Arc<Mutex<Vec<EnterpriseHttpRequest>>>,
+    }
+
+    impl EnterpriseHttpClient for RecordingEnterpriseHttpClient {
+        fn execute(
+            &self,
+            request: &EnterpriseHttpRequest,
+        ) -> std::result::Result<EnterpriseHttpResponse, ToolExecutionError> {
+            self.calls.lock().unwrap().push(request.clone());
+            Ok(EnterpriseHttpResponse {
+                status: 200,
+                body: serde_json::json!({
+                    "id": 123,
+                    "title": "created token=secret-value",
+                    "url": "https://enterprise.example/result",
+                }),
+            })
+        }
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct RecordingDatabaseClient {
+        calls: Arc<Mutex<Vec<(String, DatabaseStatement)>>>,
+    }
+
+    impl DatabaseConnectorClient for RecordingDatabaseClient {
+        fn execute(
+            &self,
+            credential: &str,
+            statement: DatabaseStatement,
+        ) -> std::result::Result<DatabaseStatementResult, ToolExecutionError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((credential.into(), statement));
+            Ok(DatabaseStatementResult {
+                rows_affected: 1,
+                rows: vec![BTreeMap::from([(
+                    "status".into(),
+                    "ok token=secret-value".into(),
+                )])],
+            })
+        }
+    }
+
     #[derive(Debug)]
     struct StaticToolAdapter {
         outcome: Mutex<std::result::Result<ToolResult, ToolExecutionError>>,
@@ -3695,7 +4664,11 @@ mod tests {
             )
             .unwrap();
 
-        assert!(execution.error.is_none());
+        assert!(
+            execution.error.is_none(),
+            "unexpected execution error: {:?}",
+            execution.error
+        );
         assert!(matches!(
             execution.result,
             Some(ToolResult { summary, .. }) if summary == "mcp execution complete"
@@ -3758,7 +4731,11 @@ mod tests {
             )
             .unwrap();
 
-        assert!(execution.error.is_none());
+        assert!(
+            execution.error.is_none(),
+            "unexpected execution error: {:?}",
+            execution.error
+        );
         assert!(matches!(
             execution.result,
             Some(ToolResult { summary, .. }) if summary == "http execution complete"
@@ -3962,6 +4939,31 @@ mod tests {
                 name: format!("{tool_name}_token"),
                 parameter: "authorization".into(),
                 scope: format!("{tool_name}.{operation}"),
+            }],
+        }
+    }
+
+    fn enterprise_tool(
+        tool_name: &str,
+        operation: &str,
+        connector: GatewayConnectorConfig,
+    ) -> GatewayToolConfig {
+        contract_connector_tool(tool_name, operation, connector)
+    }
+
+    fn database_tool(operation: &str) -> GatewayToolConfig {
+        GatewayToolConfig {
+            protocol: "mcp".into(),
+            tool: "database".into(),
+            operation: operation.into(),
+            connector: GatewayConnectorConfig::Database {
+                engine: "postgres".into(),
+                database_ref: "taskfence_reporting".into(),
+            },
+            secret_refs: vec![GatewaySecretReferenceConfig {
+                name: "database_credential".into(),
+                parameter: "credential".into(),
+                scope: format!("database.{operation}"),
             }],
         }
     }
@@ -5493,6 +6495,362 @@ mod tests {
     }
 
     #[test]
+    fn gitlab_live_connector_builds_bounded_merge_request_without_auditing_token() {
+        let token = "gitlab-live-token";
+        let client = RecordingEnterpriseHttpClient::default();
+        let calls = client.calls.clone();
+        let adapter = EnterpriseConnectorAdapter::new(
+            enterprise_tool(
+                "gitlab",
+                "create_merge_request",
+                GatewayConnectorConfig::GitLab {
+                    api_base: "https://gitlab.example/api/v4".into(),
+                    project: "group/project".into(),
+                },
+            ),
+            client,
+        );
+        let broker = StaticLiveSecretBroker::new(token);
+        let policy = BuiltInPolicyEngine;
+        let approval = StaticApproval::new(ApprovalDecision::Approved);
+        let audit = RecordingAudit::default();
+        let registry = InMemoryToolRegistry::new([RegisteredTool::new(
+            "mcp",
+            "gitlab",
+            "create_merge_request",
+        )
+        .unwrap()]);
+        let mediator = GatewayMediator::new(&policy, &audit)
+            .with_tool_registry(&registry)
+            .with_approval(&approval);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
+        let mut task = task();
+        task.secrets.available_to_gateway = vec![SecretGrant {
+            name: "gitlab_token".into(),
+            use_for: vec!["gitlab.create_merge_request".into()],
+        }];
+        task.permissions.tools.approval_required = vec!["gitlab.create_merge_request".into()];
+        task.permissions.budget = BudgetPermissions {
+            allow: vec![BudgetLimit {
+                kind: "gateway_calls".into(),
+                max_amount: 1,
+            }],
+        };
+
+        let execution = executor
+            .execute_tool_action(
+                &task,
+                ToolAction {
+                    protocol: "mcp".into(),
+                    tool: "gitlab".into(),
+                    operation: "create_merge_request".into(),
+                    parameters: BTreeMap::from([
+                        ("title".into(), RedactedValue::Plain("Ship MR".into())),
+                        (
+                            "source_branch".into(),
+                            RedactedValue::Plain("codex/phase-7".into()),
+                        ),
+                        ("target_branch".into(), RedactedValue::Plain("main".into())),
+                    ]),
+                },
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(
+            execution.error.is_none(),
+            "unexpected execution error: {:?}",
+            execution.error
+        );
+        let calls = calls.lock().unwrap();
+        let [call] = calls.as_slice() else {
+            panic!("expected one GitLab call, got {calls:?}");
+        };
+        assert_eq!(call.method, "POST");
+        assert_eq!(
+            call.url,
+            "https://gitlab.example/api/v4/projects/group%2Fproject/merge_requests"
+        );
+        assert_eq!(call.bearer_token, token);
+        assert_eq!(call.body["title"], "Ship MR");
+        let serialized_events =
+            serde_json::to_string(&audit.events.lock().unwrap().clone()).unwrap();
+        assert!(!serialized_events.contains(token));
+        assert!(serialized_events.contains("gateway secret reference for gitlab_token"));
+    }
+
+    #[test]
+    fn enterprise_http_connector_rejects_unsafe_parameters_before_client_call() {
+        let client = RecordingEnterpriseHttpClient::default();
+        let calls = client.calls.clone();
+        let adapter = EnterpriseConnectorAdapter::new(
+            GatewayToolConfig {
+                protocol: "http".into(),
+                tool: "internal_http".into(),
+                operation: "call".into(),
+                connector: GatewayConnectorConfig::InternalHttp {
+                    api_base: "https://internal.example/api".into(),
+                    service: "ticket-router".into(),
+                },
+                secret_refs: vec![GatewaySecretReferenceConfig {
+                    name: "internal_http_token".into(),
+                    parameter: "authorization".into(),
+                    scope: "internal_http.call".into(),
+                }],
+            },
+            client,
+        );
+        let broker = StaticLiveSecretBroker::new("internal-token");
+        let policy = BuiltInPolicyEngine;
+        let audit = RecordingAudit::default();
+        let registry =
+            InMemoryToolRegistry::new([
+                RegisteredTool::new("http", "internal_http", "call").unwrap()
+            ]);
+        let mediator = GatewayMediator::new(&policy, &audit)
+            .with_tool_registry(&registry)
+            .with_supported_protocols(["http"]);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
+        let mut task = task();
+        task.secrets.available_to_gateway = vec![SecretGrant {
+            name: "internal_http_token".into(),
+            use_for: vec!["internal_http.call".into()],
+        }];
+        task.permissions.tools.allow = vec!["internal_http.call".into()];
+        task.permissions.budget = BudgetPermissions {
+            allow: vec![BudgetLimit {
+                kind: "gateway_calls".into(),
+                max_amount: 1,
+            }],
+        };
+
+        let execution = executor
+            .execute_tool_action(
+                &task,
+                ToolAction {
+                    protocol: "http".into(),
+                    tool: "internal_http".into(),
+                    operation: "call".into(),
+                    parameters: BTreeMap::from([
+                        ("path".into(), RedactedValue::Plain("../admin".into())),
+                        ("method".into(), RedactedValue::Plain("POST".into())),
+                    ]),
+                },
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            execution.error,
+            Some(ToolExecutionError {
+                kind: ToolExecutionErrorKind::InvalidParameters,
+                ..
+            })
+        ));
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn database_live_connector_enforces_sql_boundary_and_redacts_rows() {
+        let client = RecordingDatabaseClient::default();
+        let calls = client.calls.clone();
+        let adapter = DatabaseConnectorAdapter::new(database_tool("read"), client);
+        let broker = StaticLiveSecretBroker::new("postgres://user:secret@db/taskfence");
+        let policy = BuiltInPolicyEngine;
+        let audit = RecordingAudit::default();
+        let registry =
+            InMemoryToolRegistry::new([RegisteredTool::new("mcp", "database", "read").unwrap()]);
+        let mediator = GatewayMediator::new(&policy, &audit).with_tool_registry(&registry);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
+        let mut task = task();
+        task.secrets.available_to_gateway = vec![SecretGrant {
+            name: "database_credential".into(),
+            use_for: vec!["database.read".into()],
+        }];
+        task.permissions.tools.allow = vec!["database.read".into()];
+        task.permissions.budget = BudgetPermissions {
+            allow: vec![BudgetLimit {
+                kind: "gateway_calls".into(),
+                max_amount: 1,
+            }],
+        };
+
+        let execution = executor
+            .execute_tool_action(
+                &task,
+                ToolAction {
+                    protocol: "mcp".into(),
+                    tool: "database".into(),
+                    operation: "read".into(),
+                    parameters: BTreeMap::from([
+                        (
+                            "query".into(),
+                            RedactedValue::Plain("select status from task_runs".into()),
+                        ),
+                        ("max_rows".into(), RedactedValue::Plain("10".into())),
+                    ]),
+                },
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(execution.error.is_none());
+        let result = execution.result.unwrap();
+        assert!(matches!(
+            result.values.get("rows"),
+            Some(RedactedValue::Plain(rows)) if rows.contains("[redacted]")
+        ));
+        let calls = calls.lock().unwrap();
+        let [(credential, statement)] = calls.as_slice() else {
+            panic!("expected database call, got {calls:?}");
+        };
+        assert!(credential.starts_with("postgres://"));
+        assert!(statement.read_only);
+        assert_eq!(statement.max_rows, 10);
+        let serialized_events =
+            serde_json::to_string(&audit.events.lock().unwrap().clone()).unwrap();
+        assert!(!serialized_events.contains("postgres://user:secret"));
+    }
+
+    #[test]
+    fn database_read_rejects_mutating_statement_before_client_call() {
+        let client = RecordingDatabaseClient::default();
+        let calls = client.calls.clone();
+        let adapter = DatabaseConnectorAdapter::new(database_tool("read"), client);
+        let broker = StaticLiveSecretBroker::new("postgres://user:secret@db/taskfence");
+        let policy = BuiltInPolicyEngine;
+        let audit = RecordingAudit::default();
+        let registry =
+            InMemoryToolRegistry::new([RegisteredTool::new("mcp", "database", "read").unwrap()]);
+        let mediator = GatewayMediator::new(&policy, &audit).with_tool_registry(&registry);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
+        let mut task = task();
+        task.secrets.available_to_gateway = vec![SecretGrant {
+            name: "database_credential".into(),
+            use_for: vec!["database.read".into()],
+        }];
+        task.permissions.tools.allow = vec!["database.read".into()];
+        task.permissions.budget = BudgetPermissions {
+            allow: vec![BudgetLimit {
+                kind: "gateway_calls".into(),
+                max_amount: 1,
+            }],
+        };
+
+        let execution = executor
+            .execute_tool_action(
+                &task,
+                ToolAction {
+                    protocol: "mcp".into(),
+                    tool: "database".into(),
+                    operation: "read".into(),
+                    parameters: BTreeMap::from([(
+                        "query".into(),
+                        RedactedValue::Plain("delete from task_runs".into()),
+                    )]),
+                },
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            execution.error,
+            Some(ToolExecutionError {
+                kind: ToolExecutionErrorKind::InvalidParameters,
+                ..
+            })
+        ));
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn siem_export_connector_posts_structured_events_to_sink() {
+        let token = "siem-live-token";
+        let client = RecordingEnterpriseHttpClient::default();
+        let calls = client.calls.clone();
+        let adapter = EnterpriseConnectorAdapter::new(
+            enterprise_tool(
+                "siem",
+                "export_events",
+                GatewayConnectorConfig::SiemExport {
+                    api_base: "https://siem.example/api".into(),
+                    sink: "soc-pipeline".into(),
+                },
+            ),
+            client,
+        );
+        let broker = StaticLiveSecretBroker::new(token);
+        let policy = BuiltInPolicyEngine;
+        let approval = StaticApproval::new(ApprovalDecision::Approved);
+        let audit = RecordingAudit::default();
+        let registry =
+            InMemoryToolRegistry::new([
+                RegisteredTool::new("mcp", "siem", "export_events").unwrap()
+            ]);
+        let mediator = GatewayMediator::new(&policy, &audit)
+            .with_tool_registry(&registry)
+            .with_approval(&approval);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
+        let mut task = task();
+        task.secrets.available_to_gateway = vec![SecretGrant {
+            name: "siem_token".into(),
+            use_for: vec!["siem.export_events".into()],
+        }];
+        task.permissions.tools.approval_required = vec!["siem.export_events".into()];
+        task.permissions.budget = BudgetPermissions {
+            allow: vec![BudgetLimit {
+                kind: "gateway_calls".into(),
+                max_amount: 1,
+            }],
+        };
+
+        let execution = executor
+            .execute_tool_action(
+                &task,
+                ToolAction {
+                    protocol: "mcp".into(),
+                    tool: "siem".into(),
+                    operation: "export_events".into(),
+                    parameters: BTreeMap::from([
+                        ("task_id".into(), RedactedValue::Plain("task-7".into())),
+                        (
+                            "events_json".into(),
+                            RedactedValue::Plain("[{\"kind\":\"policy\"}]".into()),
+                        ),
+                        (
+                            "summary".into(),
+                            RedactedValue::Plain("policy export token=secret".into()),
+                        ),
+                    ]),
+                },
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(
+            execution.error.is_none(),
+            "unexpected execution error: {:?}",
+            execution.error
+        );
+        let calls = calls.lock().unwrap();
+        let [call] = calls.as_slice() else {
+            panic!("expected SIEM call, got {calls:?}");
+        };
+        assert_eq!(
+            call.url,
+            "https://siem.example/api/sinks/soc-pipeline/events"
+        );
+        assert_eq!(call.body["sink"], "soc-pipeline");
+        assert_eq!(call.body["events"][0]["kind"], "policy");
+        assert_eq!(call.bearer_token, token);
+        assert!(
+            !serde_json::to_string(&audit.events.lock().unwrap().clone())
+                .unwrap()
+                .contains(token)
+        );
+    }
+
+    #[test]
     fn enterprise_connector_contract_fails_closed_after_policy_and_secret_reference() {
         let tool = contract_connector_tool(
             "gitlab",
@@ -5653,7 +7011,7 @@ mod tests {
             Some(ToolExecutionError {
                 kind: ToolExecutionErrorKind::SecretUnavailable,
                 message,
-            }) if message.contains("not backed by a live token")
+            }) if message.contains("not backed by a live credential")
         ));
         assert!(client.calls.lock().unwrap().is_empty());
     }

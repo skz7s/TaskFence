@@ -591,6 +591,7 @@ enum RawGatewayConnector {
     },
     #[serde(rename = "siem_export")]
     SiemExport {
+        api_base: String,
         sink: String,
     },
     Unsupported {
@@ -708,7 +709,8 @@ impl RawGatewayConnector {
                 api_base: normalize_gateway_api_base(&api_base)?,
                 service: normalize_connector_token("gateway.tools.connector.service", &service)?,
             }),
-            Self::SiemExport { sink } => Ok(GatewayConnectorConfig::SiemExport {
+            Self::SiemExport { api_base, sink } => Ok(GatewayConnectorConfig::SiemExport {
+                api_base: normalize_gateway_api_base(&api_base)?,
                 sink: normalize_connector_reference("gateway.tools.connector.sink", &sink)?,
             }),
             Self::Unsupported { kind } => Ok(GatewayConnectorConfig::Unsupported {
@@ -1726,6 +1728,7 @@ gateway:
       operation: export_events
       connector:
         type: siem_export
+        api_base: "https://siem.example/api"
         sink: soc-pipeline
 "#;
 
@@ -1751,7 +1754,8 @@ gateway:
         ));
         assert!(matches!(
             &task.gateway.tools[10].connector,
-            GatewayConnectorConfig::SiemExport { sink } if sink == "soc-pipeline"
+            GatewayConnectorConfig::SiemExport { api_base, sink }
+                if api_base == "https://siem.example/api" && sink == "soc-pipeline"
         ));
     }
 
@@ -1789,6 +1793,7 @@ gateway:
       operation: export_events
       connector:
         type: siem_export
+        api_base: "https://siem.example/api"
         sink: "https://token=secret@example.invalid"
 "#,
             r#"
