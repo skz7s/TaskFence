@@ -5,6 +5,7 @@ use std::path::Component;
 use std::sync::Mutex;
 
 use camino::{Utf8Path, Utf8PathBuf};
+use serde::{Deserialize, Serialize};
 use taskfence_core::{
     ApprovalId, ApprovalRecord, AuditEvent, LogStream, ResolvedTask, StateStore, TaskFenceError,
     TaskId, TaskStatus,
@@ -19,6 +20,8 @@ const STDERR_FILE: &str = "stderr.log";
 const DIFF_FILE: &str = "diff.patch";
 const REPORT_FILE: &str = "report.md";
 const ARTIFACTS_DIR: &str = "artifacts";
+const STATE_DIR: &str = "state";
+const LOCAL_INDEX_FILE: &str = "local-index.json";
 
 #[derive(Debug, Default)]
 pub struct InMemoryStateStore {
@@ -55,39 +58,39 @@ impl StateStore for InMemoryStateStore {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct TaskLogFile {
     pub stream: LogStream,
     pub path: Utf8PathBuf,
     pub contents: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct TaskLogs {
     pub task_dir: Utf8PathBuf,
     pub entries: Vec<TaskLogFile>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct TaskReport {
     pub path: Utf8PathBuf,
     pub contents: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct TaskDiff {
     pub path: Utf8PathBuf,
     pub contents: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct TaskEvents {
     pub task_dir: Utf8PathBuf,
     pub path: Utf8PathBuf,
     pub events: Vec<AuditEvent>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct TaskInputs {
     pub task_dir: Utf8PathBuf,
     pub path: Utf8PathBuf,
@@ -95,13 +98,13 @@ pub struct TaskInputs {
     pub contents: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum TaskArtifactKind {
     Evidence,
     Artifact,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct TaskArtifactFile {
     pub kind: TaskArtifactKind,
     pub relative_path: Utf8PathBuf,
@@ -109,13 +112,60 @@ pub struct TaskArtifactFile {
     pub size_bytes: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct TaskArtifacts {
     pub task_dir: Utf8PathBuf,
     pub files: Vec<TaskArtifactFile>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalStateIndex {
+    pub workspace: Utf8PathBuf,
+    pub source: LocalStateIndexSource,
+    pub tasks: Vec<LocalStateTaskRecord>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum LocalStateIndexSource {
+    StructuredEvidence,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalStateTaskRecord {
+    pub task_id: TaskId,
+    pub status: Option<TaskStatus>,
+    pub goal: Option<String>,
+    pub task_dir: Utf8PathBuf,
+    pub resolved_task_path: Option<Utf8PathBuf>,
+    pub events_path: Option<Utf8PathBuf>,
+    pub report_path: Option<Utf8PathBuf>,
+    pub diff_path: Option<Utf8PathBuf>,
+    pub stdout_path: Option<Utf8PathBuf>,
+    pub stderr_path: Option<Utf8PathBuf>,
+    pub artifact_count: usize,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub enum LocalArtifactRouteKind {
+    Evidence,
+    Artifact,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct LocalArtifactRoute {
+    pub task_id: TaskId,
+    pub kind: LocalArtifactRouteKind,
+    pub relative_path: Utf8PathBuf,
+    pub path: Utf8PathBuf,
+    pub size_bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct TaskSummary {
     pub task_id: TaskId,
     pub task_dir: Utf8PathBuf,
@@ -128,13 +178,20 @@ pub struct TaskSummary {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct LocalReviewIndex {
     pub workspace: Utf8PathBuf,
     pub tasks: Vec<TaskSummary>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct LocalTaskComparison {
+    pub left: TaskSummary,
+    pub right: TaskSummary,
+    pub differing_fields: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct LocalTaskReview {
     pub summary: TaskSummary,
     pub inputs: Option<TaskInputs>,
@@ -147,7 +204,7 @@ pub struct LocalTaskReview {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ReplayPlan {
     pub task_id: TaskId,
     pub source_task_file: Option<Utf8PathBuf>,
@@ -580,6 +637,62 @@ impl LocalTaskEvidenceStore {
         })
     }
 
+    pub fn build_index(&self) -> taskfence_core::Result<LocalStateIndex> {
+        let mut warnings = Vec::new();
+        let mut records = Vec::new();
+        for summary in self.list_tasks()? {
+            match self.local_state_task_record(&summary) {
+                Ok(record) => records.push(record),
+                Err(err) => warnings.push(format!(
+                    "task {} index record unavailable: {err}",
+                    summary.task_id.0
+                )),
+            }
+        }
+        Ok(LocalStateIndex {
+            workspace: self.workspace.clone(),
+            source: LocalStateIndexSource::StructuredEvidence,
+            tasks: records,
+            warnings,
+        })
+    }
+
+    pub fn refresh_index(&self) -> taskfence_core::Result<LocalStateIndex> {
+        let index = self.build_index()?;
+        let path = self.local_index_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent.as_std_path()).map_err(|err| {
+                TaskFenceError::State(format!(
+                    "failed to create local state index directory {parent}: {err}"
+                ))
+            })?;
+        }
+        let bytes = serde_json::to_vec_pretty(&index).map_err(|err| {
+            TaskFenceError::State(format!("failed to serialize local state index: {err}"))
+        })?;
+        fs::write(path.as_std_path(), bytes).map_err(|err| {
+            TaskFenceError::State(format!("failed to write local state index {path}: {err}"))
+        })?;
+        Ok(index)
+    }
+
+    pub fn read_index(&self) -> taskfence_core::Result<LocalStateIndex> {
+        let path = self.local_index_path();
+        let contents = fs::read_to_string(path.as_std_path()).map_err(|err| {
+            TaskFenceError::State(format!("local state index not found at {path}: {err}"))
+        })?;
+        serde_json::from_str(&contents).map_err(|err| {
+            TaskFenceError::State(format!("failed to parse local state index {path}: {err}"))
+        })
+    }
+
+    pub fn local_index_path(&self) -> Utf8PathBuf {
+        self.workspace
+            .join(TASKFENCE_DIR)
+            .join(STATE_DIR)
+            .join(LOCAL_INDEX_FILE)
+    }
+
     pub fn read_task_review(&self, task_id: &TaskId) -> taskfence_core::Result<LocalTaskReview> {
         let summary = self.read_task_summary(task_id)?;
         let inputs = optional_evidence("resolved task input", self.read_inputs(task_id));
@@ -607,6 +720,33 @@ impl LocalTaskEvidenceStore {
             report: report.value,
             replay,
             warnings,
+        })
+    }
+
+    pub fn compare_tasks(
+        &self,
+        left_task_id: &TaskId,
+        right_task_id: &TaskId,
+    ) -> taskfence_core::Result<LocalTaskComparison> {
+        let left = self.read_task_summary(left_task_id)?;
+        let right = self.read_task_summary(right_task_id)?;
+        let mut differing_fields = Vec::new();
+        if left.status != right.status {
+            differing_fields.push("status".into());
+        }
+        if left.goal != right.goal {
+            differing_fields.push("goal".into());
+        }
+        if artifact_flags_for_summary(&left) != artifact_flags_for_summary(&right) {
+            differing_fields.push("artifacts".into());
+        }
+        if left.warnings.len() != right.warnings.len() {
+            differing_fields.push("warnings".into());
+        }
+        Ok(LocalTaskComparison {
+            left,
+            right,
+            differing_fields,
         })
     }
 
@@ -825,6 +965,36 @@ impl LocalTaskEvidenceStore {
         Ok(TaskArtifacts { task_dir, files })
     }
 
+    pub fn artifact_route(
+        &self,
+        task_id: &TaskId,
+        relative_path: &Utf8Path,
+    ) -> taskfence_core::Result<LocalArtifactRoute> {
+        reject_parent_path("artifact route", relative_path)?;
+        let artifacts = self.read_artifacts(task_id)?;
+        let Some(file) = artifacts
+            .files
+            .iter()
+            .find(|file| file.relative_path == relative_path)
+        else {
+            return Err(TaskFenceError::State(format!(
+                "artifact route {} was not found for task {}",
+                relative_path, task_id.0
+            )));
+        };
+        validate_existing_artifact_route(&artifacts.task_dir, file)?;
+        Ok(LocalArtifactRoute {
+            task_id: task_id.clone(),
+            kind: match file.kind {
+                TaskArtifactKind::Evidence => LocalArtifactRouteKind::Evidence,
+                TaskArtifactKind::Artifact => LocalArtifactRouteKind::Artifact,
+            },
+            relative_path: file.relative_path.clone(),
+            path: file.path.clone(),
+            size_bytes: file.size_bytes,
+        })
+    }
+
     pub fn read_logs(&self, task_id: &TaskId) -> taskfence_core::Result<TaskLogs> {
         let task_dir = self.task_dir(task_id)?;
         ensure_task_dir(task_id, &task_dir)?;
@@ -889,6 +1059,40 @@ impl LocalTaskEvidenceStore {
 
     fn tasks_dir(&self) -> Utf8PathBuf {
         self.workspace.join(TASKFENCE_DIR).join(TASKS_DIR)
+    }
+
+    fn local_state_task_record(
+        &self,
+        summary: &TaskSummary,
+    ) -> taskfence_core::Result<LocalStateTaskRecord> {
+        let artifacts = self.read_artifacts(&summary.task_id)?;
+        let path_for = |name: &str| {
+            artifacts
+                .files
+                .iter()
+                .find(|file| {
+                    file.kind == TaskArtifactKind::Evidence && file.relative_path.as_str() == name
+                })
+                .map(|file| file.path.clone())
+        };
+        Ok(LocalStateTaskRecord {
+            task_id: summary.task_id.clone(),
+            status: summary.status.clone(),
+            goal: summary.goal.clone(),
+            task_dir: summary.task_dir.clone(),
+            resolved_task_path: path_for(RESOLVED_TASK_FILE),
+            events_path: path_for(EVENTS_FILE),
+            report_path: path_for(REPORT_FILE),
+            diff_path: path_for(DIFF_FILE),
+            stdout_path: path_for(STDOUT_FILE),
+            stderr_path: path_for(STDERR_FILE),
+            artifact_count: artifacts
+                .files
+                .iter()
+                .filter(|file| file.kind == TaskArtifactKind::Artifact)
+                .count(),
+            warnings: summary.warnings.clone(),
+        })
     }
 }
 
@@ -1239,6 +1443,27 @@ fn read_task_summary(task_id: TaskId, task_dir: Utf8PathBuf) -> TaskSummary {
     }
 }
 
+fn artifact_flags_for_summary(task: &TaskSummary) -> String {
+    let mut flags = Vec::new();
+    if task.has_report {
+        flags.push("report");
+    }
+    if task.has_diff {
+        flags.push("diff");
+    }
+    if task.has_stdout {
+        flags.push("stdout");
+    }
+    if task.has_stderr {
+        flags.push("stderr");
+    }
+    if flags.is_empty() {
+        "-".into()
+    } else {
+        flags.join(",")
+    }
+}
+
 fn read_task_goal(
     task_id: &TaskId,
     task_dir: &Utf8Path,
@@ -1404,6 +1629,55 @@ fn read_artifact_dir_files(
     Ok(())
 }
 
+fn validate_existing_artifact_route(
+    task_dir: &Utf8Path,
+    file: &TaskArtifactFile,
+) -> taskfence_core::Result<()> {
+    reject_parent_path("artifact route", &file.relative_path)?;
+    let canonical_task_dir = canonical_utf8(task_dir)?;
+    let canonical_file = canonical_utf8(&file.path)?;
+    if !canonical_file.starts_with(&canonical_task_dir) {
+        return Err(TaskFenceError::State(format!(
+            "artifact route {} escapes task evidence directory {}",
+            file.relative_path, canonical_task_dir
+        )));
+    }
+    let metadata = fs::symlink_metadata(file.path.as_std_path()).map_err(|err| {
+        TaskFenceError::State(format!(
+            "failed to inspect artifact route {}: {err}",
+            file.path
+        ))
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(TaskFenceError::State(format!(
+            "artifact route must resolve to a regular non-symlink file: {}",
+            file.path
+        )));
+    }
+    Ok(())
+}
+
+fn reject_parent_path(field: &str, path: &Utf8Path) -> taskfence_core::Result<()> {
+    if path.as_str().is_empty()
+        || path.is_absolute()
+        || path_contains_parent_dir(path)
+        || path.components().any(|component| match component {
+            camino::Utf8Component::Normal(value) => {
+                value.is_empty()
+                    || value == "."
+                    || value == ".."
+                    || value.chars().any(char::is_control)
+            }
+            _ => true,
+        })
+    {
+        return Err(TaskFenceError::State(format!(
+            "{field} must be a safe relative artifact path: {path}"
+        )));
+    }
+    Ok(())
+}
+
 fn push_regular_file(
     files: &mut Vec<TaskArtifactFile>,
     kind: TaskArtifactKind,
@@ -1411,6 +1685,9 @@ fn push_regular_file(
     path: Utf8PathBuf,
 ) -> taskfence_core::Result<()> {
     match fs::symlink_metadata(path.as_std_path()) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(TaskFenceError::State(format!(
+            "task artifact must be a regular non-symlink file: {path}"
+        ))),
         Ok(metadata) if metadata.is_file() => {
             files.push(TaskArtifactFile {
                 kind,
@@ -2122,6 +2399,128 @@ mod tests {
     }
 
     #[test]
+    fn refresh_index_persists_structured_local_state_index() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        write_task_evidence(
+            &workspace,
+            "index-task",
+            "indexed task",
+            &[TaskStatus::Succeeded],
+            &["report.md", "diff.patch"],
+        );
+        fs::create_dir_all(workspace.join(".taskfence/tasks/index-task/artifacts")).unwrap();
+        fs::write(
+            workspace.join(".taskfence/tasks/index-task/artifacts/output.json"),
+            "{}\n",
+        )
+        .unwrap();
+        let store = LocalTaskEvidenceStore::new(workspace.clone());
+
+        let index = store.refresh_index().unwrap();
+        let read_back = store.read_index().unwrap();
+
+        assert_eq!(index, read_back);
+        assert_eq!(index.workspace, workspace);
+        assert_eq!(index.source, LocalStateIndexSource::StructuredEvidence);
+        assert_eq!(index.tasks.len(), 1);
+        assert_eq!(index.tasks[0].task_id, TaskId("index-task".into()));
+        assert_eq!(index.tasks[0].status, Some(TaskStatus::Succeeded));
+        assert!(index.tasks[0]
+            .resolved_task_path
+            .as_ref()
+            .is_some_and(|path| path.ends_with("task.resolved.json")));
+        assert_eq!(index.tasks[0].artifact_count, 1);
+        assert!(store.local_index_path().ends_with("local-index.json"));
+    }
+
+    #[test]
+    fn compare_tasks_returns_structured_differences() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        write_task_evidence(
+            &workspace,
+            "compare-a",
+            "same goal",
+            &[TaskStatus::Succeeded],
+            &["report.md"],
+        );
+        write_task_evidence(
+            &workspace,
+            "compare-b",
+            "same goal",
+            &[TaskStatus::Failed],
+            &["diff.patch"],
+        );
+        let store = LocalTaskEvidenceStore::new(workspace);
+
+        let comparison = store
+            .compare_tasks(&TaskId("compare-a".into()), &TaskId("compare-b".into()))
+            .unwrap();
+
+        assert_eq!(comparison.left.task_id, TaskId("compare-a".into()));
+        assert_eq!(comparison.right.task_id, TaskId("compare-b".into()));
+        assert!(comparison.differing_fields.contains(&"status".into()));
+        assert!(comparison.differing_fields.contains(&"artifacts".into()));
+        assert!(!comparison.differing_fields.contains(&"goal".into()));
+    }
+
+    #[test]
+    fn artifact_route_allows_known_files_and_rejects_escapes_or_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        write_task_evidence(
+            &workspace,
+            "artifact-route",
+            "artifact route",
+            &[TaskStatus::Succeeded],
+            &["report.md"],
+        );
+        fs::create_dir_all(workspace.join(".taskfence/tasks/artifact-route/artifacts")).unwrap();
+        fs::write(
+            workspace.join(".taskfence/tasks/artifact-route/artifacts/output.json"),
+            "{}\n",
+        )
+        .unwrap();
+        let store = LocalTaskEvidenceStore::new(workspace.clone());
+
+        let route = store
+            .artifact_route(
+                &TaskId("artifact-route".into()),
+                Utf8Path::new("artifacts/output.json"),
+            )
+            .unwrap();
+
+        assert_eq!(route.task_id, TaskId("artifact-route".into()));
+        assert_eq!(
+            route.relative_path,
+            Utf8PathBuf::from("artifacts/output.json")
+        );
+        assert_eq!(route.size_bytes, 3);
+        assert!(matches!(route.kind, LocalArtifactRouteKind::Artifact));
+
+        let escape = store
+            .artifact_route(&TaskId("artifact-route".into()), Utf8Path::new("../secret"))
+            .unwrap_err();
+        assert!(
+            matches!(escape, TaskFenceError::State(message) if message.contains("safe relative"))
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let task_dir = workspace.join(".taskfence/tasks/artifact-route");
+            symlink("/tmp", task_dir.join("artifacts/link")).unwrap();
+            let err = store
+                .read_artifacts(&TaskId("artifact-route".into()))
+                .unwrap_err();
+            assert!(
+                matches!(err, TaskFenceError::State(message) if message.contains("regular non-symlink"))
+            );
+        }
+    }
+
+    #[test]
     fn review_index_uses_file_backed_task_summaries() {
         let temp = tempfile::tempdir().unwrap();
         let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
@@ -2560,7 +2959,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn read_artifacts_does_not_follow_symlinked_custom_entries() {
+    fn read_artifacts_rejects_symlinked_custom_entries() {
         let temp = tempfile::tempdir().unwrap();
         let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
         let artifacts_dir = workspace.join(".taskfence/tasks/task-1/artifacts");
@@ -2569,15 +2968,11 @@ mod tests {
         std::os::unix::fs::symlink("actual.txt", artifacts_dir.join("linked.txt")).unwrap();
         let store = LocalTaskEvidenceStore::new(workspace);
 
-        let artifacts = store.read_artifacts(&TaskId("task-1".into())).unwrap();
-        let paths = artifacts
-            .files
-            .iter()
-            .map(|file| file.relative_path.as_str())
-            .collect::<Vec<_>>();
+        let err = store.read_artifacts(&TaskId("task-1".into())).unwrap_err();
 
-        assert!(paths.contains(&"artifacts/actual.txt"));
-        assert!(!paths.contains(&"artifacts/linked.txt"));
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("regular non-symlink"))
+        );
     }
 
     #[test]

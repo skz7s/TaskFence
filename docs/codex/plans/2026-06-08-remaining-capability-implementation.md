@@ -127,7 +127,8 @@ Verification:
 
 Status: in_progress
 
-This plan is active. Phase 1 implementation is in progress.
+This plan is active. Phases 1, 2, and 3 are complete. The next executable
+phase is Phase 4, deterministic replay and evaluation.
 
 ## Phases
 
@@ -266,7 +267,7 @@ Completion evidence:
 
 ### Phase 3: Persistent Local State, API Surface, And Rich Review UI
 
-Status: pending
+Status: done
 
 Scope:
 
@@ -290,7 +291,35 @@ cargo test -p taskfence-state -p taskfence-cli -p taskfence-core -p taskfence-re
 
 Completion evidence:
 
-- Pending.
+- Started on 2026-06-08 after Phase 2 was marked done and committed as
+  `7dfaf75` (`gateway: expand live connector workflows`).
+- Added serializable local state records in `taskfence-state` and a durable
+  workspace-local JSON index at `.taskfence/state/local-index.json`, refreshed
+  from structured `.taskfence/tasks` evidence instead of rendered Markdown
+  reports.
+- Added `taskfence state index --workspace <workspace>` and `--read-only` so
+  operators can refresh or read the local index without starting a server.
+- Added structured local comparison and contained artifact routing APIs in
+  `taskfence-state`, including parent-path, absolute-path, symlink, non-file,
+  and task-directory containment checks. Custom artifact downloads remain
+  limited to known immediate `artifacts/` entries plus known evidence files.
+- Expanded the foreground loopback `taskfence review --serve` path with JSON
+  routes for `/api/index`, tasks, task detail, artifacts, events, logs, diffs,
+  reports, replay plans, comparisons, approvals, approval detail, and approval
+  resolution. Added contained `/artifact/<task-id>/<relative-path>` downloads
+  for known local evidence/artifact files.
+- Kept `taskfence review --workspace` static HTML generation as the
+  low-dependency fallback and added links to the foreground API/artifact
+  routes without introducing a TypeScript/React UI or making browser code part
+  of the enforcement boundary.
+- Updated README, architecture, roadmap, development design, runtime
+  architecture, and `docs/decisions/2026-06-08-local-state-api-index.md` to
+  document the local JSON index and foreground loopback API without claiming a
+  long-lived persistent API daemon, team server, SQLite migration, live log
+  streaming, richer browser diff UI, or replay execution.
+- Verification passed: `cargo fmt --all --check`.
+- Verification passed: `cargo test -p taskfence-state -p taskfence-cli -p taskfence-core -p taskfence-report`
+  (50 state tests, 99 CLI tests, 6 core tests, 4 report tests, and doc-tests).
 
 ### Phase 4: Deterministic Replay And Evaluation
 

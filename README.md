@@ -23,15 +23,18 @@ records what happened, and creates evidence that can be reviewed later.
 > templates, approval boundaries, redacted secret references, and unsupported
 > live execution. These paths prove policy, approval, registry, gateway-side
 > secret brokering, audit, and report behavior.
-> The local review foundation can render workspace evidence as a static or
-> foreground-served HTML page, resolve workspace-local approvals from that
-> page, and plan replay inputs from saved structured evidence. A contract-only
-> team foundation now defines API resources, RBAC decisions, approval-owner
-> checks, worker leases, Postgres state configuration validation, artifact-root
-> boundaries, validated audit-export sink contracts with unsupported live
-> export behavior, and local-to-team migration planning from structured
-> evidence. MCP/HTTP listener or proxy servers,
-> SDK/webhook connectors, persistent API server, live Postgres backend,
+> The local review foundation persists a workspace-local structured index at
+> `.taskfence/state/local-index.json`, can render workspace evidence as a
+> static or foreground-served HTML page, exposes loopback-only JSON API routes
+> for task evidence, comparisons, replay inputs, approvals, and contained
+> artifact downloads while serving review, resolves workspace-local approvals
+> from that page or API, and plans replay inputs from saved structured
+> evidence. A contract-only team foundation now defines API resources, RBAC
+> decisions, approval-owner checks, worker leases, Postgres state configuration
+> validation, artifact-root boundaries, validated audit-export sink contracts
+> with unsupported live export behavior, and local-to-team migration planning
+> from structured evidence. MCP/HTTP listener or proxy servers, SDK/webhook
+> connectors, long-lived persistent API daemon, live Postgres backend,
 > deterministic replay execution, live remote SSH, Kubernetes, microVM, or
 > managed cloud runner execution, persistent team server, live audit export
 > sink, and live enterprise connector execution beyond the bounded GitHub REST
@@ -335,6 +338,18 @@ cargo run -p taskfence-cli -- report local-demo --workspace examples/repo
 cargo run -p taskfence-cli -- logs <task-id> --workspace <workspace>
 ```
 
+You can also refresh a durable workspace-local state index that is derived from
+structured task evidence, not rendered Markdown reports:
+
+```bash
+cargo run -p taskfence-cli -- state index --workspace examples/repo
+cargo run -p taskfence-cli -- state index --workspace examples/repo --read-only
+```
+
+The index is written to `.taskfence/state/local-index.json` and records task
+ids, status, goals, evidence paths, artifact counts, and warnings for local
+review and future migration tooling.
+
 You can generate a local review page from the same file-backed evidence:
 
 ```bash
@@ -344,9 +359,13 @@ cargo run -p taskfence-cli -- review --workspace examples/repo --serve --port 0
 
 The static page is written to `.taskfence/review/index.html` by default. The
 foreground server binds only to `127.0.0.1`, rebuilds the page from local
-evidence on each request, and can approve or deny pending records from the
-workspace-local approval queue. It is not a persistent API server or team
-approval service.
+evidence on each request, refreshes the structured local index through
+`/api/index`, exposes JSON routes for task lists, task detail, artifacts,
+events, logs, diffs, reports, replay plans, comparisons, approvals, and
+approval resolution, and serves only known evidence/artifact files through
+contained `/artifact/<task-id>/<relative-path>` downloads. It is a foreground
+loopback operator tool, not a long-lived persistent API daemon or team approval
+service.
 
 Replay planning is currently inspection-only:
 
@@ -450,11 +469,14 @@ The first implementation currently includes:
     MCP/HTTP adapter requests that execute through the existing gateway
     executor when explicitly configured. This is not a production MCP server or
     HTTP proxy.
-15. A local review and replay-planning foundation: `taskfence review` renders a
-    static HTML task review page, `taskfence review --serve` exposes it through
-    a foreground loopback-only server with workspace-local approval resolution,
-    and `taskfence replay plan` reports saved replay inputs, blockers, and
-    deterministic limits without executing replay.
+15. A local state, review, and replay-planning foundation: `taskfence state
+    index` persists `.taskfence/state/local-index.json` from structured task
+    evidence, `taskfence review` renders a static HTML task review page,
+    `taskfence review --serve` exposes it through a foreground loopback-only
+    server with structured JSON API routes, contained artifact downloads, and
+    workspace-local approval resolution, and `taskfence replay plan` reports
+    saved replay inputs, blockers, and deterministic limits without executing
+    replay.
 16. Expanded runner contracts for `remote_ssh`, `kubernetes_job`, `microvm`,
     and `managed_cloud` sandbox families. They currently provide typed
     capability reports and fail-closed validation when required controls are

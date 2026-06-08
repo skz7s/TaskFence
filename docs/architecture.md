@@ -60,15 +60,19 @@ resources, RBAC decisions, approval-owner checks, local development worker
 leases, Postgres state config validation, artifact-root containment, validated
 but unsupported audit-export sink contracts, and local-to-team migration
 planning from structured `.taskfence` files exist without starting a server or
-live database. Production MCP servers, arbitrary HTTP proxying, SDK/webhook
-connectors, branch/commit behavior outside the bounded GitHub REST family,
-persistent API server, live Postgres backend, deterministic replay execution,
+live database. The local state/review path now has a durable JSON index at
+`.taskfence/state/local-index.json`, a `taskfence state index` command, and
+loopback-only review API routes while the foreground review server is running.
+Production MCP servers, arbitrary HTTP proxying, SDK/webhook connectors,
+branch/commit behavior outside the bounded GitHub REST family, long-lived
+persistent API daemon, live Postgres backend, deterministic replay execution,
 persistent team-server, Slack, and live enterprise connector behavior beyond
 the bounded GitHub REST family are not implemented yet.
 The local review foundation is CLI-owned: it can render file-backed evidence as
-a static or foreground-served loopback HTML page, resolve pending
-workspace-local approvals from that page, and plan replay inputs without
-executing them.
+a static or foreground-served loopback HTML page, refresh a structured local
+index, expose JSON routes for local evidence while serving, resolve pending
+workspace-local approvals from that page or API, provide contained evidence and
+artifact downloads, and plan replay inputs without executing them.
 
 ### CLI
 
@@ -102,6 +106,10 @@ Initial commands:
 - `taskfence artifacts <task-id> --workspace <workspace>` lists known local
   evidence files and immediate custom artifact files without reading their
   contents or traversing artifact subdirectories.
+- `taskfence state index --workspace <workspace>` rebuilds and prints a
+  durable local JSON index at `.taskfence/state/local-index.json` from
+  structured task evidence. `--read-only` prints the existing index without
+  refreshing it.
 - `taskfence compare <left-task-id> <right-task-id> --workspace <workspace>`
   compares two local task summaries from structured evidence without reading
   report text or artifact contents.
@@ -116,7 +124,11 @@ Initial commands:
   replay-plan evidence.
 - `taskfence review --workspace <workspace> --serve --port <port>` serves the
   same local review page on `127.0.0.1` in the foreground and resolves pending
-  workspace-local approvals through explicit approve/deny POST routes.
+  workspace-local approvals through explicit approve/deny POST routes. While
+  serving, it also exposes loopback-only JSON routes under `/api/...` for the
+  local index, task lists/details, artifacts, events, logs, diffs, reports,
+  replay plans, comparisons, approvals, approval resolution, and contained
+  `/artifact/<task-id>/<relative-path>` evidence/artifact downloads.
 - `taskfence replay plan <task-id> --workspace <workspace>` reports saved task
   inputs, artifact paths, last status, blockers, and replay limitations without
   executing replay.
@@ -273,7 +285,7 @@ fail before policy evaluation and record an audit error. The foreground
 bounded `http egress.fetch` action can make gateway-side HTTPS GET/HEAD
 requests for policy-allowlisted hosts. It does not implement production MCP
 servers, arbitrary HTTP proxying, SDK/webhook connectors, branch/commit
-behavior outside the bounded GitHub REST family, persistent Web/API server
+behavior outside the bounded GitHub REST family, long-lived Web/API daemon
 behavior, deterministic replay execution, team-server, Slack, or live
 enterprise connector behavior beyond the bounded GitHub REST family yet.
 
@@ -379,13 +391,14 @@ deployments can use object storage.
 Current local artifacts are written under `.taskfence/tasks/<task-id>/` in the
 task workspace and include the resolved task JSON, JSONL audit events,
 stdout/stderr logs when present, a diff artifact, and a Markdown report. The
-local CLI can list workspace-local task summaries and read structured event
-summaries, resolved task inputs, artifact manifests, task summary comparisons,
-latest task statuses, captured diffs, generated reports, or captured logs from
-that workspace-local artifact directory. The local review page and replay-plan
-command consume these same structured files. They do not yet provide
-cross-workspace indexing, a persistent API server, replay execution, or
-SQLite-backed state.
+local CLI can list workspace-local task summaries, persist
+`.taskfence/state/local-index.json` from structured evidence, and read
+structured event summaries, resolved task inputs, artifact manifests, task
+summary comparisons, latest task statuses, captured diffs, generated reports,
+or captured logs from that workspace-local artifact directory. The local review
+page, foreground loopback review API, and replay-plan command consume these
+same structured files. They do not yet provide cross-workspace indexing, a
+long-lived persistent API daemon, replay execution, or SQLite-backed state.
 
 The team-state contract can build a migration plan from local `.taskfence`
 evidence by listing task ids and artifact roots only when structured task input

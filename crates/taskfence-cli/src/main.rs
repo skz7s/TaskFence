@@ -1,5 +1,6 @@
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
+use serde::Serialize;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::net::{TcpListener, TcpStream};
@@ -164,6 +165,11 @@ enum Command {
         #[command(subcommand)]
         command: ReplayCommand,
     },
+    /// Manage the workspace-local structured state index.
+    State {
+        #[command(subcommand)]
+        command: StateCommand,
+    },
     /// List locally recorded approval requests in a workspace.
     Approvals {
         /// Workspace that owns the .taskfence approval directory.
@@ -213,6 +219,19 @@ enum ReplayCommand {
         /// Workspace that owns the .taskfence task evidence directory.
         #[arg(long, default_value = ".")]
         workspace: Utf8PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum StateCommand {
+    /// Refresh and print the workspace-local structured state index.
+    Index {
+        /// Workspace that owns the .taskfence task evidence directory.
+        #[arg(long, default_value = ".")]
+        workspace: Utf8PathBuf,
+        /// Read the existing index instead of rebuilding it from structured evidence.
+        #[arg(long)]
+        read_only: bool,
     },
 }
 
@@ -404,6 +423,12 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
         } => show_review(workspace, output, serve, port),
         Command::Replay { command } => match command {
             ReplayCommand::Plan { task_id, workspace } => show_replay_plan(workspace, task_id),
+        },
+        Command::State { command } => match command {
+            StateCommand::Index {
+                workspace,
+                read_only,
+            } => show_state_index(workspace, read_only),
         },
         Command::Approvals { workspace } => show_approvals(workspace),
         Command::Approval {
@@ -655,6 +680,11 @@ fn show_replay_plan(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::
     Ok(())
 }
 
+fn show_state_index(workspace: Utf8PathBuf, read_only: bool) -> taskfence_core::Result<()> {
+    println!("{}", state_index_json(workspace, read_only)?);
+    Ok(())
+}
+
 fn show_approvals(workspace: Utf8PathBuf) -> taskfence_core::Result<()> {
     let text = approvals_text(workspace)?;
     print!("{text}");
@@ -758,6 +788,21 @@ fn replay_plan_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core:
     Ok(render_replay_plan(&store.replay_plan(task_id)?))
 }
 
+fn state_index_json(workspace: Utf8PathBuf, read_only: bool) -> taskfence_core::Result<String> {
+    let store = LocalTaskEvidenceStore::new(workspace);
+    let index = if read_only {
+        store.read_index()?
+    } else {
+        store.refresh_index()?
+    };
+    json_pretty(&index)
+}
+
+fn json_pretty<T: Serialize + ?Sized>(value: &T) -> taskfence_core::Result<String> {
+    serde_json::to_string_pretty(value)
+        .map_err(|err| TaskFenceError::State(format!("failed to serialize local API JSON: {err}")))
+}
+
 fn write_review_page(
     workspace: Utf8PathBuf,
     output: Option<Utf8PathBuf>,
@@ -811,7 +856,7 @@ fn handle_review_http_stream(
     let request = read_http_request(&mut reader)?;
     let response = review_http_response(&workspace, &request);
     stream
-        .write_all(response.as_bytes())
+        .write_all(&response)
         .map_err(|err| TaskFenceError::State(format!("failed to write review response: {err}")))
 }
 
@@ -848,7 +893,7 @@ fn read_http_request(reader: &mut impl BufRead) -> taskfence_core::Result<Review
     })
 }
 
-fn review_http_response(workspace: &Utf8PathBuf, request: &ReviewHttpRequest) -> String {
+fn review_http_response(workspace: &Utf8PathBuf, request: &ReviewHttpRequest) -> Vec<u8> {
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/") | ("GET", "/index.html") => match review_page_html(workspace.clone()) {
             Ok(html) => http_response("200 OK", "text/html; charset=utf-8", &html),
@@ -858,14 +903,39 @@ fn review_http_response(workspace: &Utf8PathBuf, request: &ReviewHttpRequest) ->
                 &err.to_string(),
             ),
         },
+        ("GET", path) if path == "/api/index" => local_api_index_response(workspace),
+        ("GET", path) if path == "/api/tasks" => local_api_tasks_response(workspace),
+        ("GET", path) if path.starts_with("/api/task/") => local_api_task_response(workspace, path),
+        ("GET", path) if path.starts_with("/api/artifacts/") => {
+            local_api_artifacts_response(workspace, path)
+        }
+        ("GET", path) if path.starts_with("/api/events/") => {
+            local_api_events_response(workspace, path)
+        }
+        ("GET", path) if path.starts_with("/api/logs/") => local_api_logs_response(workspace, path),
+        ("GET", path) if path.starts_with("/api/diff/") => local_api_diff_response(workspace, path),
+        ("GET", path) if path.starts_with("/api/report/") => {
+            local_api_report_response(workspace, path)
+        }
+        ("GET", path) if path.starts_with("/api/replay/") => {
+            local_api_replay_response(workspace, path)
+        }
+        ("GET", path) if path.starts_with("/api/compare/") => {
+            local_api_compare_response(workspace, path)
+        }
+        ("GET", path) if path == "/api/approvals" => local_api_approvals_response(workspace),
+        ("GET", path) if path.starts_with("/api/approval/") => {
+            local_api_approval_response(workspace, path)
+        }
+        ("POST", path) if path.starts_with("/api/approval/") => {
+            local_api_resolve_approval_response(workspace, path)
+        }
+        ("GET", path) if path.starts_with("/artifact/") => {
+            artifact_download_response(workspace, path)
+        }
         ("POST", path) if path.starts_with("/approval/") => {
             match resolve_review_approval_path(workspace, path) {
-                Ok(message) => http_response(
-                    "303 See Other",
-                    "text/plain; charset=utf-8",
-                    &message,
-                )
-                .replacen("\r\n\r\n", "\r\nLocation: /\r\n\r\n", 1),
+                Ok(message) => http_redirect("/", &message),
                 Err(err) => http_response(
                     "400 Bad Request",
                     "text/plain; charset=utf-8",
@@ -886,6 +956,249 @@ fn review_page_html(workspace: Utf8PathBuf) -> taskfence_core::Result<String> {
     }
     let approvals = LocalApprovalStore::new(workspace).list()?;
     Ok(render_review_page(&index, &reviews, &approvals))
+}
+
+#[derive(Serialize)]
+struct LocalApiTaskEvents {
+    task_id: TaskId,
+    path: Utf8PathBuf,
+    events: Vec<LocalApiEvent>,
+}
+
+#[derive(Serialize)]
+struct LocalApiEvent {
+    kind: String,
+    at: String,
+    summary: String,
+}
+
+#[derive(Serialize)]
+struct LocalApiApproval {
+    id: ApprovalId,
+    task_id: TaskId,
+    status: String,
+    actor: String,
+    source: Option<String>,
+    requested_at: String,
+    resolved_at: Option<String>,
+    action: String,
+    policy: String,
+}
+
+fn local_api_index_response(workspace: &Utf8PathBuf) -> Vec<u8> {
+    let store = LocalTaskEvidenceStore::new(workspace.clone());
+    match store.refresh_index() {
+        Ok(index) => http_json_response("200 OK", &index),
+        Err(err) => http_server_error(err),
+    }
+}
+
+fn local_api_tasks_response(workspace: &Utf8PathBuf) -> Vec<u8> {
+    match LocalTaskEvidenceStore::new(workspace.clone()).list_tasks() {
+        Ok(tasks) => http_json_response("200 OK", &tasks),
+        Err(err) => http_server_error(err),
+    }
+}
+
+fn local_api_task_response(workspace: &Utf8PathBuf, path: &str) -> Vec<u8> {
+    let Some(task_id) = route_suffix(path, "/api/task/") else {
+        return http_response("404 Not Found", "text/plain; charset=utf-8", "not found");
+    };
+    let store = LocalTaskEvidenceStore::new(workspace.clone());
+    match store.read_task_review(&TaskId(task_id)) {
+        Ok(review) => http_json_response("200 OK", &review),
+        Err(err) => http_not_found(err),
+    }
+}
+
+fn local_api_artifacts_response(workspace: &Utf8PathBuf, path: &str) -> Vec<u8> {
+    let Some(task_id) = route_suffix(path, "/api/artifacts/") else {
+        return http_response("404 Not Found", "text/plain; charset=utf-8", "not found");
+    };
+    let store = LocalTaskEvidenceStore::new(workspace.clone());
+    match store.read_artifacts(&TaskId(task_id)) {
+        Ok(artifacts) => http_json_response("200 OK", &artifacts),
+        Err(err) => http_not_found(err),
+    }
+}
+
+fn local_api_events_response(workspace: &Utf8PathBuf, path: &str) -> Vec<u8> {
+    let Some(task_id) = route_suffix(path, "/api/events/") else {
+        return http_response("404 Not Found", "text/plain; charset=utf-8", "not found");
+    };
+    let task_id = TaskId(task_id);
+    let store = LocalTaskEvidenceStore::new(workspace.clone());
+    match store.read_events(&task_id) {
+        Ok(events) => {
+            let response = LocalApiTaskEvents {
+                task_id,
+                path: events.path.clone(),
+                events: events
+                    .events
+                    .iter()
+                    .map(|event| LocalApiEvent {
+                        kind: event_kind(event).into(),
+                        at: event_time(event),
+                        summary: event_summary(event),
+                    })
+                    .collect(),
+            };
+            http_json_response("200 OK", &response)
+        }
+        Err(err) => http_not_found(err),
+    }
+}
+
+fn local_api_logs_response(workspace: &Utf8PathBuf, path: &str) -> Vec<u8> {
+    let Some(task_id) = route_suffix(path, "/api/logs/") else {
+        return http_response("404 Not Found", "text/plain; charset=utf-8", "not found");
+    };
+    let store = LocalTaskEvidenceStore::new(workspace.clone());
+    match store.read_logs(&TaskId(task_id)) {
+        Ok(logs) => http_json_response("200 OK", &logs),
+        Err(err) => http_not_found(err),
+    }
+}
+
+fn local_api_diff_response(workspace: &Utf8PathBuf, path: &str) -> Vec<u8> {
+    let Some(task_id) = route_suffix(path, "/api/diff/") else {
+        return http_response("404 Not Found", "text/plain; charset=utf-8", "not found");
+    };
+    let store = LocalTaskEvidenceStore::new(workspace.clone());
+    match store.read_diff(&TaskId(task_id)) {
+        Ok(diff) => http_json_response("200 OK", &diff),
+        Err(err) => http_not_found(err),
+    }
+}
+
+fn local_api_report_response(workspace: &Utf8PathBuf, path: &str) -> Vec<u8> {
+    let Some(task_id) = route_suffix(path, "/api/report/") else {
+        return http_response("404 Not Found", "text/plain; charset=utf-8", "not found");
+    };
+    let store = LocalTaskEvidenceStore::new(workspace.clone());
+    match store.read_report(&TaskId(task_id)) {
+        Ok(report) => http_json_response("200 OK", &report),
+        Err(err) => http_not_found(err),
+    }
+}
+
+fn local_api_replay_response(workspace: &Utf8PathBuf, path: &str) -> Vec<u8> {
+    let Some(task_id) = route_suffix(path, "/api/replay/") else {
+        return http_response("404 Not Found", "text/plain; charset=utf-8", "not found");
+    };
+    let store = LocalTaskEvidenceStore::new(workspace.clone());
+    match store.replay_plan(&TaskId(task_id)) {
+        Ok(plan) => http_json_response("200 OK", &plan),
+        Err(err) => http_not_found(err),
+    }
+}
+
+fn local_api_compare_response(workspace: &Utf8PathBuf, path: &str) -> Vec<u8> {
+    let Some(suffix) = route_suffix(path, "/api/compare/") else {
+        return http_response("404 Not Found", "text/plain; charset=utf-8", "not found");
+    };
+    let parts = suffix.split('/').collect::<Vec<_>>();
+    if parts.len() != 2 {
+        return http_response(
+            "400 Bad Request",
+            "text/plain; charset=utf-8",
+            "compare route requires /api/compare/<left>/<right>",
+        );
+    }
+    let store = LocalTaskEvidenceStore::new(workspace.clone());
+    match store.compare_tasks(&TaskId(parts[0].into()), &TaskId(parts[1].into())) {
+        Ok(comparison) => http_json_response("200 OK", &comparison),
+        Err(err) => http_not_found(err),
+    }
+}
+
+fn local_api_approvals_response(workspace: &Utf8PathBuf) -> Vec<u8> {
+    match LocalApprovalStore::new(workspace.clone()).list() {
+        Ok(records) => {
+            let approvals = records.iter().map(local_api_approval).collect::<Vec<_>>();
+            http_json_response("200 OK", &approvals)
+        }
+        Err(err) => http_server_error(err),
+    }
+}
+
+fn local_api_approval_response(workspace: &Utf8PathBuf, path: &str) -> Vec<u8> {
+    let Some(approval_id) = route_suffix(path, "/api/approval/") else {
+        return http_response("404 Not Found", "text/plain; charset=utf-8", "not found");
+    };
+    match LocalApprovalStore::new(workspace.clone()).read(&ApprovalId(approval_id)) {
+        Ok(record) => http_json_response("200 OK", &local_api_approval(&record)),
+        Err(err) => http_not_found(err),
+    }
+}
+
+fn local_api_resolve_approval_response(workspace: &Utf8PathBuf, path: &str) -> Vec<u8> {
+    let Some(suffix) = route_suffix(path, "/api/approval/") else {
+        return http_response("404 Not Found", "text/plain; charset=utf-8", "not found");
+    };
+    match resolve_review_approval_path(workspace, &format!("/approval/{suffix}")) {
+        Ok(_) => local_api_approval_response(
+            workspace,
+            &format!(
+                "/api/approval/{}",
+                suffix.split('/').next().unwrap_or_default()
+            ),
+        ),
+        Err(err) => http_error(err),
+    }
+}
+
+fn artifact_download_response(workspace: &Utf8PathBuf, path: &str) -> Vec<u8> {
+    let Some(suffix) = route_suffix(path, "/artifact/") else {
+        return http_response("404 Not Found", "text/plain; charset=utf-8", "not found");
+    };
+    let mut parts = suffix.splitn(2, '/');
+    let Some(task_id) = parts.next().filter(|part| !part.is_empty()) else {
+        return http_response("404 Not Found", "text/plain; charset=utf-8", "not found");
+    };
+    let Some(relative_path) = parts.next().filter(|part| !part.is_empty()) else {
+        return http_response(
+            "400 Bad Request",
+            "text/plain; charset=utf-8",
+            "artifact route requires /artifact/<task-id>/<relative-path>",
+        );
+    };
+    let relative_path = match url_decode_path_component(relative_path) {
+        Ok(value) => Utf8PathBuf::from(value),
+        Err(err) => return http_error(err),
+    };
+    let store = LocalTaskEvidenceStore::new(workspace.clone());
+    match store.artifact_route(&TaskId(task_id.into()), &relative_path) {
+        Ok(route) => match fs::read(route.path.as_std_path()) {
+            Ok(bytes) => http_bytes_response("200 OK", "application/octet-stream", &bytes),
+            Err(err) => http_server_error(TaskFenceError::State(format!(
+                "failed to read artifact route {}: {err}",
+                route.relative_path
+            ))),
+        },
+        Err(err) => http_not_found(err),
+    }
+}
+
+fn local_api_approval(record: &ApprovalRecord) -> LocalApiApproval {
+    LocalApiApproval {
+        id: record.id.clone(),
+        task_id: record.task_id.clone(),
+        status: approval_status(record).into(),
+        actor: record.actor.clone(),
+        source: record.source.clone(),
+        requested_at: record.requested_at.to_string(),
+        resolved_at: record.resolved_at.map(|time| time.to_string()),
+        action: approval_action_summary(&record.action),
+        policy: approval_policy_summary(&record.policy_decision),
+    }
+}
+
+fn route_suffix(path: &str, prefix: &str) -> Option<String> {
+    let path = path.split('?').next().unwrap_or(path);
+    path.strip_prefix(prefix)
+        .filter(|suffix| !suffix.is_empty())
+        .and_then(|suffix| url_decode_path_component(suffix).ok())
 }
 
 fn resolve_review_approval_path(
@@ -956,10 +1269,62 @@ fn url_decode_path_component(value: &str) -> taskfence_core::Result<String> {
     Ok(decoded)
 }
 
-fn http_response(status: &str, content_type: &str, body: &str) -> String {
-    format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
+    http_bytes_response(status, content_type, body.as_bytes())
+}
+
+fn http_json_response<T: Serialize>(status: &str, value: &T) -> Vec<u8> {
+    match serde_json::to_vec_pretty(value) {
+        Ok(bytes) => http_bytes_response(status, "application/json; charset=utf-8", &bytes),
+        Err(err) => http_response(
+            "500 Internal Server Error",
+            "text/plain; charset=utf-8",
+            &format!("failed to serialize local API JSON: {err}"),
+        ),
+    }
+}
+
+fn http_bytes_response(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
+    let mut response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(body);
+    response
+}
+
+fn http_redirect(location: &str, body: &str) -> Vec<u8> {
+    let mut response = format!(
+        "HTTP/1.1 303 See Other\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nLocation: {location}\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(body.as_bytes());
+    response
+}
+
+fn http_error(err: TaskFenceError) -> Vec<u8> {
+    http_response(
+        "400 Bad Request",
+        "text/plain; charset=utf-8",
+        &err.to_string(),
+    )
+}
+
+fn http_not_found(err: TaskFenceError) -> Vec<u8> {
+    http_response(
+        "404 Not Found",
+        "text/plain; charset=utf-8",
+        &err.to_string(),
+    )
+}
+
+fn http_server_error(err: TaskFenceError) -> Vec<u8> {
+    http_response(
+        "500 Internal Server Error",
+        "text/plain; charset=utf-8",
+        &err.to_string(),
     )
 }
 
@@ -1515,7 +1880,9 @@ fn render_review_page(
     html.push_str("</style></head><body>");
     html.push_str("<header><h1>TaskFence Review</h1><p>Workspace: ");
     html.push_str(&html_escape(index.workspace.as_str()));
-    html.push_str("</p></header><main>");
+    html.push_str(
+        "</p><p><a class=\"button\" href=\"/api/index\">Structured API</a></p></header><main>",
+    );
 
     html.push_str("<section><h2>Tasks</h2>");
     if index.tasks.is_empty() {
@@ -1625,6 +1992,19 @@ fn render_review_task(html: &mut String, review: &LocalTaskReview) {
     html.push_str("</p><p>");
     html.push_str(&html_escape(task.goal.as_deref().unwrap_or("-")));
     html.push_str("</p>");
+    if let Some(artifacts) = &review.artifacts {
+        html.push_str("<div class=\"toolbar\">");
+        for artifact in &artifacts.files {
+            html.push_str("<a class=\"button\" href=\"/artifact/");
+            html.push_str(&html_escape(&task.task_id.0));
+            html.push('/');
+            html.push_str(&html_escape(artifact.relative_path.as_str()));
+            html.push_str("\">");
+            html.push_str(&html_escape(artifact.relative_path.as_str()));
+            html.push_str("</a>");
+        }
+        html.push_str("</div>");
+    }
 
     html.push_str("<h3>Replay</h3><p>");
     if review.replay.can_replay {
@@ -1945,7 +2325,7 @@ fn handle_gateway_listener_stream(
             let body = serde_json::json!({ "error": err.to_string() }).to_string();
             let response =
                 http_response("400 Bad Request", "application/json; charset=utf-8", &body);
-            stream.write_all(response.as_bytes()).map_err(|write_err| {
+            stream.write_all(&response).map_err(|write_err| {
                 TaskFenceError::Gateway(format!(
                     "failed to write gateway listener response: {write_err}"
                 ))
@@ -1996,7 +2376,7 @@ fn handle_gateway_listener_stream(
         "application/json; charset=utf-8",
         &body,
     );
-    stream.write_all(response.as_bytes()).map_err(|err| {
+    stream.write_all(&response).map_err(|err| {
         TaskFenceError::Gateway(format!("failed to write gateway listener response: {err}"))
     })
 }
@@ -3213,6 +3593,33 @@ mod tests {
     }
 
     #[test]
+    fn parses_state_index_command() {
+        let cli = Cli::try_parse_from([
+            "taskfence",
+            "state",
+            "index",
+            "--workspace",
+            "repo",
+            "--read-only",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::State {
+                command:
+                    StateCommand::Index {
+                        workspace,
+                        read_only,
+                    },
+            } => {
+                assert_eq!(workspace, Utf8PathBuf::from("repo"));
+                assert!(read_only);
+            }
+            other => panic!("expected state index command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_approvals_default_workspace() {
         let cli = Cli::try_parse_from(["taskfence", "approvals"]).unwrap();
 
@@ -3848,6 +4255,35 @@ mod tests {
     }
 
     #[test]
+    fn state_index_command_refreshes_and_reads_structured_index() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(
+            &task_file,
+            task_yaml("cli-state-index", &workspace, "echo ok"),
+        )
+        .unwrap();
+        run_task_with_runner(
+            task_file,
+            &FakeRunner::succeeding(),
+            RunApprovalMode::FailClosed,
+        )
+        .unwrap();
+
+        let refreshed = state_index_json(workspace.clone(), false).unwrap();
+        let read_only = state_index_json(workspace.clone(), true).unwrap();
+
+        assert!(workspace
+            .join(".taskfence/state/local-index.json")
+            .is_file());
+        assert!(refreshed.contains("\"source\": \"StructuredEvidence\""));
+        assert!(refreshed.contains("\"task_id\": \"cli-state-index\""));
+        assert_eq!(refreshed, read_only);
+    }
+
+    #[test]
     fn review_command_writes_local_html_from_structured_evidence() {
         let temp = tempfile::tempdir().unwrap();
         let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
@@ -3894,6 +4330,8 @@ mod tests {
         assert!(html.contains("taskfence deny approval-review-1"));
         assert!(html.contains("Task events"));
         assert!(html.contains("TaskFence Report"));
+        assert!(html.contains("/api/index"));
+        assert!(html.contains("/artifact/cli-review/report.md"));
         assert!(!html.contains("secret-value"));
     }
 
@@ -3927,13 +4365,129 @@ mod tests {
 
         let response = review_http_response(&workspace, &request);
 
-        assert!(response.starts_with("HTTP/1.1 303 See Other"));
+        assert!(response_text(&response).starts_with("HTTP/1.1 303 See Other"));
         let record = LocalApprovalStore::new(workspace)
             .read(&approval_id)
             .unwrap();
         assert_eq!(record.decision, Some(ApprovalDecision::Approved));
         assert_eq!(record.actor, "local-review");
         assert_eq!(record.source.as_deref(), Some("review-ui"));
+    }
+
+    #[test]
+    fn review_http_api_routes_return_structured_state_and_resolve_approval() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(&task_file, task_yaml("api-task", &workspace, "echo ok")).unwrap();
+        run_task_with_runner(
+            task_file,
+            &FakeRunner::succeeding(),
+            RunApprovalMode::FailClosed,
+        )
+        .unwrap();
+        let approval_id = create_pending_approval(&workspace, "approval-api-1");
+
+        let index_response = review_http_response(
+            &workspace,
+            &ReviewHttpRequest {
+                method: "GET".into(),
+                path: "/api/index".into(),
+            },
+        );
+        let index_json: serde_json::Value =
+            serde_json::from_str(&response_body_text(&index_response)).unwrap();
+        assert_eq!(index_json["source"], "StructuredEvidence");
+        assert_eq!(index_json["tasks"][0]["task_id"], "api-task");
+
+        let task_response = review_http_response(
+            &workspace,
+            &ReviewHttpRequest {
+                method: "GET".into(),
+                path: "/api/task/api-task".into(),
+            },
+        );
+        let task_json: serde_json::Value =
+            serde_json::from_str(&response_body_text(&task_response)).unwrap();
+        assert_eq!(task_json["summary"]["status"], "Succeeded");
+        assert!(task_json["events"]["events"].as_array().unwrap().len() >= 2);
+
+        let events_response = review_http_response(
+            &workspace,
+            &ReviewHttpRequest {
+                method: "GET".into(),
+                path: "/api/events/api-task".into(),
+            },
+        );
+        let events_json: serde_json::Value =
+            serde_json::from_str(&response_body_text(&events_response)).unwrap();
+        assert_eq!(events_json["task_id"], "api-task");
+        assert!(events_json["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["summary"]
+                .as_str()
+                .is_some_and(|summary| summary.contains("goal: CLI test"))));
+
+        let approval_response = review_http_response(
+            &workspace,
+            &ReviewHttpRequest {
+                method: "POST".into(),
+                path: "/api/approval/approval-api-1/approve".into(),
+            },
+        );
+        let approval_json: serde_json::Value =
+            serde_json::from_str(&response_body_text(&approval_response)).unwrap();
+        assert_eq!(approval_json["id"], approval_id.0);
+        assert_eq!(approval_json["status"], "approved");
+        assert_eq!(
+            LocalApprovalStore::new(workspace)
+                .read(&approval_id)
+                .unwrap()
+                .decision,
+            Some(ApprovalDecision::Approved)
+        );
+    }
+
+    #[test]
+    fn review_http_artifact_route_serves_valid_artifacts_and_rejects_escape() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(&task_file, task_yaml("artifact-api", &workspace, "echo ok")).unwrap();
+        run_task_with_runner(
+            task_file,
+            &FakeRunner::succeeding(),
+            RunApprovalMode::FailClosed,
+        )
+        .unwrap();
+        fs::write(
+            workspace.join(".taskfence/tasks/artifact-api/artifacts/manifest.json"),
+            "{}\n",
+        )
+        .unwrap();
+
+        let response = review_http_response(
+            &workspace,
+            &ReviewHttpRequest {
+                method: "GET".into(),
+                path: "/artifact/artifact-api/artifacts/manifest.json".into(),
+            },
+        );
+        assert!(response_text(&response).starts_with("HTTP/1.1 200 OK"));
+        assert_eq!(response_body_bytes(&response), b"{}\n");
+
+        let escape = review_http_response(
+            &workspace,
+            &ReviewHttpRequest {
+                method: "GET".into(),
+                path: "/artifact/artifact-api/../secret.txt".into(),
+            },
+        );
+        assert!(response_text(&escape).starts_with("HTTP/1.1 404 Not Found"));
     }
 
     #[test]
@@ -5396,5 +5950,22 @@ permissions:
             );
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    fn response_text(response: &[u8]) -> String {
+        String::from_utf8_lossy(response).into_owned()
+    }
+
+    fn response_body_bytes(response: &[u8]) -> &[u8] {
+        let split = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|index| index + 4)
+            .expect("HTTP response should contain a header/body separator");
+        &response[split..]
+    }
+
+    fn response_body_text(response: &[u8]) -> String {
+        String::from_utf8_lossy(response_body_bytes(response)).into_owned()
     }
 }

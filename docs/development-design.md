@@ -59,7 +59,9 @@ Recommended core crates:
 - `tracing` and `tracing-subscriber` for structured runtime diagnostics.
 - `thiserror` for domain errors.
 - `uuid`, `time`, and `camino` for IDs, timestamps, and UTF-8 paths.
-- `sqlx` with SQLite for local state once persistent task queries are needed.
+- `sqlx` with SQLite for local state once cross-workspace or server-backed
+  persistent task queries are needed. The current local state slice uses a
+  durable JSON index derived from structured `.taskfence` evidence.
 - `bollard` or direct Docker CLI execution behind a runner port. Start with the
   Docker CLI adapter if it reduces platform risk; keep the interface stable so
   `bollard` can replace it without touching orchestration.
@@ -72,9 +74,10 @@ Recommended core crates:
 The current local review UI is generated and optionally foreground-served by
 the Rust CLI from file-backed task evidence. It is intentionally bounded to
 workspace-local review, approval resolution, report/log/diff/event inspection,
-structured comparison, and replay planning. A future persistent Web UI can use
-TypeScript, React, Vite, and TanStack Router/Query after a stable local API
-server exists.
+contained artifact downloads, structured comparison, replay planning, and
+foreground loopback JSON API routes while `taskfence review --serve` is
+running. A future persistent Web UI can use TypeScript, React, Vite, and
+TanStack Router/Query after a stable long-lived local API server exists.
 
 Any persistent Web UI must consume API/state contracts owned by the core
 runtime; it must not become the source of truth for task state, approval state,
@@ -138,6 +141,7 @@ Initial commands:
 - `taskfence task <task-id> --workspace <workspace>`
 - `taskfence inputs <task-id> --workspace <workspace>`
 - `taskfence artifacts <task-id> --workspace <workspace>`
+- `taskfence state index --workspace <workspace> [--read-only]`
 - `taskfence compare <left-task-id> <right-task-id> --workspace <workspace>`
 - `taskfence status <task-id> --workspace <workspace>`
 - `taskfence events <task-id> --workspace <workspace>`
@@ -509,16 +513,19 @@ Owns queryable task state.
 Phase 1 can be filesystem-backed. The current local review and replay-planning
 foundation stays filesystem-backed and reads structured evidence from
 `.taskfence/tasks` plus workspace-local approvals from `.taskfence/approvals`.
+It can also persist `.taskfence/state/local-index.json`, a durable JSON index
+derived from structured evidence rather than rendered Markdown reports.
 Introduce SQLite only when cross-workspace indexing, live query refresh,
-team-server migration, or persistent API queries require structured
+team-server migration, or long-lived persistent API queries require structured
 persistence.
 
 Current filesystem-backed state can read reports, structured event summaries,
 captured diffs, captured logs, resolved task inputs, artifact manifests, and
 workspace-local task summaries and comparisons from `.taskfence/tasks`. It can
-assemble local review detail and replay plans from those same files. Task
-summaries use structured `task.resolved.json` and `events.jsonl` evidence and
-do not infer status from rendered report text.
+assemble local review detail, contained artifact routes, replay plans, and the
+local JSON state index from those same files. Task summaries use structured
+`task.resolved.json` and `events.jsonl` evidence and do not infer status from
+rendered report text.
 
 The team-server foundation lives here as a contract before a service exists. It
 defines typed team API resources, RBAC and organization-policy decisions,
@@ -1014,6 +1021,10 @@ The first usable version is complete when:
   adapters, the bounded `github_rest` / `github_enterprise_rest` adapter, or
   contract-only enterprise connectors that fail closed for live execution, not
   arbitrary external tool execution.
+- `taskfence state index` can persist a workspace-local JSON index from
+  structured evidence, and `taskfence review --serve` exposes loopback-only
+  JSON routes for local evidence, approvals, comparisons, replay inputs, and
+  contained artifact downloads while it is running.
 - Approval-required actions fail closed by default in local mode. Operators can
   opt into in-process terminal approval with `taskfence run --interactive-approval`
   or explicitly wait for workspace-local external approval with
@@ -1029,8 +1040,8 @@ Current unsupported surfaces must remain explicit in docs and errors: Docker
 domain allowlists without the configured local gateway egress boundary,
 production MCP servers, arbitrary HTTP proxying, SDK/webhook connectors,
 branch/commit behavior outside the bounded GitHub REST family, arbitrary
-in-container command observation, persistent Web/API server behavior,
-SQLite-backed state migration, live Postgres backend, deterministic replay
-execution, persistent team server,
+in-container command observation, long-lived persistent Web/API daemon
+behavior, SQLite-backed state migration, live Postgres backend, deterministic
+replay execution, persistent team server,
 live audit export sink, Slack, and live enterprise behavior beyond the bounded
 GitHub REST family.

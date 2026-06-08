@@ -249,38 +249,43 @@ Current local coverage:
   JSONL status events rather than rendered report text
 - `taskfence task <task-id> --workspace <workspace>` reads a single
   workspace-local task summary and artifact availability without a report text
-  scrape, persistent API server, or SQLite index
+  scrape
 - `taskfence inputs <task-id> --workspace <workspace>` reads the saved
   workspace-local `task.resolved.json` as replay input evidence without replay
-  execution, persistent API server, SQLite index, or report scraping
+  execution or report scraping
 - `taskfence artifacts <task-id> --workspace <workspace>` lists known
-  workspace-local evidence files and immediate custom artifact files without an
-  artifact download flow, recursive browser, persistent API server, or SQLite
-  index
+  workspace-local evidence files and immediate custom artifact files without
+  reading their contents or recursively traversing artifact subdirectories
+- `taskfence state index --workspace <workspace>` rebuilds and prints a
+  durable local JSON index at `.taskfence/state/local-index.json` from
+  structured task evidence; `--read-only` prints the existing index without
+  refreshing it
 - `taskfence compare <left-task-id> <right-task-id> --workspace <workspace>`
   compares two workspace-local task summaries from structured evidence without
-  replay execution, persistent API server, SQLite index, report scraping, or
-  artifact content diffing
+  replay execution, report scraping, or artifact content diffing
 - `taskfence status <task-id> --workspace <workspace>` reads the latest
   workspace-local task status from structured status events without a report
-  text scrape, persistent API server, or SQLite index
+  text scrape
 - `taskfence events <task-id> --workspace <workspace>` reads a structured
-  workspace-local event timeline from `events.jsonl` without replay execution,
-  persistent API server, SQLite index, or raw tool parameter rendering
-- `taskfence diff <task-id> --workspace <workspace>` reads the workspace-local
-  `diff.patch` artifact without a browser diff viewer or SQLite index
+  workspace-local event timeline from `events.jsonl` without replay execution
+  or raw tool parameter rendering
+- `taskfence diff <task-id> --workspace <workspace>` reads the
+  workspace-local `diff.patch` artifact without a browser diff viewer
 - `taskfence approvals --workspace <workspace>` lists workspace-local approval
-  records from `.taskfence/approvals` without a persistent API server or SQLite
-  index
+  records from `.taskfence/approvals`
 - `taskfence approval <approval-id> --workspace <workspace>` reads one
-  workspace-local approval record from `.taskfence/approvals` without an
-  persistent API server, SQLite index, or raw tool parameter rendering
+  workspace-local approval record from `.taskfence/approvals` without raw tool
+  parameter rendering
 - `taskfence review --workspace <workspace>` renders a static local HTML review
   page from file-backed task summaries, pending approvals, event timelines,
   diffs, logs, reports, replay plans, and a structured run-comparison table
 - `taskfence review --workspace <workspace> --serve --port <port>` serves that
   review page on loopback in the foreground and resolves pending
-  workspace-local approvals through explicit approve/deny POST routes
+  workspace-local approvals through explicit approve/deny POST routes. While
+  running, it exposes loopback-only JSON routes under `/api/...` for the local
+  index, task evidence, comparisons, replay inputs, approvals, and approval
+  resolution, plus contained artifact download routes for known evidence and
+  artifact files.
 - `taskfence replay plan <task-id> --workspace <workspace>` reports saved
   replay inputs, last status, blockers, and limitations without executing
   replay
@@ -288,17 +293,19 @@ Current local coverage:
 Deliverables:
 
 - implemented: task list, evidence detail page, pending approval review,
-  approve/deny actions, report/log/diff/event viewing, replay input planning,
-  and structured comparison for multiple runs
-- remaining: live log streaming, richer browser diff interactions, persistent
-  local API server, SQLite-backed state migration, artifact download routing,
-  and deterministic replay execution
+  approve/deny actions, report/log/diff/event viewing, durable local JSON state
+  index, foreground loopback JSON API routes, contained artifact downloads,
+  replay input planning, and structured comparison for multiple runs
+- remaining: live log streaming, richer browser diff interactions, long-lived
+  local API daemon, SQLite-backed state migration, and deterministic replay
+  execution
 
 Minimum demo:
 
 - reviewer can inspect a local task, read its report/log/diff/event evidence,
-  compare multiple runs, and approve or deny a pending workspace-local action
-  from the loopback review page
+  download known evidence/artifact files, compare multiple runs, and approve or
+  deny a pending workspace-local action from the loopback review page or JSON
+  API
 
 ## Phase 5: Runner Expansion
 
@@ -340,7 +347,7 @@ Current team-server foundation:
   source-of-truth state
 - implemented: audit export as an RBAC/API boundary with validated sink
   contracts and an explicit unsupported live export-sink error
-- remaining: persistent API server, live Postgres backend, durable worker
+- remaining: persistent team API server, live Postgres backend, durable worker
   queue, SSO, team quota/chargeback, object storage, remote-runner-backed team
   execution, live SIEM export sink, and live GitHub Enterprise/GitLab team
   integrations
