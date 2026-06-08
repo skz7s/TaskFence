@@ -218,9 +218,9 @@ Current implemented gateway coverage:
   parameter values
 - production MCP servers, arbitrary HTTP proxying, SDK/webhook connectors,
   branch/commit behavior outside the bounded GitHub REST family, persistent
-  Web/API server behavior, deterministic replay execution, team-server, and
-  live enterprise connector execution beyond the bounded GitHub REST family
-  remain future work
+  Web/API server behavior, replay for unsupported live connector effects,
+  team-server, and live enterprise connector execution beyond the bounded
+  GitHub REST family remain future work
 
 Current local fixture demo:
 
@@ -289,16 +289,24 @@ Current local coverage:
 - `taskfence replay plan <task-id> --workspace <workspace>` reports saved
   replay inputs, last status, blockers, and limitations without executing
   replay
+- `taskfence replay run <task-id> --workspace <workspace>
+  [--replay-id <task-id>] [--accept-limitations]` executes supported local
+  replay inputs through the same orchestrator and runner boundary, writes a new
+  local task evidence directory, compares source/replay structured summaries,
+  and writes `artifacts/replay.json`; it fails closed for missing inputs,
+  existing replay ids, live or contract-only connector effects, foreground
+  listener mode, and network allow/default-allow requirements
 
 Deliverables:
 
 - implemented: task list, evidence detail page, pending approval review,
   approve/deny actions, report/log/diff/event viewing, durable local JSON state
   index, foreground loopback JSON API routes, contained artifact downloads,
-  replay input planning, and structured comparison for multiple runs
+  replay input planning, bounded local replay execution, and structured
+  comparison for multiple runs
 - remaining: live log streaming, richer browser diff interactions, long-lived
-  local API daemon, SQLite-backed state migration, and deterministic replay
-  execution
+  local API daemon, SQLite-backed state migration, and replay support for live
+  connector effects or other non-deterministic external state
 
 Minimum demo:
 

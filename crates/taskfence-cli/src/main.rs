@@ -13,9 +13,9 @@ use taskfence_config::load_task_file;
 use taskfence_core::{
     validate_task_for_run, Action, ActionDecision, ApprovalDecision, ApprovalEngine, ApprovalId,
     ApprovalRecord, ArtifactRefs, ArtifactStore, AuditEvent, AuditLogger, ExitStatus,
-    GatewayConnectorConfig, LogStream, NetworkDefault, Orchestrator, RedactedValue,
+    GatewayConnectorConfig, GatewayMode, LogStream, NetworkDefault, Orchestrator, RedactedValue,
     ReportGenerator, ResolvedTask, RiskLevel, Runner, StateStore, TaskFenceError, TaskId,
-    TaskStatus, TaskValidation, ToolAction, ToolExecution, ToolExecutionContext,
+    TaskResult, TaskStatus, TaskValidation, ToolAction, ToolExecution, ToolExecutionContext,
     ToolExecutionErrorKind, GATEWAY_EGRESS_TOOL_NAME, GATEWAY_EGRESS_TOOL_OPERATION,
     GATEWAY_EGRESS_TOOL_PROTOCOL,
 };
@@ -31,8 +31,9 @@ use taskfence_policy::BuiltInPolicyEngine;
 use taskfence_report::MarkdownReportGenerator;
 use taskfence_runner::ExpandedRunner;
 use taskfence_state::{
-    InMemoryStateStore, LocalReviewIndex, LocalTaskEvidenceStore, LocalTaskReview, ReplayPlan,
-    TaskArtifactKind, TaskArtifacts, TaskEvents, TaskLogs, TaskSummary,
+    InMemoryStateStore, LocalReviewIndex, LocalTaskComparison, LocalTaskEvidenceStore,
+    LocalTaskReview, ReplayEvaluation, ReplayPlan, ReplayRunRecord, TaskArtifactKind,
+    TaskArtifacts, TaskEvents, TaskLogs, TaskSummary,
 };
 
 #[derive(Debug, Parser)]
@@ -160,7 +161,7 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         port: u16,
     },
-    /// Plan replay from saved task evidence without executing it.
+    /// Plan or execute replay from saved task evidence.
     Replay {
         #[command(subcommand)]
         command: ReplayCommand,
@@ -219,6 +220,20 @@ enum ReplayCommand {
         /// Workspace that owns the .taskfence task evidence directory.
         #[arg(long, default_value = ".")]
         workspace: Utf8PathBuf,
+    },
+    /// Execute a supported local replay from saved structured task evidence.
+    Run {
+        /// Task ID to replay.
+        task_id: String,
+        /// Workspace that owns the .taskfence task evidence directory.
+        #[arg(long, default_value = ".")]
+        workspace: Utf8PathBuf,
+        /// Override the replay task id. Defaults to <task-id>-replay.
+        #[arg(long)]
+        replay_id: Option<String>,
+        /// Execute despite recorded non-deterministic limitations.
+        #[arg(long)]
+        accept_limitations: bool,
     },
 }
 
@@ -423,6 +438,12 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
         } => show_review(workspace, output, serve, port),
         Command::Replay { command } => match command {
             ReplayCommand::Plan { task_id, workspace } => show_replay_plan(workspace, task_id),
+            ReplayCommand::Run {
+                task_id,
+                workspace,
+                replay_id,
+                accept_limitations,
+            } => show_replay_run(workspace, task_id, replay_id, accept_limitations),
         },
         Command::State { command } => match command {
             StateCommand::Index {
@@ -680,6 +701,47 @@ fn show_replay_plan(workspace: Utf8PathBuf, task_id: String) -> taskfence_core::
     Ok(())
 }
 
+fn show_replay_run(
+    workspace: Utf8PathBuf,
+    task_id: String,
+    replay_id: Option<String>,
+    accept_limitations: bool,
+) -> taskfence_core::Result<()> {
+    let runner = ExpandedRunner::new();
+    let record = replay_run_with_runner(
+        workspace,
+        &TaskId(task_id),
+        replay_id.map(TaskId),
+        accept_limitations,
+        &runner,
+    )?;
+    println!("Replay finished");
+    println!("  source: {}", record.source_task_id.0);
+    println!("  replay: {}", record.replay_task_id.0);
+    println!(
+        "  source_status: {}",
+        record
+            .evaluation
+            .source_status
+            .as_ref()
+            .map(|status| format!("{status:?}"))
+            .unwrap_or_else(|| "-".into())
+    );
+    println!(
+        "  replay_status: {}",
+        record
+            .evaluation
+            .replay_status
+            .as_ref()
+            .map(|status| format!("{status:?}"))
+            .unwrap_or_else(|| "-".into())
+    );
+    println!("  deterministic: {}", record.deterministic);
+    push_stdout_list("differing_fields", &record.evaluation.differing_fields);
+    push_stdout_list("notes", &record.evaluation.notes);
+    Ok(())
+}
+
 fn show_state_index(workspace: Utf8PathBuf, read_only: bool) -> taskfence_core::Result<()> {
     println!("{}", state_index_json(workspace, read_only)?);
     Ok(())
@@ -786,6 +848,174 @@ fn events_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Resu
 fn replay_plan_text(workspace: Utf8PathBuf, task_id: &TaskId) -> taskfence_core::Result<String> {
     let store = LocalTaskEvidenceStore::new(workspace);
     Ok(render_replay_plan(&store.replay_plan(task_id)?))
+}
+
+fn replay_run_with_runner(
+    workspace: Utf8PathBuf,
+    task_id: &TaskId,
+    replay_id: Option<TaskId>,
+    accept_limitations: bool,
+    runner: &dyn Runner,
+) -> taskfence_core::Result<ReplayRunRecord> {
+    let store = LocalTaskEvidenceStore::new(workspace.clone());
+    let plan = store.replay_plan(task_id)?;
+    validate_replay_plan(&plan, accept_limitations)?;
+    let inputs = store.read_inputs(task_id)?;
+    let mut replay_task = inputs.task;
+    let replay_task_id = replay_id.unwrap_or_else(|| default_replay_task_id(task_id));
+    let replay_task_dir = store.task_dir(&replay_task_id)?;
+    if replay_task_dir.as_std_path().exists() {
+        return Err(TaskFenceError::State(format!(
+            "replay task id {} already has evidence at {replay_task_dir}",
+            replay_task_id.0
+        )));
+    }
+    replay_task.id = replay_task_id.clone();
+    validate_replay_task_contract(&replay_task)?;
+
+    let result = run_replay_resolved_task_with_runner(replay_task, runner)?;
+    let comparison =
+        LocalTaskEvidenceStore::new(workspace).compare_tasks(task_id, &replay_task_id)?;
+    let record = replay_record_from_result(
+        task_id,
+        &replay_task_id,
+        accept_limitations,
+        &plan,
+        &comparison,
+        &result,
+    );
+    write_replay_record(&result.artifacts.task_dir, &record)?;
+    Ok(record)
+}
+
+fn validate_replay_plan(plan: &ReplayPlan, accept_limitations: bool) -> taskfence_core::Result<()> {
+    if !plan.blockers.is_empty() {
+        return Err(TaskFenceError::State(format!(
+            "task {} cannot be replayed: {}",
+            plan.task_id.0,
+            plan.blockers.join("; ")
+        )));
+    }
+    if !plan.limitations.is_empty() && !accept_limitations {
+        return Err(TaskFenceError::State(format!(
+            "task {} replay has limitations; rerun with --accept-limitations to execute: {}",
+            plan.task_id.0,
+            plan.limitations.join("; ")
+        )));
+    }
+    Ok(())
+}
+
+fn validate_replay_task_contract(task: &ResolvedTask) -> taskfence_core::Result<()> {
+    if task
+        .gateway
+        .tools
+        .iter()
+        .any(|tool| !matches!(tool.connector, GatewayConnectorConfig::LocalFixture { .. }))
+    {
+        return Err(TaskFenceError::Gateway(
+            "replay execution blocks live or contract-only gateway connector effects".into(),
+        ));
+    }
+    if task.gateway.mode == GatewayMode::LocalListener {
+        return Err(TaskFenceError::Gateway(
+            "replay execution blocks foreground local listener effects".into(),
+        ));
+    }
+    if !task.permissions.network.allow_domains.is_empty()
+        || task.permissions.network.default == NetworkDefault::Allow
+    {
+        return Err(TaskFenceError::Runner(
+            "replay execution requires network disabled in the saved task input".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn default_replay_task_id(task_id: &TaskId) -> TaskId {
+    TaskId(format!("{}-replay", task_id.0))
+}
+
+fn run_replay_resolved_task_with_runner(
+    task: ResolvedTask,
+    runner: &dyn Runner,
+) -> taskfence_core::Result<TaskResult> {
+    let approval = LocalApprovalEngine::fail_closed();
+    run_resolved_task_collecting_result(task, runner, &approval)
+}
+
+fn run_resolved_task_collecting_result(
+    task: ResolvedTask,
+    runner: &dyn Runner,
+    approval: &dyn ApprovalEngine,
+) -> taskfence_core::Result<TaskResult> {
+    let artifacts = LocalArtifactStore::in_workspace();
+    let events_path = artifacts.task_dir(&task)?.join("events.jsonl");
+    let audit = LocalJsonlAuditLogger::new(events_path)?;
+    let policy = BuiltInPolicyEngine;
+    let adapter = GenericAgentAdapter;
+    let report = MarkdownReportGenerator::new();
+    let state = InMemoryStateStore::new();
+    let orchestrator = Orchestrator {
+        policy: &policy,
+        approval,
+        audit: &audit,
+        artifacts: &artifacts,
+        adapter: &adapter,
+        runner,
+        report: &report,
+        state: &state,
+    };
+    orchestrator.run(task)
+}
+
+fn replay_record_from_result(
+    source_task_id: &TaskId,
+    replay_task_id: &TaskId,
+    accepted_limitations: bool,
+    plan: &ReplayPlan,
+    comparison: &LocalTaskComparison,
+    result: &TaskResult,
+) -> ReplayRunRecord {
+    let mut notes = Vec::new();
+    if result.status != TaskStatus::Succeeded {
+        notes.push(
+            result
+                .message
+                .clone()
+                .unwrap_or_else(|| "replay task did not finish successfully".into()),
+        );
+    }
+    if !accepted_limitations && !plan.limitations.is_empty() {
+        notes.push("replay limitations were not accepted".into());
+    }
+    ReplayRunRecord {
+        source_task_id: source_task_id.clone(),
+        replay_task_id: replay_task_id.clone(),
+        accepted_limitations,
+        deterministic: plan.deterministic && comparison.differing_fields.is_empty(),
+        limitations: plan.limitations.clone(),
+        evaluation: ReplayEvaluation {
+            source_status: comparison.left.status.clone(),
+            replay_status: comparison.right.status.clone(),
+            differing_fields: comparison.differing_fields.clone(),
+            notes,
+        },
+    }
+}
+
+fn write_replay_record(
+    task_dir: &Utf8PathBuf,
+    record: &ReplayRunRecord,
+) -> taskfence_core::Result<Utf8PathBuf> {
+    let path = task_dir.join("artifacts/replay.json");
+    let bytes = serde_json::to_vec_pretty(record).map_err(|err| {
+        TaskFenceError::State(format!("failed to serialize replay record: {err}"))
+    })?;
+    fs::write(path.as_std_path(), bytes).map_err(|err| {
+        TaskFenceError::State(format!("failed to write replay record {path}: {err}"))
+    })?;
+    Ok(path)
 }
 
 fn state_index_json(workspace: Utf8PathBuf, read_only: bool) -> taskfence_core::Result<String> {
@@ -1852,6 +2082,17 @@ fn push_text_list(rendered: &mut String, label: &str, values: &[String]) {
         rendered.push_str("    - ");
         rendered.push_str(&compact_cell(value));
         rendered.push('\n');
+    }
+}
+
+fn push_stdout_list(label: &str, values: &[String]) {
+    if values.is_empty() {
+        println!("  {label}: -");
+        return;
+    }
+    println!("  {label}:");
+    for value in values {
+        println!("    - {value}");
     }
 }
 
@@ -3593,6 +3834,40 @@ mod tests {
     }
 
     #[test]
+    fn parses_replay_run_command() {
+        let cli = Cli::try_parse_from([
+            "taskfence",
+            "replay",
+            "run",
+            "task-123",
+            "--workspace",
+            "repo",
+            "--replay-id",
+            "task-123-retry",
+            "--accept-limitations",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Replay {
+                command:
+                    ReplayCommand::Run {
+                        task_id,
+                        workspace,
+                        replay_id,
+                        accept_limitations,
+                    },
+            } => {
+                assert_eq!(task_id, "task-123");
+                assert_eq!(workspace, Utf8PathBuf::from("repo"));
+                assert_eq!(replay_id.as_deref(), Some("task-123-retry"));
+                assert!(accept_limitations);
+            }
+            other => panic!("expected replay run command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_state_index_command() {
         let cli = Cli::try_parse_from([
             "taskfence",
@@ -4252,6 +4527,139 @@ mod tests {
         assert!(text.contains("task.resolved.json"));
         assert!(text.contains("events.jsonl"));
         assert!(text.contains("runner image availability"));
+    }
+
+    #[test]
+    fn replay_run_requires_accepting_recorded_limitations() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(
+            &task_file,
+            task_yaml("cli-replay-limits", &workspace, "echo ok"),
+        )
+        .unwrap();
+        run_task_with_runner(
+            task_file,
+            &FakeRunner::succeeding(),
+            RunApprovalMode::FailClosed,
+        )
+        .unwrap();
+
+        let err = replay_run_with_runner(
+            workspace,
+            &TaskId("cli-replay-limits".into()),
+            None,
+            false,
+            &FakeRunner::succeeding(),
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("--accept-limitations"))
+        );
+    }
+
+    #[test]
+    fn replay_run_executes_saved_local_task_and_writes_evaluation_artifact() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(
+            &task_file,
+            task_yaml("cli-replay-run", &workspace, "echo ok"),
+        )
+        .unwrap();
+        run_task_with_runner(
+            task_file,
+            &FakeRunner::succeeding(),
+            RunApprovalMode::FailClosed,
+        )
+        .unwrap();
+
+        let record = replay_run_with_runner(
+            workspace.clone(),
+            &TaskId("cli-replay-run".into()),
+            None,
+            true,
+            &FakeRunner::succeeding(),
+        )
+        .unwrap();
+
+        assert_eq!(record.source_task_id, TaskId("cli-replay-run".into()));
+        assert_eq!(
+            record.replay_task_id,
+            TaskId("cli-replay-run-replay".into())
+        );
+        assert!(record.accepted_limitations);
+        assert_eq!(record.evaluation.source_status, Some(TaskStatus::Succeeded));
+        assert_eq!(record.evaluation.replay_status, Some(TaskStatus::Succeeded));
+        assert!(record.evaluation.differing_fields.is_empty());
+        let replay_record_path =
+            workspace.join(".taskfence/tasks/cli-replay-run-replay/artifacts/replay.json");
+        let replay_json: serde_json::Value =
+            serde_json::from_slice(&fs::read(replay_record_path).unwrap()).unwrap();
+        assert_eq!(replay_json["source_task_id"], "cli-replay-run");
+        assert_eq!(replay_json["replay_task_id"], "cli-replay-run-replay");
+    }
+
+    #[test]
+    fn replay_run_rejects_existing_replay_task_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(
+            &task_file,
+            task_yaml("cli-replay-existing", &workspace, "echo ok"),
+        )
+        .unwrap();
+        run_task_with_runner(
+            task_file,
+            &FakeRunner::succeeding(),
+            RunApprovalMode::FailClosed,
+        )
+        .unwrap();
+        fs::create_dir_all(workspace.join(".taskfence/tasks/cli-replay-existing-replay")).unwrap();
+
+        let err = replay_run_with_runner(
+            workspace,
+            &TaskId("cli-replay-existing".into()),
+            None,
+            true,
+            &FakeRunner::succeeding(),
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::State(message) if message.contains("already has evidence"))
+        );
+    }
+
+    #[test]
+    fn replay_run_blocks_live_gateway_connector_effects() {
+        let (_temp, workspace, task_file) = gateway_github_rest_task("cli-replay-live-gateway");
+        run_task_with_runner(
+            task_file,
+            &FakeRunner::succeeding(),
+            RunApprovalMode::FailClosed,
+        )
+        .unwrap();
+
+        let err = replay_run_with_runner(
+            workspace,
+            &TaskId("cli-replay-live-gateway".into()),
+            None,
+            true,
+            &FakeRunner::succeeding(),
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Gateway(message) if message.contains("live or contract-only gateway"))
+        );
     }
 
     #[test]

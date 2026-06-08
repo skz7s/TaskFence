@@ -148,6 +148,7 @@ Initial commands:
 - `taskfence review --workspace <workspace> [--output <file>]`
 - `taskfence review --workspace <workspace> --serve [--port <port>]`
 - `taskfence replay plan <task-id> --workspace <workspace>`
+- `taskfence replay run <task-id> --workspace <workspace> [--replay-id <task-id>] [--accept-limitations]`
 - `taskfence logs <task-id>`
 - `taskfence diff <task-id>`
 - `taskfence approvals --workspace <workspace>`
@@ -1025,6 +1026,11 @@ The first usable version is complete when:
   structured evidence, and `taskfence review --serve` exposes loopback-only
   JSON routes for local evidence, approvals, comparisons, replay inputs, and
   contained artifact downloads while it is running.
+- `taskfence replay run` can execute supported local replay inputs from saved
+  `task.resolved.json`, write a new local task evidence directory, compare
+  source/replay structured summaries, and write `artifacts/replay.json`; it
+  fails closed for live connector effects, foreground listener mode, existing
+  replay ids, missing inputs, and unsupported network requirements.
 - Approval-required actions fail closed by default in local mode. Operators can
   opt into in-process terminal approval with `taskfence run --interactive-approval`
   or explicitly wait for workspace-local external approval with
@@ -1041,7 +1047,7 @@ domain allowlists without the configured local gateway egress boundary,
 production MCP servers, arbitrary HTTP proxying, SDK/webhook connectors,
 branch/commit behavior outside the bounded GitHub REST family, arbitrary
 in-container command observation, long-lived persistent Web/API daemon
-behavior, SQLite-backed state migration, live Postgres backend, deterministic
-replay execution, persistent team server,
+behavior, SQLite-backed state migration, live Postgres backend, replay for
+unsupported live connector effects, persistent team server,
 live audit export sink, Slack, and live enterprise behavior beyond the bounded
 GitHub REST family.

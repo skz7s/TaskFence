@@ -218,6 +218,26 @@ pub struct ReplayPlan {
     pub limitations: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplayRunRecord {
+    pub source_task_id: TaskId,
+    pub replay_task_id: TaskId,
+    pub accepted_limitations: bool,
+    pub deterministic: bool,
+    pub limitations: Vec<String>,
+    pub evaluation: ReplayEvaluation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplayEvaluation {
+    pub source_status: Option<TaskStatus>,
+    pub replay_status: Option<TaskStatus>,
+    pub differing_fields: Vec<String>,
+    pub notes: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TeamApiResource {
     TaskList,

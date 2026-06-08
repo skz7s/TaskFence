@@ -127,8 +127,8 @@ Verification:
 
 Status: in_progress
 
-This plan is active. Phases 1, 2, and 3 are complete. The next executable
-phase is Phase 4, deterministic replay and evaluation.
+This plan is active. Phases 1, 2, 3, and 4 are complete. The next executable
+phase is Phase 5, live remote runner backends.
 
 ## Phases
 
@@ -323,7 +323,7 @@ Completion evidence:
 
 ### Phase 4: Deterministic Replay And Evaluation
 
-Status: pending
+Status: done
 
 Scope:
 
@@ -348,7 +348,36 @@ cargo test -p taskfence-core -p taskfence-state -p taskfence-runner -p taskfence
 
 Completion evidence:
 
-- Pending.
+- Started on 2026-06-08 after Phase 3 was marked done and committed as
+  `5fccb18` (`state: add persistent local API and review data model`).
+- Added `taskfence replay run <task-id> --workspace <workspace>
+  [--replay-id <task-id>] [--accept-limitations]` as the bounded executable
+  replay path for supported local replay inputs.
+- Replay execution loads saved `task.resolved.json`, assigns a new replay task
+  id, runs through the same local orchestrator, policy, approval, audit,
+  artifact, runner, and report pipeline, compares source/replay structured
+  summaries, and writes `artifacts/replay.json` in the replay task artifact
+  directory.
+- Replay remains fail-closed for missing resolved inputs, existing replay
+  evidence ids, live or contract-only gateway connector effects, foreground
+  local listener mode, domain allowlists, and default-allow network
+  requirements. Recorded non-deterministic limitations require explicit
+  `--accept-limitations`.
+- Added structured `ReplayRunRecord` and `ReplayEvaluation` state contracts so
+  replay evidence is JSON state rather than report scraping.
+- Added CLI tests for replay command parsing, limitation acknowledgement,
+  successful local replay execution with evaluation artifact, replay id
+  overwrite rejection, and live connector effect blocking.
+- Updated README, architecture, roadmap, development design, runtime
+  architecture, and
+  `docs/decisions/2026-06-08-bounded-local-replay-execution.md` to document
+  bounded local replay without claiming replay of live connector side effects,
+  deterministic image snapshots, cross-workspace replay, or team evaluation.
+- Verification passed: `cargo fmt --all --check`.
+- Verification passed: `cargo test -p taskfence-core -p taskfence-state -p taskfence-runner -p taskfence-gateway -p taskfence-cli`
+  (104 CLI tests, 6 core tests, 52 gateway tests, 20 runner tests, 50 state
+  tests, and doc-tests; Docker integration remained ignored because it
+  requires a Docker daemon and local image).
 
 ### Phase 5: Live Remote Runner Backends
 

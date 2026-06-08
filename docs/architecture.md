@@ -65,9 +65,10 @@ live database. The local state/review path now has a durable JSON index at
 loopback-only review API routes while the foreground review server is running.
 Production MCP servers, arbitrary HTTP proxying, SDK/webhook connectors,
 branch/commit behavior outside the bounded GitHub REST family, long-lived
-persistent API daemon, live Postgres backend, deterministic replay execution,
-persistent team-server, Slack, and live enterprise connector behavior beyond
-the bounded GitHub REST family are not implemented yet.
+persistent API daemon, live Postgres backend, replay for unsupported live
+connector effects, persistent team-server, Slack, and live enterprise
+connector behavior beyond the bounded GitHub REST family are not implemented
+yet.
 The local review foundation is CLI-owned: it can render file-backed evidence as
 a static or foreground-served loopback HTML page, refresh a structured local
 index, expose JSON routes for local evidence while serving, resolve pending
@@ -132,6 +133,13 @@ Initial commands:
 - `taskfence replay plan <task-id> --workspace <workspace>` reports saved task
   inputs, artifact paths, last status, blockers, and replay limitations without
   executing replay.
+- `taskfence replay run <task-id> --workspace <workspace>
+  [--replay-id <task-id>] [--accept-limitations]` executes supported local
+  replay inputs through the same orchestrator and runner boundary, writes new
+  local task evidence, compares source/replay summaries, and records
+  `artifacts/replay.json`. It fails closed for missing replay inputs, existing
+  replay evidence ids, live or contract-only gateway connector effects,
+  foreground listener mode, and network allow/default-allow requirements.
 - `taskfence logs <task-id> --workspace <workspace>` reads captured stdout and
   stderr logs from local task evidence when present.
 - `taskfence diff <task-id> --workspace <workspace>` reads the captured
@@ -286,7 +294,7 @@ bounded `http egress.fetch` action can make gateway-side HTTPS GET/HEAD
 requests for policy-allowlisted hosts. It does not implement production MCP
 servers, arbitrary HTTP proxying, SDK/webhook connectors, branch/commit
 behavior outside the bounded GitHub REST family, long-lived Web/API daemon
-behavior, deterministic replay execution, team-server, Slack, or live
+behavior, replay for live connector effects, team-server, Slack, or live
 enterprise connector behavior beyond the bounded GitHub REST family yet.
 
 Supported gateway surfaces can include:
@@ -396,9 +404,10 @@ local CLI can list workspace-local task summaries, persist
 structured event summaries, resolved task inputs, artifact manifests, task
 summary comparisons, latest task statuses, captured diffs, generated reports,
 or captured logs from that workspace-local artifact directory. The local review
-page, foreground loopback review API, and replay-plan command consume these
-same structured files. They do not yet provide cross-workspace indexing, a
-long-lived persistent API daemon, replay execution, or SQLite-backed state.
+page, foreground loopback review API, replay-plan command, and bounded local
+replay execution consume these same structured files. They do not yet provide
+cross-workspace indexing, a long-lived persistent API daemon, replay for live
+connector side effects, or SQLite-backed state.
 
 The team-state contract can build a migration plan from local `.taskfence`
 evidence by listing task ids and artifact roots only when structured task input

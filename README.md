@@ -34,11 +34,11 @@ records what happened, and creates evidence that can be reviewed later.
 > validation, artifact-root boundaries, validated audit-export sink contracts
 > with unsupported live export behavior, and local-to-team migration planning
 > from structured evidence. MCP/HTTP listener or proxy servers, SDK/webhook
-> connectors, long-lived persistent API daemon, live Postgres backend,
-> deterministic replay execution, live remote SSH, Kubernetes, microVM, or
-> managed cloud runner execution, persistent team server, live audit export
-> sink, and live enterprise connector execution beyond the bounded GitHub REST
-> family remain future work.
+> connectors, long-lived persistent API daemon, live Postgres backend, replay
+> for unsupported live connector effects, live remote SSH, Kubernetes,
+> microVM, or managed cloud runner execution, persistent team server, live
+> audit export sink, and live enterprise connector execution beyond the bounded
+> GitHub REST family remain future work.
 
 ## Why TaskFence
 
@@ -367,14 +367,22 @@ contained `/artifact/<task-id>/<relative-path>` downloads. It is a foreground
 loopback operator tool, not a long-lived persistent API daemon or team approval
 service.
 
-Replay planning is currently inspection-only:
+Replay planning shows whether saved structured evidence is eligible for local
+execution:
 
 ```bash
 cargo run -p taskfence-cli -- replay plan local-demo --workspace examples/repo
+cargo run -p taskfence-cli -- replay run local-demo --workspace examples/repo --accept-limitations
 ```
 
-The command reports saved task inputs, artifact paths, last status, blockers,
-and determinism limits. It does not execute a replay.
+`replay run` reuses the saved `task.resolved.json` through the same local
+orchestrator, writes a new task evidence directory with a default
+`<task-id>-replay` id, compares structured source/replay summaries, and writes
+`artifacts/replay.json`. It fails closed for missing replay inputs, existing
+replay evidence ids, live or contract-only gateway connector effects,
+foreground listener mode, and network allow/default-allow requirements. Use
+`--accept-limitations` when the plan records nondeterministic limits such as
+runner image availability, re-requested approvals, or external state.
 
 The team-server foundation is currently a Rust contract and test surface, not
 a service command. It validates a future Postgres state config by environment
@@ -474,9 +482,10 @@ The first implementation currently includes:
     evidence, `taskfence review` renders a static HTML task review page,
     `taskfence review --serve` exposes it through a foreground loopback-only
     server with structured JSON API routes, contained artifact downloads, and
-    workspace-local approval resolution, and `taskfence replay plan` reports
-    saved replay inputs, blockers, and deterministic limits without executing
-    replay.
+    workspace-local approval resolution, `taskfence replay plan` reports saved
+    replay inputs, blockers, and deterministic limits, and `taskfence replay
+    run` executes supported local replays into a new task evidence directory
+    with structured evaluation evidence.
 16. Expanded runner contracts for `remote_ssh`, `kubernetes_job`, `microvm`,
     and `managed_cloud` sandbox families. They currently provide typed
     capability reports and fail-closed validation when required controls are
