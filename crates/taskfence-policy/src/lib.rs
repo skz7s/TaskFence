@@ -1,8 +1,75 @@
 use globset::{Glob, GlobMatcher};
+use serde::{Deserialize, Serialize};
 use taskfence_core::{
     Action, ActionDecision, CommandAction, NetworkDefault, PolicyEngine, ResolvedTask, RiskLevel,
     TaskFenceError,
 };
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PolicyLanguageStrategy {
+    BuiltInEvaluator,
+    OpaContractOnly,
+    CedarContractOnly,
+    CustomPluginContractOnly,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VersionedSchemaContract {
+    pub name: String,
+    pub version: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyTemplatePack {
+    pub name: String,
+    pub opt_in: bool,
+    pub templates: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyLanguageContract {
+    pub strategy: PolicyLanguageStrategy,
+    pub schemas: Vec<VersionedSchemaContract>,
+    pub connector_template_packs: Vec<PolicyTemplatePack>,
+    pub migration_checks: Vec<String>,
+    pub unsupported_strategies: Vec<PolicyLanguageStrategy>,
+}
+
+impl PolicyLanguageContract {
+    pub fn current() -> Self {
+        Self {
+            strategy: PolicyLanguageStrategy::BuiltInEvaluator,
+            schemas: vec![
+                schema("task_file", 1),
+                schema("audit_event", 1),
+                schema("connector_policy_template", 1),
+                schema("runner_capability_contract", 1),
+            ],
+            connector_template_packs: vec![
+                pack(
+                    "coding_agent",
+                    ["read_workspace", "write_workspace", "bounded_commands"],
+                ),
+                pack(
+                    "enterprise_connectors",
+                    ["github", "gitlab", "jira", "chat", "database", "siem"],
+                ),
+            ],
+            migration_checks: vec![
+                "task files must reject unknown fields and unsafe path changes".into(),
+                "reports must render from structured events, not scraped terminal output".into(),
+                "replay inputs must preserve connector effect limitations".into(),
+                "team records must preserve organization, task id, evidence dir, status, and artifact metadata"
+                    .into(),
+            ],
+            unsupported_strategies: vec![
+                PolicyLanguageStrategy::OpaContractOnly,
+                PolicyLanguageStrategy::CedarContractOnly,
+                PolicyLanguageStrategy::CustomPluginContractOnly,
+            ],
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct BuiltInPolicyEngine;
@@ -273,6 +340,21 @@ fn require_approval(
     })
 }
 
+fn schema(name: &str, version: u16) -> VersionedSchemaContract {
+    VersionedSchemaContract {
+        name: name.into(),
+        version,
+    }
+}
+
+fn pack<const N: usize>(name: &str, templates: [&str; N]) -> PolicyTemplatePack {
+    PolicyTemplatePack {
+        name: name.into(),
+        opt_in: true,
+        templates: templates.into_iter().map(str::to_owned).collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,6 +563,47 @@ mod tests {
             .unwrap();
 
         assert!(matches!(decision, ActionDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn policy_language_contract_versions_schemas_and_keeps_packs_opt_in() {
+        let contract = PolicyLanguageContract::current();
+
+        assert_eq!(contract.strategy, PolicyLanguageStrategy::BuiltInEvaluator);
+        for schema_name in [
+            "task_file",
+            "audit_event",
+            "connector_policy_template",
+            "runner_capability_contract",
+        ] {
+            let schema = contract
+                .schemas
+                .iter()
+                .find(|schema| schema.name == schema_name)
+                .unwrap();
+            assert_eq!(schema.version, 1);
+        }
+        assert!(contract
+            .connector_template_packs
+            .iter()
+            .all(|pack| pack.opt_in));
+        assert!(contract
+            .migration_checks
+            .iter()
+            .any(|check| check.contains("task files")));
+        assert!(contract
+            .migration_checks
+            .iter()
+            .any(|check| check.contains("reports")));
+        assert!(contract
+            .unsupported_strategies
+            .contains(&PolicyLanguageStrategy::OpaContractOnly));
+        assert!(contract
+            .unsupported_strategies
+            .contains(&PolicyLanguageStrategy::CedarContractOnly));
+        assert!(contract
+            .unsupported_strategies
+            .contains(&PolicyLanguageStrategy::CustomPluginContractOnly));
     }
 
     #[test]

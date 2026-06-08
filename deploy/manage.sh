@@ -86,6 +86,7 @@ Commands:
   dev                    Run foreground development checks
   build                  Build the Rust workspace; pass --systemd for a service file
   doctor                 Print detected facts and missing dependency guidance
+  readiness              Print release and production-readiness checklist
 
 Options:
   --host HOST            Host for service metadata (default: ${HOST})
@@ -697,6 +698,13 @@ doctor_command() {
   echo "  proxy_detected=$(proxy_detected)"
 }
 
+readiness_command() {
+  parse_args "$@"
+  local checklist="${ROOT_DIR}/docs/config/readiness-checklist.md"
+  [[ -r "${checklist}" ]] || die "readiness checklist not found: ${checklist}"
+  sed -n '1,220p' "${checklist}"
+}
+
 main() {
   local command_name="${1:-}"
   [[ -n "${command_name}" ]] || { usage; exit 1; }
@@ -707,6 +715,7 @@ main() {
     dev) dev_command "$@" ;;
     build) build_command "$@" ;;
     doctor) doctor_command "$@" ;;
+    readiness) readiness_command "$@" ;;
     --help|-h|help) usage ;;
     *) die "unknown command: ${command_name}" ;;
   esac

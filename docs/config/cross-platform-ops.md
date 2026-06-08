@@ -29,6 +29,8 @@ Supported `deploy/manage.sh` commands:
 - `setup`: prepare detected repo-local dependencies and verify Rust tooling when supported
 - `dev`: run the foreground Rust development check for specialized agent adapters and example validation
 - `build`: run `cargo build --workspace` and detected build scripts, or write explicit systemd service files only when invoked with documented options
+- `readiness`: print the local preview, beta-candidate, unsupported production,
+  and release-gate checklist from `docs/config/readiness-checklist.md`
 
 Rust validation gates:
 
@@ -59,6 +61,15 @@ python3 scripts/governance/check_codex_governance.py
 ```
 
 Governance scripts require Python 3.11+ or another Python runtime with `tomllib`. The scripts may re-execute themselves with a detected `python3.13`, `python3.12`, `python3.11`, or repo virtualenv Python when the shell `python3` is older.
+
+Readiness checklist:
+
+```bash
+bash deploy/manage.sh readiness
+```
+
+The checklist separates local preview, beta-candidate, and not-production-supported surfaces. It
+does not start services or install dependencies.
 
 ## Dependency Isolation
 

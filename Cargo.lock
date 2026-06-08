@@ -1341,6 +1341,7 @@ version = "0.1.0"
 dependencies = [
  "camino",
  "globset",
+ "serde",
  "taskfence-core",
 ]
 

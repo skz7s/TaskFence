@@ -134,15 +134,15 @@ rg --files docs/codex/plans docs/codex/plan_archived
 
 ## Overall Status
 
-Status: pending
+Status: done
 
-This is a follow-up execution plan. No implementation phase has started.
+All phases are complete and verified. The plan is ready for archival.
 
 ## Phases
 
 ### Phase 1: Production Service Boundary And API Daemon Contract
 
-Status: pending
+Status: done
 
 Scope:
 
@@ -165,11 +165,20 @@ cargo test -p taskfence-core -p taskfence-state -p taskfence-cli
 
 Verification evidence:
 
-- Pending.
+- Added a typed `ProductionApiDaemonBoundary` contract in
+  `taskfence-state` selecting a combined binary with separate local/team modes,
+  stable route resources, lifecycle/shutdown/diagnostics expectations,
+  loopback-only development auth validation, health/readiness routes, and an
+  explicit unsupported-start error that preserves `taskfence review --serve` as
+  the current local foreground fallback.
+- Added state tests for route coverage, mutating approval resolution,
+  health/readiness resources, unsupported daemon start wording, loopback bind
+  restrictions, and rejection of secret-bearing auth provider references.
+- `cargo test -p taskfence-core -p taskfence-state -p taskfence-cli` passed.
 
 ### Phase 2: Production Gateway Transport Hardening
 
-Status: pending
+Status: done
 
 Scope:
 
@@ -191,11 +200,23 @@ cargo test -p taskfence-gateway -p taskfence-policy -p taskfence-audit -p taskfe
 
 Verification evidence:
 
-- Pending.
+- Added `GatewayTransportHardening` contracts in `taskfence-gateway` for the
+  production priority order: MCP server first, bounded HTTP adapter second,
+  SDK/webhook entry points third, with arbitrary HTTP proxying explicitly
+  unsupported.
+- The contract requires request authentication, request/response size limits,
+  response redaction, destination policy, gateway-side secret brokering,
+  structured error schemas, rate limits, connector timeout behavior, and
+  compatibility with existing `gateway call`, `gateway listen`, and
+  `gateway spool process` local surfaces.
+- Added gateway tests for priority order, required controls, compatibility
+  preservation, and fail-closed arbitrary proxy unsupported errors.
+- `cargo test -p taskfence-gateway -p taskfence-policy -p taskfence-audit -p taskfence-report -p taskfence-cli`
+  passed.
 
 ### Phase 3: Production Review UI And Operator Workflows
 
-Status: pending
+Status: done
 
 Scope:
 
@@ -220,11 +241,21 @@ Additional UI verification will be defined after the frontend stack is chosen.
 
 Verification evidence:
 
-- Pending.
+- Added `ProductionReviewUiContract` in `taskfence-state` describing the
+  future production UI as dependent on the API daemon contract and Rust-owned
+  state/approval/audit/artifact/replay enforcement.
+- The contract covers task evidence, approval queues, report/log/diff
+  inspection, contained artifact downloads, comparisons, replay planning, and
+  compliance views, plus loading skeleton, empty, recoverable error,
+  access-denied, destructive-confirmation, and success-toast states.
+- Static generated review remains the fallback through
+  `taskfence review --workspace <workspace>` until daemon routes, frontend
+  stack/deployment, and server-side enforcement are implemented.
+- `cargo test -p taskfence-state -p taskfence-cli` passed.
 
 ### Phase 4: Runner Expansion Beyond SSH
 
-Status: pending
+Status: done
 
 Scope:
 
@@ -248,11 +279,22 @@ Integration verification must be recorded per runner backend.
 
 Verification evidence:
 
-- Pending.
+- Added `RunnerBackendContract` and `RunnerExpansionStatus` in
+  `taskfence-runner` for Kubernetes job, microVM, and managed cloud runner
+  families.
+- Each contract records required isolation, network, secret/credential, limit,
+  timeout/cancellation, artifact, teardown, and integration verification
+  guarantees before any live backend is exposed.
+- Existing unsupported backend behavior remains fail-closed through
+  `ExpandedRunner`; no Docker/SSH behavior was changed.
+- `cargo test -p taskfence-runner -p taskfence-core -p taskfence-cli -p taskfence-config`
+  passed. The Docker integration test remains ignored by its existing
+  Docker-daemon/local-image requirement because this phase changed runner
+  contracts only.
 
 ### Phase 5: Team Server, Workers, SSO, And Artifact Storage
 
-Status: pending
+Status: done
 
 Scope:
 
@@ -278,11 +320,22 @@ recorded when those surfaces are implemented.
 
 Verification evidence:
 
-- Pending.
+- Added `TeamProductionReadinessContract` in `taskfence-state` to gate
+  deployed API service, live worker service, SSO, object storage, and
+  quota/chargeback work behind the Phase 1 service boundary.
+- The contract records durable worker guarantees for duplicate, wrong-worker,
+  unleased, terminal-state, and retry semantics; SSO prerequisites for stable
+  role/resource/method mapping and approval-owner tests; object storage
+  prerequisites for containment, SHA-256 metadata, and service-side
+  credentials; and quota prerequisites for structured budget events and
+  reliable ownership.
+- Added tests proving those surfaces remain gated and unsupported until their
+  prerequisites are implemented.
+- `cargo test -p taskfence-state -p taskfence-core -p taskfence-cli` passed.
 
 ### Phase 6: Replay Of Connector Effects And Evaluation Workflows
 
-Status: pending
+Status: done
 
 Scope:
 
@@ -304,11 +357,23 @@ cargo test -p taskfence-core -p taskfence-state -p taskfence-gateway -p taskfenc
 
 Verification evidence:
 
-- Pending.
+- Added `ConnectorReplayEvaluationContract` in `taskfence-state` with replay
+  rules for fixture, dry-run, recorded-response, and live-with-fresh-credential
+  modes.
+- The contract classifies connector effect risk as read-only,
+  local-artifact-only, external-write, or destructive; destructive connector
+  operations have no allowed replay modes, and external writes require
+  confirmation, idempotency, and rollback before any live mode could be
+  considered.
+- Evaluation dimensions now cover agent, policy, connector mode, runner
+  backend, and task version from structured evidence. Raw secrets from prior
+  runs remain unsupported for replay.
+- `cargo test -p taskfence-core -p taskfence-state -p taskfence-gateway -p taskfence-cli`
+  passed.
 
 ### Phase 7: Policy Language, Templates, And Governance Packs
 
-Status: pending
+Status: done
 
 Scope:
 
@@ -329,11 +394,22 @@ cargo test -p taskfence-config -p taskfence-policy -p taskfence-core -p taskfenc
 
 Verification evidence:
 
-- Pending.
+- Added `PolicyLanguageContract` in `taskfence-policy` keeping the current
+  strategy on the built-in Rust evaluator while recording OPA, Cedar, and
+  custom plugin policy as contract-only unsupported future options.
+- Versioned contract entries now cover task-file, audit-event,
+  connector-policy-template, and runner-capability schemas. Connector policy
+  template packs are explicit opt-in packs rather than defaults.
+- Migration checks cover task files, structured reports, replay inputs, and
+  team records.
+- Added decision record
+  `docs/decisions/2026-06-08-policy-language-versioning.md`.
+- `cargo test -p taskfence-config -p taskfence-policy -p taskfence-core -p taskfence-gateway`
+  passed.
 
 ### Phase 8: Release, Distribution, And Operational Readiness
 
-Status: pending
+Status: done
 
 Scope:
 
@@ -357,18 +433,48 @@ cargo test --workspace
 
 Verification evidence:
 
-- Pending.
+- Added `docs/config/readiness-checklist.md` separating local preview supported
+  surfaces, beta candidates, and not-production-supported surfaces.
+- Added read-only `bash deploy/manage.sh readiness` diagnostics and documented
+  it in `docs/config/cross-platform-ops.md`, preserving `deploy/manage.sh` as
+  the only supported operations entrypoint and avoiding any new deployment
+  service behavior.
+- Updated README and runtime architecture docs to describe the new
+  production-readiness contracts without overclaiming production daemon, Web UI,
+  arbitrary HTTP proxy, deployed team service, or new runner backend support.
+- `bash -n deploy/manage.sh` passed.
+- `bash deploy/manage.sh readiness` passed and printed the checked-in
+  readiness checklist.
+- `git diff --check` passed.
+- `cargo fmt --all` completed, then `cargo fmt --all --check` passed.
+- `cargo clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo test --workspace` passed. The existing Docker integration test remains
+  ignored by its Docker-daemon/local-image requirement; this phase did not
+  change Docker behavior.
 
 ## Commit Plan
 
-1. `server: define production api daemon boundary`
-2. `gateway: harden production transport surfaces`
-3. `ui: add production review workflows`
-4. `runner: add next isolated execution backend`
-5. `team: deploy team service and worker lifecycle`
-6. `replay: support bounded connector-effect evaluation`
-7. `policy: version policy schemas and templates`
-8. `ops: add release and readiness checks`
+1. `readiness: define production boundary contracts`
+
+## Final Evidence
+
+Status: done
+
+- All eight phases are terminal with verification evidence.
+- Broad readiness gate passed:
+
+```bash
+bash -n deploy/manage.sh
+bash deploy/manage.sh readiness
+git diff --check
+cargo fmt --all
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+- Active plan file will be archived with the same filename under
+  `docs/codex/plan_archived/`.
 
 ## Current Plan-Authoring Evidence
 

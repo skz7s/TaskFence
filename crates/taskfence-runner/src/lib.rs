@@ -82,6 +82,88 @@ pub struct RunnerCapabilityReport {
     pub missing: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RunnerExpansionStatus {
+    Live,
+    ContractOnly,
+    Unsupported,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunnerBackendContract {
+    pub kind: RunnerKind,
+    pub status: RunnerExpansionStatus,
+    pub required_guarantees: Vec<String>,
+    pub integration_verification: Vec<String>,
+}
+
+impl RunnerBackendContract {
+    pub fn expansion_contracts() -> Vec<Self> {
+        vec![
+            Self {
+                kind: RunnerKind::KubernetesJob,
+                status: RunnerExpansionStatus::ContractOnly,
+                required_guarantees: vec![
+                    "namespace and service account isolation".into(),
+                    "pod security and volume containment".into(),
+                    "secret projection boundary".into(),
+                    "default-deny network policy plus explicit egress rules".into(),
+                    "stdout/stderr log collection".into(),
+                    "timeout and cancellation cleanup".into(),
+                    "artifact collection without host path escape".into(),
+                ],
+                integration_verification: vec![
+                    "Kubernetes cluster with namespace/network-policy support".into(),
+                    "job timeout and cancellation test".into(),
+                    "artifact collection containment test".into(),
+                ],
+            },
+            Self {
+                kind: RunnerKind::MicroVm,
+                status: RunnerExpansionStatus::ContractOnly,
+                required_guarantees: vec![
+                    "image provenance and boot contract".into(),
+                    "filesystem sharing policy".into(),
+                    "secret injection boundary".into(),
+                    "default-deny network enforcement".into(),
+                    "CPU, memory, disk, and timeout limits".into(),
+                    "teardown after success, failure, timeout, or cancellation".into(),
+                    "artifact extraction with integrity metadata".into(),
+                ],
+                integration_verification: vec![
+                    "microVM runtime host".into(),
+                    "network isolation test".into(),
+                    "teardown and artifact integrity test".into(),
+                ],
+            },
+            Self {
+                kind: RunnerKind::ManagedCloud,
+                status: RunnerExpansionStatus::ContractOnly,
+                required_guarantees: vec![
+                    "provider identity and credential boundary".into(),
+                    "isolated workspace and secret storage".into(),
+                    "network policy mapping".into(),
+                    "resource limit mapping".into(),
+                    "remote log streaming and task cancellation".into(),
+                    "artifact return with integrity metadata".into(),
+                    "provider-side cleanup and failure evidence".into(),
+                ],
+                integration_verification: vec![
+                    "managed provider sandbox account".into(),
+                    "credential isolation test".into(),
+                    "cleanup and artifact return test".into(),
+                ],
+            },
+        ]
+    }
+
+    pub fn for_kind(kind: &RunnerKind) -> Option<Self> {
+        Self::expansion_contracts()
+            .into_iter()
+            .find(|contract| &contract.kind == kind)
+    }
+}
+
 impl RunnerCapabilityReport {
     pub fn docker(task: &ResolvedTask) -> Self {
         let mut missing = Vec::new();
@@ -2180,6 +2262,36 @@ mod tests {
 
     #[cfg(not(unix))]
     fn make_executable(_path: &Utf8Path) {}
+
+    #[test]
+    fn runner_expansion_contracts_list_required_guarantees_before_live_backends() {
+        let contracts = RunnerBackendContract::expansion_contracts();
+
+        for kind in [
+            RunnerKind::KubernetesJob,
+            RunnerKind::MicroVm,
+            RunnerKind::ManagedCloud,
+        ] {
+            let contract = contracts
+                .iter()
+                .find(|contract| contract.kind == kind)
+                .unwrap();
+            assert_eq!(contract.status, RunnerExpansionStatus::ContractOnly);
+            assert!(contract
+                .required_guarantees
+                .iter()
+                .any(|guarantee| guarantee.contains("network")));
+            assert!(contract
+                .required_guarantees
+                .iter()
+                .any(|guarantee| guarantee.contains("secret") || guarantee.contains("credential")));
+            assert!(contract
+                .required_guarantees
+                .iter()
+                .any(|guarantee| guarantee.contains("artifact")));
+            assert!(!contract.integration_verification.is_empty());
+        }
+    }
 
     #[test]
     fn expanded_runner_fails_closed_for_remote_runner_families() {

@@ -391,6 +391,115 @@ pub struct HttpToolRequest {
     pub parameters: BTreeMap<String, RedactedValue>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GatewayTransportKind {
+    McpServer,
+    BoundedHttpAdapter,
+    SdkWebhookEntryPoint,
+    ArbitraryHttpProxy,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GatewayTransportStatus {
+    ReadyForImplementation,
+    ContractOnly,
+    Unsupported,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GatewayTransportLimits {
+    pub max_request_bytes: usize,
+    pub max_response_bytes: usize,
+    pub timeout_seconds: u16,
+    pub rate_limit_per_minute: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GatewayTransportHardening {
+    pub kind: GatewayTransportKind,
+    pub priority: u8,
+    pub status: GatewayTransportStatus,
+    pub request_authentication: bool,
+    pub structured_error_schema: bool,
+    pub response_redaction: bool,
+    pub destination_policy_required: bool,
+    pub secret_broker_required: bool,
+    pub limits: GatewayTransportLimits,
+    pub compatible_local_surfaces: Vec<String>,
+    pub unsupported_reason: Option<String>,
+}
+
+impl GatewayTransportHardening {
+    pub fn production_priority_order() -> Vec<Self> {
+        vec![
+            Self::contract(
+                GatewayTransportKind::McpServer,
+                1,
+                GatewayTransportStatus::ReadyForImplementation,
+            ),
+            Self::contract(
+                GatewayTransportKind::BoundedHttpAdapter,
+                2,
+                GatewayTransportStatus::ContractOnly,
+            ),
+            Self::contract(
+                GatewayTransportKind::SdkWebhookEntryPoint,
+                3,
+                GatewayTransportStatus::ContractOnly,
+            ),
+            Self::unsupported_arbitrary_http_proxy(),
+        ]
+    }
+
+    pub fn unsupported_start_error(&self) -> Option<TaskFenceError> {
+        (self.status == GatewayTransportStatus::Unsupported).then(|| {
+            TaskFenceError::Unsupported(
+                self.unsupported_reason
+                    .clone()
+                    .unwrap_or_else(|| "gateway transport is unsupported".into()),
+            )
+        })
+    }
+
+    fn contract(kind: GatewayTransportKind, priority: u8, status: GatewayTransportStatus) -> Self {
+        Self {
+            kind,
+            priority,
+            status,
+            request_authentication: true,
+            structured_error_schema: true,
+            response_redaction: true,
+            destination_policy_required: true,
+            secret_broker_required: true,
+            limits: GatewayTransportLimits {
+                max_request_bytes: 64 * 1024,
+                max_response_bytes: 1024 * 1024,
+                timeout_seconds: 30,
+                rate_limit_per_minute: 120,
+            },
+            compatible_local_surfaces: vec![
+                "taskfence gateway call".into(),
+                "taskfence gateway listen".into(),
+                "taskfence gateway spool process".into(),
+            ],
+            unsupported_reason: None,
+        }
+    }
+
+    fn unsupported_arbitrary_http_proxy() -> Self {
+        let mut contract = Self::contract(
+            GatewayTransportKind::ArbitraryHttpProxy,
+            4,
+            GatewayTransportStatus::Unsupported,
+        );
+        contract.unsupported_reason = Some(
+            "arbitrary HTTP proxying is unsupported until request inspection, destination policy, streaming limits, response redaction, secret handling, audit, and bypass controls are implemented"
+                .into(),
+        );
+        contract
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnsupportedToolExecution {
     pub action: ToolAction,
@@ -6761,6 +6870,60 @@ mod tests {
             })
         ));
         assert!(calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn production_gateway_transport_contract_prioritizes_mcp_before_other_surfaces() {
+        let transports = GatewayTransportHardening::production_priority_order();
+
+        assert_eq!(transports[0].kind, GatewayTransportKind::McpServer);
+        assert_eq!(
+            transports[0].status,
+            GatewayTransportStatus::ReadyForImplementation
+        );
+        assert_eq!(transports[1].kind, GatewayTransportKind::BoundedHttpAdapter);
+        assert_eq!(
+            transports[2].kind,
+            GatewayTransportKind::SdkWebhookEntryPoint
+        );
+        for transport in &transports[..3] {
+            assert!(transport.request_authentication);
+            assert!(transport.structured_error_schema);
+            assert!(transport.response_redaction);
+            assert!(transport.destination_policy_required);
+            assert!(transport.secret_broker_required);
+            assert!(transport.limits.max_request_bytes > 0);
+            assert!(transport
+                .compatible_local_surfaces
+                .iter()
+                .any(|surface| surface == "taskfence gateway call"));
+            assert!(transport
+                .compatible_local_surfaces
+                .iter()
+                .any(|surface| surface == "taskfence gateway listen"));
+            assert!(transport
+                .compatible_local_surfaces
+                .iter()
+                .any(|surface| surface == "taskfence gateway spool process"));
+        }
+    }
+
+    #[test]
+    fn arbitrary_http_proxy_transport_is_explicitly_unsupported() {
+        let transports = GatewayTransportHardening::production_priority_order();
+        let proxy = transports
+            .iter()
+            .find(|transport| transport.kind == GatewayTransportKind::ArbitraryHttpProxy)
+            .unwrap();
+
+        assert_eq!(proxy.status, GatewayTransportStatus::Unsupported);
+        assert!(matches!(
+            proxy.unsupported_start_error(),
+            Some(TaskFenceError::Unsupported(message))
+                if message.contains("arbitrary HTTP proxying is unsupported")
+                    && message.contains("destination policy")
+                    && message.contains("bypass controls")
+        ));
     }
 
     #[test]

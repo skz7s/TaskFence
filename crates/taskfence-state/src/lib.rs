@@ -241,6 +241,318 @@ pub struct ReplayEvaluation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ApiDaemonMode {
+    LocalOnly,
+    TeamOnly,
+    CombinedSeparateModes,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ApiAuthBoundary {
+    DevelopmentLoopbackOnly,
+    ExternalProviderPlaceholder { provider_ref: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ApiDaemonResource {
+    TaskList,
+    TaskDetail,
+    TaskEvents,
+    TaskLogs,
+    TaskDiff,
+    TaskReport,
+    TaskArtifacts,
+    Approvals,
+    ApprovalDetail,
+    ApprovalResolution,
+    ReplayInputs,
+    TeamTaskRecords,
+    TeamTaskRecord,
+    WorkerLeases,
+    AuditExports,
+    Health,
+    Readiness,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ApiRouteMethod {
+    Get,
+    Post,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiRouteContract {
+    pub method: ApiRouteMethod,
+    pub path_template: String,
+    pub resource: ApiDaemonResource,
+    pub mutates_state: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiDaemonConfigContract {
+    pub bind_host: String,
+    pub port: u16,
+    pub auth: ApiAuthBoundary,
+    pub state_backend: String,
+    pub graceful_shutdown_timeout_seconds: u16,
+    pub structured_diagnostics: bool,
+}
+
+impl ApiDaemonConfigContract {
+    pub fn new(
+        bind_host: impl Into<String>,
+        port: u16,
+        auth: ApiAuthBoundary,
+        state_backend: impl Into<String>,
+    ) -> taskfence_core::Result<Self> {
+        let bind_host = normalize_non_empty("api daemon bind_host", bind_host.into())?;
+        if bind_host.chars().any(char::is_whitespace) {
+            return Err(TaskFenceError::State(
+                "api daemon bind_host must not contain whitespace".into(),
+            ));
+        }
+        if port == 0 {
+            return Err(TaskFenceError::State(
+                "api daemon port must be explicit for the production contract".into(),
+            ));
+        }
+        let auth = validate_api_auth_boundary(&bind_host, auth)?;
+        let state_backend = normalize_non_empty("api daemon state_backend", state_backend.into())?;
+        Ok(Self {
+            bind_host,
+            port,
+            auth,
+            state_backend,
+            graceful_shutdown_timeout_seconds: 30,
+            structured_diagnostics: true,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProductionApiDaemonBoundary {
+    pub mode: ApiDaemonMode,
+    pub config: ApiDaemonConfigContract,
+    pub routes: Vec<ApiRouteContract>,
+    pub lifecycle: Vec<String>,
+    pub diagnostics: Vec<String>,
+    pub local_review_fallback_command: String,
+    pub unsupported_surfaces: Vec<String>,
+}
+
+impl ProductionApiDaemonBoundary {
+    pub fn combined_local_team(config: ApiDaemonConfigContract) -> Self {
+        Self {
+            mode: ApiDaemonMode::CombinedSeparateModes,
+            config,
+            routes: production_api_routes(),
+            lifecycle: vec![
+                "foreground start must bind only the configured address and expose health/readiness before accepting mutating requests"
+                    .into(),
+                "graceful shutdown must stop accepting new requests, drain in-flight writes, and close state backends before exit"
+                    .into(),
+                "local task execution must not require daemon availability".into(),
+            ],
+            diagnostics: vec![
+                "responses use structured error bodies with status, code, message, and request_id"
+                    .into(),
+                "request logs redact approval payloads, tool parameters, bearer tokens, and gateway secret references"
+                    .into(),
+            ],
+            local_review_fallback_command: "taskfence review --serve --workspace <workspace>"
+                .into(),
+            unsupported_surfaces: vec![
+                "long-lived HTTP daemon start".into(),
+                "production auth provider integration".into(),
+                "deployed team server daemon".into(),
+                "production Web UI".into(),
+            ],
+        }
+    }
+
+    pub fn unsupported_start_error(&self) -> TaskFenceError {
+        TaskFenceError::Unsupported(
+            "production API daemon is a validated contract only; use taskfence review --serve for the current foreground local review path"
+                .into(),
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReviewWorkflow {
+    TaskEvidence,
+    ApprovalQueue,
+    ReportLogDiffInspection,
+    ContainedArtifactDownload,
+    TaskComparison,
+    ReplayPlanning,
+    ComplianceView,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReviewFeedbackState {
+    LoadingSkeleton,
+    Empty,
+    RecoverableError,
+    AccessDenied,
+    DestructiveConfirmation,
+    SuccessToast,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProductionReviewUiContract {
+    pub depends_on_api_daemon: bool,
+    pub source_of_truth: String,
+    pub workflows: Vec<ReviewWorkflow>,
+    pub feedback_states: Vec<ReviewFeedbackState>,
+    pub access_control_aware: bool,
+    pub destructive_actions_require_confirmation: bool,
+    pub static_fallback_command: String,
+    pub unsupported_until: Vec<String>,
+}
+
+impl ProductionReviewUiContract {
+    pub fn after_api_daemon_contract() -> Self {
+        Self {
+            depends_on_api_daemon: true,
+            source_of_truth:
+                "Rust state, approval, audit, artifact, replay, and API daemon contracts".into(),
+            workflows: vec![
+                ReviewWorkflow::TaskEvidence,
+                ReviewWorkflow::ApprovalQueue,
+                ReviewWorkflow::ReportLogDiffInspection,
+                ReviewWorkflow::ContainedArtifactDownload,
+                ReviewWorkflow::TaskComparison,
+                ReviewWorkflow::ReplayPlanning,
+                ReviewWorkflow::ComplianceView,
+            ],
+            feedback_states: vec![
+                ReviewFeedbackState::LoadingSkeleton,
+                ReviewFeedbackState::Empty,
+                ReviewFeedbackState::RecoverableError,
+                ReviewFeedbackState::AccessDenied,
+                ReviewFeedbackState::DestructiveConfirmation,
+                ReviewFeedbackState::SuccessToast,
+            ],
+            access_control_aware: true,
+            destructive_actions_require_confirmation: true,
+            static_fallback_command: "taskfence review --workspace <workspace>".into(),
+            unsupported_until: vec![
+                "production API daemon routes are implemented and authenticated".into(),
+                "frontend stack, deployment target, and browser validation gates are selected"
+                    .into(),
+                "policy, approval, audit, and artifact enforcement stay server-side".into(),
+            ],
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConnectorReplayMode {
+    Fixture,
+    DryRun,
+    RecordedResponse,
+    LiveWithFreshCredentials,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConnectorEffectRisk {
+    ReadOnly,
+    LocalArtifactOnly,
+    ExternalWrite,
+    Destructive,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectorReplayRule {
+    pub connector: String,
+    pub operation_pattern: String,
+    pub risk: ConnectorEffectRisk,
+    pub allowed_modes: Vec<ConnectorReplayMode>,
+    pub operator_confirmation_required: bool,
+    pub idempotency_required: bool,
+    pub rollback_required: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvaluationDimension {
+    pub name: String,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectorReplayEvaluationContract {
+    pub rules: Vec<ConnectorReplayRule>,
+    pub evaluation_dimensions: Vec<EvaluationDimension>,
+    pub requires_fresh_gateway_credentials_for_live: bool,
+    pub unsupported_live_side_effect_replay: Vec<String>,
+}
+
+impl ConnectorReplayEvaluationContract {
+    pub fn default_contract() -> Self {
+        Self {
+            rules: vec![
+                ConnectorReplayRule {
+                    connector: "local_fixture".into(),
+                    operation_pattern: "*".into(),
+                    risk: ConnectorEffectRisk::LocalArtifactOnly,
+                    allowed_modes: vec![ConnectorReplayMode::Fixture],
+                    operator_confirmation_required: false,
+                    idempotency_required: false,
+                    rollback_required: false,
+                },
+                ConnectorReplayRule {
+                    connector: "github_rest".into(),
+                    operation_pattern: "read_*".into(),
+                    risk: ConnectorEffectRisk::ReadOnly,
+                    allowed_modes: vec![
+                        ConnectorReplayMode::DryRun,
+                        ConnectorReplayMode::RecordedResponse,
+                    ],
+                    operator_confirmation_required: false,
+                    idempotency_required: false,
+                    rollback_required: false,
+                },
+                ConnectorReplayRule {
+                    connector: "gateway_connector".into(),
+                    operation_pattern: "*write*|create_*|update_*|comment_*|export_*".into(),
+                    risk: ConnectorEffectRisk::ExternalWrite,
+                    allowed_modes: vec![
+                        ConnectorReplayMode::DryRun,
+                        ConnectorReplayMode::RecordedResponse,
+                    ],
+                    operator_confirmation_required: true,
+                    idempotency_required: true,
+                    rollback_required: true,
+                },
+                ConnectorReplayRule {
+                    connector: "gateway_connector".into(),
+                    operation_pattern: "delete_*|destroy_*|revoke_*".into(),
+                    risk: ConnectorEffectRisk::Destructive,
+                    allowed_modes: Vec::new(),
+                    operator_confirmation_required: true,
+                    idempotency_required: true,
+                    rollback_required: true,
+                },
+            ],
+            evaluation_dimensions: vec![
+                dimension("agent", "resolved task agent profile"),
+                dimension("policy", "structured policy decision events"),
+                dimension("connector_mode", "replay connector rule"),
+                dimension("runner_backend", "resolved task sandbox kind"),
+                dimension("task_version", "resolved task input and event evidence"),
+            ],
+            requires_fresh_gateway_credentials_for_live: true,
+            unsupported_live_side_effect_replay: vec![
+                "reuse of raw secrets from prior runs".into(),
+                "destructive connector operations".into(),
+                "externally visible writes without confirmation, idempotency, and rollback".into(),
+            ],
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TeamApiResource {
     TaskList,
     TaskDetail(TaskId),
@@ -448,6 +760,71 @@ impl TeamServerBoundary {
             "team audit export is a validated sink contract only; no live export sink is implemented"
                 .into(),
         )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TeamReadinessSurface {
+    DeployedApiService,
+    LiveWorkerService,
+    Sso,
+    ObjectStorage,
+    QuotaChargeback,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamProductionReadinessContract {
+    pub promoted_after_api_daemon: bool,
+    pub surfaces: Vec<TeamReadinessSurface>,
+    pub worker_guarantees: Vec<String>,
+    pub sso_prerequisites: Vec<String>,
+    pub object_storage_prerequisites: Vec<String>,
+    pub quota_prerequisites: Vec<String>,
+    pub unsupported_surfaces: Vec<String>,
+}
+
+impl TeamProductionReadinessContract {
+    pub fn after_service_boundary() -> Self {
+        Self {
+            promoted_after_api_daemon: true,
+            surfaces: vec![
+                TeamReadinessSurface::DeployedApiService,
+                TeamReadinessSurface::LiveWorkerService,
+                TeamReadinessSurface::Sso,
+                TeamReadinessSurface::ObjectStorage,
+                TeamReadinessSurface::QuotaChargeback,
+            ],
+            worker_guarantees: vec![
+                "durable leases reject duplicate queue entries".into(),
+                "wrong-worker completion or failure is rejected".into(),
+                "unleased task completion or failure is rejected".into(),
+                "already terminal worker leases cannot be changed".into(),
+                "retry semantics must distinguish pending, leased, completed, failed, and expired leases"
+                    .into(),
+            ],
+            sso_prerequisites: vec![
+                "role, resource, and method mapping is stable".into(),
+                "approval owner checks are covered by tests".into(),
+                "auth claims never carry gateway secrets".into(),
+            ],
+            object_storage_prerequisites: vec![
+                "artifact path containment is enforced before write or signed download".into(),
+                "size and SHA-256 metadata are recorded".into(),
+                "storage credentials stay service-side".into(),
+            ],
+            quota_prerequisites: vec![
+                "budget usage events are structured and queryable".into(),
+                "task ownership is reliable across local-to-team migration".into(),
+                "chargeback reports do not rely on rendered Markdown scraping".into(),
+            ],
+            unsupported_surfaces: vec![
+                "deployed team HTTP daemon".into(),
+                "live worker service".into(),
+                "SSO provider integration".into(),
+                "object storage adapter".into(),
+                "team quota or chargeback enforcement".into(),
+            ],
+        }
     }
 }
 
@@ -2627,6 +3004,153 @@ fn validate_env_ref(field: &str, value: &str) -> taskfence_core::Result<()> {
     Ok(())
 }
 
+fn validate_api_auth_boundary(
+    bind_host: &str,
+    auth: ApiAuthBoundary,
+) -> taskfence_core::Result<ApiAuthBoundary> {
+    match &auth {
+        ApiAuthBoundary::DevelopmentLoopbackOnly => {
+            if bind_host != "127.0.0.1" && bind_host != "::1" && bind_host != "localhost" {
+                return Err(TaskFenceError::State(
+                    "development loopback auth may only bind to a loopback host".into(),
+                ));
+            }
+        }
+        ApiAuthBoundary::ExternalProviderPlaceholder { provider_ref } => {
+            validate_non_secret_ref("api auth provider_ref", provider_ref)?;
+        }
+    }
+    Ok(auth)
+}
+
+fn production_api_routes() -> Vec<ApiRouteContract> {
+    vec![
+        route(
+            ApiRouteMethod::Get,
+            "/api/tasks",
+            ApiDaemonResource::TaskList,
+            false,
+        ),
+        route(
+            ApiRouteMethod::Get,
+            "/api/tasks/{task_id}",
+            ApiDaemonResource::TaskDetail,
+            false,
+        ),
+        route(
+            ApiRouteMethod::Get,
+            "/api/tasks/{task_id}/events",
+            ApiDaemonResource::TaskEvents,
+            false,
+        ),
+        route(
+            ApiRouteMethod::Get,
+            "/api/tasks/{task_id}/logs",
+            ApiDaemonResource::TaskLogs,
+            false,
+        ),
+        route(
+            ApiRouteMethod::Get,
+            "/api/tasks/{task_id}/diff",
+            ApiDaemonResource::TaskDiff,
+            false,
+        ),
+        route(
+            ApiRouteMethod::Get,
+            "/api/tasks/{task_id}/report",
+            ApiDaemonResource::TaskReport,
+            false,
+        ),
+        route(
+            ApiRouteMethod::Get,
+            "/api/tasks/{task_id}/artifacts/{relative_path}",
+            ApiDaemonResource::TaskArtifacts,
+            false,
+        ),
+        route(
+            ApiRouteMethod::Get,
+            "/api/approvals",
+            ApiDaemonResource::Approvals,
+            false,
+        ),
+        route(
+            ApiRouteMethod::Get,
+            "/api/approvals/{approval_id}",
+            ApiDaemonResource::ApprovalDetail,
+            false,
+        ),
+        route(
+            ApiRouteMethod::Post,
+            "/api/approvals/{approval_id}/resolution",
+            ApiDaemonResource::ApprovalResolution,
+            true,
+        ),
+        route(
+            ApiRouteMethod::Get,
+            "/api/tasks/{task_id}/replay-inputs",
+            ApiDaemonResource::ReplayInputs,
+            false,
+        ),
+        route(
+            ApiRouteMethod::Get,
+            "/api/team/tasks",
+            ApiDaemonResource::TeamTaskRecords,
+            false,
+        ),
+        route(
+            ApiRouteMethod::Get,
+            "/api/team/tasks/{task_id}",
+            ApiDaemonResource::TeamTaskRecord,
+            false,
+        ),
+        route(
+            ApiRouteMethod::Post,
+            "/api/team/worker-leases",
+            ApiDaemonResource::WorkerLeases,
+            true,
+        ),
+        route(
+            ApiRouteMethod::Post,
+            "/api/team/audit-exports",
+            ApiDaemonResource::AuditExports,
+            true,
+        ),
+        route(
+            ApiRouteMethod::Get,
+            "/healthz",
+            ApiDaemonResource::Health,
+            false,
+        ),
+        route(
+            ApiRouteMethod::Get,
+            "/readyz",
+            ApiDaemonResource::Readiness,
+            false,
+        ),
+    ]
+}
+
+fn route(
+    method: ApiRouteMethod,
+    path_template: &str,
+    resource: ApiDaemonResource,
+    mutates_state: bool,
+) -> ApiRouteContract {
+    ApiRouteContract {
+        method,
+        path_template: path_template.into(),
+        resource,
+        mutates_state,
+    }
+}
+
+fn dimension(name: &str, source: &str) -> EvaluationDimension {
+    EvaluationDimension {
+        name: name.into(),
+        source: source.into(),
+    }
+}
+
 fn validate_schema_name(value: &str) -> taskfence_core::Result<()> {
     if value.is_empty()
         || !value
@@ -3198,6 +3722,210 @@ mod tests {
             store.get_status(&task_id).unwrap(),
             Some(TaskStatus::Running)
         );
+    }
+
+    #[test]
+    fn production_api_daemon_contract_chooses_combined_separate_modes() {
+        let config = ApiDaemonConfigContract::new(
+            "127.0.0.1",
+            8787,
+            ApiAuthBoundary::DevelopmentLoopbackOnly,
+            "local-json-or-postgres",
+        )
+        .unwrap();
+        let boundary = ProductionApiDaemonBoundary::combined_local_team(config);
+
+        assert_eq!(boundary.mode, ApiDaemonMode::CombinedSeparateModes);
+        assert!(boundary.routes.iter().any(|route| {
+            route.resource == ApiDaemonResource::TaskList
+                && route.method == ApiRouteMethod::Get
+                && !route.mutates_state
+        }));
+        assert!(boundary.routes.iter().any(|route| {
+            route.resource == ApiDaemonResource::ApprovalResolution
+                && route.method == ApiRouteMethod::Post
+                && route.mutates_state
+        }));
+        assert!(boundary
+            .routes
+            .iter()
+            .any(|route| route.resource == ApiDaemonResource::Health));
+        assert!(boundary
+            .routes
+            .iter()
+            .any(|route| route.resource == ApiDaemonResource::Readiness));
+        assert!(boundary
+            .lifecycle
+            .iter()
+            .any(|item| item.contains("local task execution")));
+        assert_eq!(
+            boundary.local_review_fallback_command,
+            "taskfence review --serve --workspace <workspace>"
+        );
+        assert!(matches!(
+            boundary.unsupported_start_error(),
+            TaskFenceError::Unsupported(message)
+                if message.contains("validated contract only")
+                    && message.contains("taskfence review --serve")
+        ));
+    }
+
+    #[test]
+    fn production_api_daemon_contract_rejects_loopback_auth_on_public_bind() {
+        let err = ApiDaemonConfigContract::new(
+            "0.0.0.0",
+            8787,
+            ApiAuthBoundary::DevelopmentLoopbackOnly,
+            "postgres",
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, TaskFenceError::State(message) if message.contains("loopback host")));
+    }
+
+    #[test]
+    fn production_api_daemon_contract_rejects_secret_bearing_auth_refs() {
+        let err = ApiDaemonConfigContract::new(
+            "0.0.0.0",
+            8787,
+            ApiAuthBoundary::ExternalProviderPlaceholder {
+                provider_ref: "https://auth.example?token=secret".into(),
+            },
+            "postgres",
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, TaskFenceError::State(message) if message.contains("non-secret")));
+    }
+
+    #[test]
+    fn production_review_ui_contract_preserves_server_side_enforcement_and_fallback() {
+        let contract = ProductionReviewUiContract::after_api_daemon_contract();
+
+        assert!(contract.depends_on_api_daemon);
+        assert!(contract.source_of_truth.contains("Rust state"));
+        for workflow in [
+            ReviewWorkflow::TaskEvidence,
+            ReviewWorkflow::ApprovalQueue,
+            ReviewWorkflow::ReportLogDiffInspection,
+            ReviewWorkflow::ContainedArtifactDownload,
+            ReviewWorkflow::TaskComparison,
+            ReviewWorkflow::ReplayPlanning,
+            ReviewWorkflow::ComplianceView,
+        ] {
+            assert!(contract.workflows.contains(&workflow));
+        }
+        for state in [
+            ReviewFeedbackState::LoadingSkeleton,
+            ReviewFeedbackState::Empty,
+            ReviewFeedbackState::RecoverableError,
+            ReviewFeedbackState::AccessDenied,
+            ReviewFeedbackState::DestructiveConfirmation,
+            ReviewFeedbackState::SuccessToast,
+        ] {
+            assert!(contract.feedback_states.contains(&state));
+        }
+        assert!(contract.access_control_aware);
+        assert!(contract.destructive_actions_require_confirmation);
+        assert_eq!(
+            contract.static_fallback_command,
+            "taskfence review --workspace <workspace>"
+        );
+        assert!(contract
+            .unsupported_until
+            .iter()
+            .any(|item| item.contains("enforcement stay server-side")));
+    }
+
+    #[test]
+    fn team_production_readiness_contract_keeps_service_surfaces_gated() {
+        let contract = TeamProductionReadinessContract::after_service_boundary();
+
+        assert!(contract.promoted_after_api_daemon);
+        for surface in [
+            TeamReadinessSurface::DeployedApiService,
+            TeamReadinessSurface::LiveWorkerService,
+            TeamReadinessSurface::Sso,
+            TeamReadinessSurface::ObjectStorage,
+            TeamReadinessSurface::QuotaChargeback,
+        ] {
+            assert!(contract.surfaces.contains(&surface));
+        }
+        assert!(contract
+            .worker_guarantees
+            .iter()
+            .any(|item| item.contains("wrong-worker")));
+        assert!(contract
+            .worker_guarantees
+            .iter()
+            .any(|item| item.contains("already terminal")));
+        assert!(contract
+            .sso_prerequisites
+            .iter()
+            .any(|item| item.contains("role, resource, and method")));
+        assert!(contract
+            .object_storage_prerequisites
+            .iter()
+            .any(|item| item.contains("SHA-256")));
+        assert!(contract
+            .quota_prerequisites
+            .iter()
+            .any(|item| item.contains("budget usage events")));
+        assert!(contract
+            .unsupported_surfaces
+            .iter()
+            .any(|surface| surface == "deployed team HTTP daemon"));
+    }
+
+    #[test]
+    fn connector_replay_contract_blocks_destructive_live_effects() {
+        let contract = ConnectorReplayEvaluationContract::default_contract();
+
+        assert!(contract.requires_fresh_gateway_credentials_for_live);
+        assert!(contract
+            .evaluation_dimensions
+            .iter()
+            .any(|dimension| dimension.name == "agent"));
+        assert!(contract
+            .evaluation_dimensions
+            .iter()
+            .any(|dimension| dimension.name == "connector_mode"));
+
+        let fixture = contract
+            .rules
+            .iter()
+            .find(|rule| rule.connector == "local_fixture")
+            .unwrap();
+        assert_eq!(fixture.allowed_modes, vec![ConnectorReplayMode::Fixture]);
+
+        let external_write = contract
+            .rules
+            .iter()
+            .find(|rule| rule.risk == ConnectorEffectRisk::ExternalWrite)
+            .unwrap();
+        assert!(external_write
+            .allowed_modes
+            .contains(&ConnectorReplayMode::DryRun));
+        assert!(external_write
+            .allowed_modes
+            .contains(&ConnectorReplayMode::RecordedResponse));
+        assert!(external_write.operator_confirmation_required);
+        assert!(external_write.idempotency_required);
+        assert!(external_write.rollback_required);
+        assert!(!external_write
+            .allowed_modes
+            .contains(&ConnectorReplayMode::LiveWithFreshCredentials));
+
+        let destructive = contract
+            .rules
+            .iter()
+            .find(|rule| rule.risk == ConnectorEffectRisk::Destructive)
+            .unwrap();
+        assert!(destructive.allowed_modes.is_empty());
+        assert!(contract
+            .unsupported_live_side_effect_replay
+            .iter()
+            .any(|item| item.contains("raw secrets")));
     }
 
     #[test]

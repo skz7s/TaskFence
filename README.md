@@ -438,6 +438,16 @@ python3 scripts/governance/build_agents.py --check
 python3 scripts/governance/check_codex_governance.py
 ```
 
+Release/readiness checklist:
+
+```bash
+bash deploy/manage.sh readiness
+```
+
+The checklist separates local preview, beta-candidate, and not-production
+supported surfaces. It is read-only and does not start a daemon or install
+dependencies.
+
 ## Initial Scope
 
 The first implementation currently includes:
@@ -530,6 +540,15 @@ The first implementation currently includes:
     they are guidance and are not applied automatically. `deploy/manage.sh
     setup`, `dev`, `build`, and `doctor` now expose Rust-workspace-oriented
     operator flows without adding a deployed service.
+19. Production-readiness contracts for the next wave: a combined local/team API
+    daemon boundary with health/readiness and structured diagnostics, gateway
+    transport hardening priority for MCP then bounded HTTP then SDK/webhook
+    surfaces, production review UI workflow prerequisites, runner expansion
+    contracts for Kubernetes/microVM/managed-cloud, team service/worker/SSO/
+    object-storage/quota prerequisites, connector-effect replay rules, and
+    policy/schema versioning. These are contract and readiness surfaces; they
+    do not make the unsupported production daemon, Web UI, arbitrary HTTP
+    proxy, deployed team service, or new runner backends live.
 
 ## Non-Goals
 
