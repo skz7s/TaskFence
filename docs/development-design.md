@@ -395,10 +395,15 @@ Expanded runner contracts:
 - Parse future sandbox families as `remote_ssh`, `kubernetes_job`, `microvm`,
   and `managed_cloud`.
 - Route Docker tasks through the executable Docker runner.
-- For future runner families, produce typed capability reports and fail closed
-  until the runner proves filesystem isolation, secret isolation, network
-  disable/default-deny behavior, domain allowlist enforcement when configured,
-  limit enforcement, output capture, and artifact collection.
+- Route remote SSH tasks through the executable SSH runner only when task
+  configuration declares operator-provided remote workspace and secret
+  isolation, strict identity and known-hosts files, remote process termination,
+  default-allow network policy, no gateway spool/listener mounts, no host
+  environment forwarding, and no remote file diff transport.
+- For remaining future runner families, produce typed capability reports and
+  fail closed until the runner proves filesystem isolation, secret isolation,
+  network disable/default-deny behavior, domain allowlist enforcement when
+  configured, limit enforcement, output capture, and artifact collection.
 - Never fall back from an unavailable remote runner to Docker or a host-local
   process without an explicit contract and tests.
 
@@ -411,8 +416,9 @@ Branches:
   uses `--network none`; the gateway mediates configured `http egress.fetch`
   requests and checks the destination host through policy before gateway-side
   HTTPS GET/HEAD execution.
-- Remote SSH, Kubernetes, microVM, or managed cloud runner unavailable: fail
-  closed with the exact missing isolation, network, secret, limit, or artifact
+- Remote SSH, Kubernetes, microVM, or managed cloud runner unavailable or
+  missing required capability declarations: fail closed with the exact missing
+  isolation, network, secret, limit, cancellation, timeout, output, or artifact
   capability instead of starting a weaker runner.
 - Container exits non-zero: task can still produce audit/report; do not discard
   artifacts.

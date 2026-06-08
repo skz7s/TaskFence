@@ -1,0 +1,54 @@
+# Example TaskFence task file for the first live remote SSH runner boundary.
+#
+# This file is for validation and configuration reference. Running it requires
+# the operator to provide a real SSH identity, known-hosts file, remote host,
+# and an isolated remote account or chroot/container workspace matching the
+# declared contract below. TaskFence does not copy raw SSH key material into
+# task evidence and does not forward SSH agent sockets.
+
+id: "remote-ssh-demo"
+goal: "Run a bounded command in an operator-isolated remote workspace"
+workspace: "./repo"
+
+agent:
+  type: "generic"
+  command: "/usr/bin/true"
+
+sandbox:
+  type: "remote_ssh"
+  ssh:
+    host: "runner.example"
+    user: "taskfence"
+    port: 22
+    workspace: "/srv/taskfence/workspaces/remote-ssh-demo"
+    identity_file: "/tmp/taskfence/id_ed25519"
+    known_hosts_file: "/tmp/taskfence/known_hosts"
+    isolated_workspace: true
+    isolated_secrets: true
+    terminates_remote_processes: true
+    network_policy: "uncontrolled_allow"
+  limits:
+    timeout_minutes: 5
+
+permissions:
+  paths:
+    read: []
+    write: []
+  commands:
+    allow:
+      - "/usr/bin/true"
+  network:
+    default: "allow"
+
+secrets:
+  expose_to_agent: false
+
+audit:
+  report:
+    format: "markdown"
+  capture:
+    stdout: true
+    stderr: true
+    file_diff: false
+    network_destinations: true
+    approvals: true

@@ -173,7 +173,41 @@ pub struct AgentConfig {
 pub struct SandboxConfig {
     pub kind: SandboxKind,
     pub image: Option<String>,
+    #[serde(default)]
+    pub ssh: Option<SshSandboxConfig>,
     pub limits: LimitConfig,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SshSandboxConfig {
+    pub host: String,
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub workspace: Option<Utf8PathBuf>,
+    #[serde(default)]
+    pub identity_file: Option<Utf8PathBuf>,
+    #[serde(default)]
+    pub known_hosts_file: Option<Utf8PathBuf>,
+    #[serde(default)]
+    pub isolated_workspace: bool,
+    #[serde(default)]
+    pub isolated_secrets: bool,
+    #[serde(default)]
+    pub terminates_remote_processes: bool,
+    #[serde(default)]
+    pub enforces_resource_limits: bool,
+    #[serde(default)]
+    pub network_policy: Option<SshNetworkPolicy>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SshNetworkPolicy {
+    UncontrolledAllow,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -755,12 +789,29 @@ pub enum MountMode {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreparedRun {
     pub task_id: TaskId,
+    pub runner_kind: SandboxKind,
     pub image: Option<String>,
     pub mounts: Vec<MountPlan>,
     pub env: BTreeMap<String, String>,
     pub network: NetworkPermissions,
     pub gateway: PreparedGateway,
     pub limits: LimitConfig,
+    #[serde(default)]
+    pub ssh: Option<PreparedSshRun>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreparedSshRun {
+    pub host: String,
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+    pub workspace: Utf8PathBuf,
+    pub identity_file: Utf8PathBuf,
+    #[serde(default)]
+    pub known_hosts_file: Option<Utf8PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1111,24 +1162,26 @@ impl<'a> Orchestrator<'a> {
         )?;
 
         self.transition(&mut events, &task.id, TaskStatus::CollectingArtifacts)?;
-        match self.artifacts.collect_diff(&task, &baseline) {
-            Ok(Some(diff_path)) => {
-                self.record_event(
-                    &mut events,
-                    AuditEvent::Artifact {
-                        task_id: task.id.clone(),
-                        at: OffsetDateTime::now_utc(),
-                        kind: "diff".into(),
-                        path: diff_path,
-                    },
-                )?;
-            }
-            Ok(None) => {}
-            Err(err) => {
-                let message = err.to_string();
-                self.record_error(&mut events, &task.id, &message)?;
-                if failure_message.is_none() {
-                    failure_message = Some(message);
+        if task.audit.capture.file_diff {
+            match self.artifacts.collect_diff(&task, &baseline) {
+                Ok(Some(diff_path)) => {
+                    self.record_event(
+                        &mut events,
+                        AuditEvent::Artifact {
+                            task_id: task.id.clone(),
+                            at: OffsetDateTime::now_utc(),
+                            kind: "diff".into(),
+                            path: diff_path,
+                        },
+                    )?;
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    let message = err.to_string();
+                    self.record_error(&mut events, &task.id, &message)?;
+                    if failure_message.is_none() {
+                        failure_message = Some(message);
+                    }
                 }
             }
         }
@@ -1618,6 +1671,7 @@ mod tests {
             sandbox: SandboxConfig {
                 kind: SandboxKind::Docker,
                 image: Some("debian:bookworm-slim".into()),
+                ssh: None,
                 limits: LimitConfig::default(),
             },
             permissions: PermissionConfig {
@@ -1851,12 +1905,14 @@ mod tests {
             *self.prepared.borrow_mut() += 1;
             Ok(PreparedRun {
                 task_id: task.id.clone(),
+                runner_kind: task.sandbox.kind.clone(),
                 image: task.sandbox.image.clone(),
                 mounts: Vec::new(),
                 env: BTreeMap::new(),
                 network: task.permissions.network.clone(),
                 gateway: PreparedGateway::default(),
                 limits: task.sandbox.limits.clone(),
+                ssh: None,
             })
         }
 

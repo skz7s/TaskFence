@@ -14,10 +14,10 @@ use taskfence_core::{
     validate_task_for_run, Action, ActionDecision, ApprovalDecision, ApprovalEngine, ApprovalId,
     ApprovalRecord, ArtifactRefs, ArtifactStore, AuditEvent, AuditLogger, ExitStatus,
     GatewayConnectorConfig, GatewayMode, LogStream, NetworkDefault, Orchestrator, RedactedValue,
-    ReportGenerator, ResolvedTask, RiskLevel, Runner, StateStore, TaskFenceError, TaskId,
-    TaskResult, TaskStatus, TaskValidation, ToolAction, ToolExecution, ToolExecutionContext,
-    ToolExecutionErrorKind, GATEWAY_EGRESS_TOOL_NAME, GATEWAY_EGRESS_TOOL_OPERATION,
-    GATEWAY_EGRESS_TOOL_PROTOCOL,
+    ReportGenerator, ResolvedTask, RiskLevel, Runner, SandboxKind, StateStore, TaskFenceError,
+    TaskId, TaskResult, TaskStatus, TaskValidation, ToolAction, ToolExecution,
+    ToolExecutionContext, ToolExecutionErrorKind, GATEWAY_EGRESS_TOOL_NAME,
+    GATEWAY_EGRESS_TOOL_OPERATION, GATEWAY_EGRESS_TOOL_PROTOCOL,
 };
 use taskfence_gateway::{
     gateway_spool_request_id_from_path, normalize_tool_action, read_gateway_spool_request,
@@ -583,9 +583,12 @@ fn validate_task_file_summary(task_file: Utf8PathBuf) -> taskfence_core::Result<
 }
 
 fn validation_summary(validation: TaskValidation) -> ValidationSummary {
-    let network_mode = match validation.prepared.network.default {
-        NetworkDefault::Disabled | NetworkDefault::Deny => "none",
-        NetworkDefault::Allow => "bridge",
+    let network_mode = match validation.prepared.runner_kind {
+        SandboxKind::RemoteSsh => "ssh",
+        _ => match validation.prepared.network.default {
+            NetworkDefault::Disabled | NetworkDefault::Deny => "none",
+            NetworkDefault::Allow => "bridge",
+        },
     };
 
     ValidationSummary {
@@ -4170,8 +4173,29 @@ mod tests {
         let err = validate_task_file_summary(task_file).unwrap_err();
 
         assert!(
-            matches!(err, TaskFenceError::Runner(message) if message.contains("remote SSH isolation contract"))
+            matches!(err, TaskFenceError::Config(message) if message.contains("sandbox.ssh is required"))
         );
+        assert!(!workspace.join(".taskfence").exists());
+    }
+
+    #[test]
+    fn validate_accepts_declared_remote_ssh_runner_contract_without_running_ssh() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(
+            &task_file,
+            task_yaml_with_remote_ssh_contract("validate-remote-ok", &workspace),
+        )
+        .unwrap();
+
+        let summary = validate_task_file_summary(task_file).unwrap();
+
+        assert_eq!(summary.task_id, "validate-remote-ok");
+        assert_eq!(summary.sandbox_image, "-");
+        assert_eq!(summary.network_mode, "ssh");
+        assert_eq!(summary.mount_count, 0);
         assert!(!workspace.join(".taskfence").exists());
     }
 
@@ -6165,6 +6189,40 @@ permissions:
       - "echo"
   network:
     default: "disabled"
+"#
+        )
+    }
+
+    fn task_yaml_with_remote_ssh_contract(id: &str, workspace: &Utf8PathBuf) -> String {
+        format!(
+            r#"id: "{id}"
+goal: "CLI remote SSH validation test"
+workspace: "{workspace}"
+agent:
+  type: "generic"
+  command: "/usr/bin/true"
+sandbox:
+  type: "remote_ssh"
+  ssh:
+    host: "runner.example"
+    user: "taskfence"
+    port: 2222
+    workspace: "/srv/taskfence/workspaces/{id}"
+    identity_file: "/tmp/taskfence/id_ed25519"
+    known_hosts_file: "/tmp/taskfence/known_hosts"
+    isolated_workspace: true
+    isolated_secrets: true
+    terminates_remote_processes: true
+    network_policy: "uncontrolled_allow"
+permissions:
+  commands:
+    allow:
+      - "/usr/bin/true"
+  network:
+    default: "allow"
+audit:
+  capture:
+    file_diff: false
 "#
         )
     }

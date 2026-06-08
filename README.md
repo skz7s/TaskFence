@@ -12,8 +12,11 @@ records what happened, and creates evidence that can be reviewed later.
 
 > Status: local runner plus bounded gateway connector foundation. The Rust
 > workspace contains the first usable `taskfence run <task-file>` path for
-> generic commands in a local Docker sandbox, with structured audit events,
-> local artifacts, and Markdown reports. It also contains a CLI-owned
+> generic commands in a local Docker sandbox, plus a first live remote SSH
+> runner that is available only when the task declares operator-provided remote
+> isolation and accepts the SSH runner's unsupported controls. Both paths write
+> structured audit events, local artifacts, and Markdown reports. It also
+> contains a CLI-owned
 > `taskfence gateway call` path for configured local fixture tools and a
 > bounded GitHub REST connector, plus a request/response gateway spool
 > prototype for sandboxed agents. GitHub Enterprise REST can reuse that
@@ -35,10 +38,10 @@ records what happened, and creates evidence that can be reviewed later.
 > with unsupported live export behavior, and local-to-team migration planning
 > from structured evidence. MCP/HTTP listener or proxy servers, SDK/webhook
 > connectors, long-lived persistent API daemon, live Postgres backend, replay
-> for unsupported live connector effects, live remote SSH, Kubernetes,
-> microVM, or managed cloud runner execution, persistent team server, live
-> audit export sink, and live enterprise connector execution beyond the bounded
-> GitHub REST family remain future work.
+> for unsupported live connector effects, Kubernetes, microVM, or managed cloud
+> runner execution, persistent team server, live audit export sink, and live
+> enterprise connector execution beyond the bounded GitHub REST family remain
+> future work.
 
 ## Why TaskFence
 
@@ -111,11 +114,19 @@ gateway tool. In that mode the Docker container still runs with
 gateway boundary, where the destination host is checked by policy before the
 gateway-side request is executed.
 
-Task files can name future runner families with `sandbox.type` values
-`remote_ssh`, `kubernetes_job`, `microvm`, or `managed_cloud`. These are
-currently typed contracts only. `taskfence validate` and `taskfence run` fail
-closed with the missing isolation, network, secret, limit, and artifact
-capability requirements instead of falling back to Docker or claiming execution.
+Task files can use `sandbox.type: remote_ssh` for the first live remote runner
+backend. It executes the agent command through the host `ssh` executable with
+`BatchMode=yes`, strict host-key checking, identity-file authentication, no SSH
+agent forwarding, no host environment forwarding, and bounded stdout/stderr
+capture. The SSH runner is available only when the task declares a remote
+workspace, identity file, known-hosts file, `isolated_workspace: true`,
+`isolated_secrets: true`, `terminates_remote_processes: true`,
+`network_policy: uncontrolled_allow`, `permissions.network.default: allow`,
+and `audit.capture.file_diff: false`. Generic SSH cannot enforce disabled or
+default-deny network access, domain allowlists, local gateway spool/listener
+mounts, host env allowlists, or remote file diff transport, so those
+configurations fail closed instead of falling back to Docker. Kubernetes,
+microVM, and managed cloud runner families remain typed contracts only.
 
 This mode answers the basic question:
 
@@ -218,7 +229,7 @@ cargo run -p taskfence-cli -- validate examples/task.yaml
 ```
 
 Validation resolves the task file, checks the planned agent command against
-policy, and builds the local Docker run plan without starting Docker or writing
+policy, and builds the runner plan without starting Docker, SSH, or writing
 task artifacts.
 
 You can also exercise the deterministic GitHub-shaped local fixture gateway
@@ -487,9 +498,13 @@ The first implementation currently includes:
     run` executes supported local replays into a new task evidence directory
     with structured evaluation evidence.
 16. Expanded runner contracts for `remote_ssh`, `kubernetes_job`, `microvm`,
-    and `managed_cloud` sandbox families. They currently provide typed
-    capability reports and fail-closed validation when required controls are
-    unavailable; Docker remains the only executable runner.
+    and `managed_cloud` sandbox families. Remote SSH is the first live remote
+    backend, gated by explicit filesystem/secret isolation declarations,
+    identity and known-hosts files, default-allow network policy, timeout
+    termination support, stdout/stderr capture, and a local-report-only
+    artifact return path. Kubernetes, microVM, and managed cloud families still
+    provide typed capability reports and fail-closed validation when required
+    controls are unavailable.
 17. A contract-only team-server foundation in `taskfence-state`: typed team API
     resource boundaries, role-based access decisions, approval-owner
     enforcement, deterministic in-memory worker leases for local development

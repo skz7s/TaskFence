@@ -8,10 +8,11 @@ use std::time::{Duration, Instant};
 
 use taskfence_core::{
     AgentInvocation, ExitStatus, GatewayMode, MountMode, MountPlan, NetworkDefault,
-    PreparedGateway, PreparedGatewayEgress, PreparedRun, ResolvedTask, RunOutput, Runner,
-    RunningTask, SandboxKind, TaskFenceError, TaskId, GATEWAY_EGRESS_TOOL_NAME,
-    GATEWAY_EGRESS_TOOL_OPERATION, GATEWAY_EGRESS_TOOL_PROTOCOL, GATEWAY_SPOOL_CONTAINER_PATH,
-    GATEWAY_SPOOL_DIR_NAME, TASKFENCE_GATEWAY_EGRESS_ALLOW_DOMAINS_ENV, TASKFENCE_GATEWAY_MODE_ENV,
+    PreparedGateway, PreparedGatewayEgress, PreparedRun, PreparedSshRun, ResolvedTask, RunOutput,
+    Runner, RunningTask, SandboxKind, SshNetworkPolicy, SshSandboxConfig, TaskFenceError, TaskId,
+    GATEWAY_EGRESS_TOOL_NAME, GATEWAY_EGRESS_TOOL_OPERATION, GATEWAY_EGRESS_TOOL_PROTOCOL,
+    GATEWAY_SPOOL_CONTAINER_PATH, GATEWAY_SPOOL_DIR_NAME,
+    TASKFENCE_GATEWAY_EGRESS_ALLOW_DOMAINS_ENV, TASKFENCE_GATEWAY_MODE_ENV,
     TASKFENCE_GATEWAY_SPOOL_ENV,
 };
 
@@ -77,6 +78,7 @@ pub struct RunnerCapabilityReport {
     pub can_enforce_domain_allowlist: bool,
     pub can_enforce_limits: bool,
     pub can_capture_output: bool,
+    pub can_return_artifacts: bool,
     pub missing: Vec<String>,
 }
 
@@ -100,6 +102,100 @@ impl RunnerCapabilityReport {
             can_enforce_domain_allowlist,
             can_enforce_limits: true,
             can_capture_output: true,
+            can_return_artifacts: true,
+            missing,
+        }
+    }
+
+    pub fn remote_ssh(task: &ResolvedTask) -> Self {
+        let mut missing = Vec::new();
+        let Some(ssh) = task.sandbox.ssh.as_ref() else {
+            return Self::unavailable(
+                RunnerKind::RemoteSsh,
+                vec!["sandbox.ssh is required for remote_ssh tasks".into()],
+            );
+        };
+
+        let can_isolate_filesystem = ssh.isolated_workspace && ssh.workspace.is_some();
+        if !can_isolate_filesystem {
+            missing.push(
+                "remote SSH requires sandbox.ssh.workspace and isolated_workspace=true".into(),
+            );
+        }
+        if !ssh.isolated_secrets {
+            missing.push("remote SSH requires isolated_secrets=true".into());
+        }
+        if ssh.identity_file.is_none() {
+            missing.push("remote SSH requires sandbox.ssh.identity_file".into());
+        }
+        if ssh.known_hosts_file.is_none() {
+            missing.push("remote SSH requires sandbox.ssh.known_hosts_file".into());
+        }
+
+        let can_enforce_limits = ssh_limits_are_supported(task, ssh);
+        if !can_enforce_limits {
+            missing.push(
+                "remote SSH can enforce timeout only unless enforces_resource_limits=true".into(),
+            );
+        }
+        if !ssh.terminates_remote_processes {
+            missing.push(
+                "remote SSH requires terminates_remote_processes=true for timeout and cancellation"
+                    .into(),
+            );
+        }
+
+        let can_disable_network = false;
+        let can_enforce_default_deny_network = false;
+        let can_enforce_domain_allowlist = false;
+        match task.permissions.network.default {
+            NetworkDefault::Allow => {
+                if ssh.network_policy != Some(SshNetworkPolicy::UncontrolledAllow) {
+                    missing.push(
+                        "remote SSH default allow requires sandbox.ssh.network_policy=uncontrolled_allow"
+                            .into(),
+                    );
+                }
+            }
+            NetworkDefault::Disabled => {
+                missing.push("remote SSH cannot disable remote network access".into());
+            }
+            NetworkDefault::Deny => {
+                missing.push("remote SSH cannot enforce default-deny remote network access".into());
+            }
+        }
+        if !task.permissions.network.allow_domains.is_empty() {
+            missing.push("remote SSH cannot enforce domain allowlists".into());
+        }
+        if !task.permissions.env.allow.is_empty() {
+            missing.push("remote SSH does not expose host environment allowlists".into());
+        }
+        if task.secrets.expose_to_agent {
+            missing.push("remote SSH does not expose raw secrets to agents".into());
+        }
+        if task.gateway.mode != GatewayMode::SpoolOnly || !task.gateway.tools.is_empty() {
+            missing.push(
+                "remote SSH does not mount the local gateway spool or listener boundary".into(),
+            );
+        }
+        if task.audit.capture.file_diff {
+            missing.push(
+                "remote SSH artifact return is limited to stdout/stderr/local reports; set audit.capture.file_diff=false"
+                    .into(),
+            );
+        }
+
+        Self {
+            kind: RunnerKind::RemoteSsh,
+            available: missing.is_empty(),
+            can_isolate_filesystem,
+            can_isolate_secrets: ssh.isolated_secrets,
+            can_disable_network,
+            can_enforce_default_deny_network,
+            can_enforce_domain_allowlist,
+            can_enforce_limits,
+            can_capture_output: true,
+            can_return_artifacts: !task.audit.capture.file_diff,
             missing,
         }
     }
@@ -115,6 +211,7 @@ impl RunnerCapabilityReport {
             can_enforce_domain_allowlist: false,
             can_enforce_limits: false,
             can_capture_output: false,
+            can_return_artifacts: false,
             missing,
         }
     }
@@ -124,6 +221,7 @@ impl RunnerCapabilityReport {
             && self.can_isolate_filesystem
             && self.can_isolate_secrets
             && self.can_capture_output
+            && self.can_return_artifacts
             && self.can_enforce_limits
             && match task.permissions.network.default {
                 NetworkDefault::Disabled => self.can_disable_network,
@@ -206,6 +304,7 @@ impl Runner for UnsupportedRunner {
 #[derive(Clone, Debug)]
 pub struct ExpandedRunner {
     docker: DockerRunner,
+    remote_ssh: RemoteSshRunner,
 }
 
 impl Default for ExpandedRunner {
@@ -218,16 +317,25 @@ impl ExpandedRunner {
     pub fn new() -> Self {
         Self {
             docker: DockerRunner::new(),
+            remote_ssh: RemoteSshRunner::new(),
         }
     }
 
     pub fn with_docker(docker: DockerRunner) -> Self {
-        Self { docker }
+        Self {
+            docker,
+            remote_ssh: RemoteSshRunner::new(),
+        }
+    }
+
+    pub fn with_backends(docker: DockerRunner, remote_ssh: RemoteSshRunner) -> Self {
+        Self { docker, remote_ssh }
     }
 
     pub fn capability_report(&self, task: &ResolvedTask) -> RunnerCapabilityReport {
         match RunnerKind::from_sandbox(&task.sandbox.kind) {
             RunnerKind::Docker => RunnerCapabilityReport::docker(task),
+            RunnerKind::RemoteSsh => RunnerCapabilityReport::remote_ssh(task),
             kind => UnsupportedRunner::new(kind).capability_report(),
         }
     }
@@ -247,6 +355,7 @@ impl Runner for ExpandedRunner {
         self.ensure_capable(task)?;
         match task.sandbox.kind {
             SandboxKind::Docker => self.docker.prepare(task),
+            SandboxKind::RemoteSsh => self.remote_ssh.prepare(task),
             _ => self.unsupported_runner(task).prepare(task),
         }
     }
@@ -256,15 +365,214 @@ impl Runner for ExpandedRunner {
         prepared: PreparedRun,
         invocation: AgentInvocation,
     ) -> taskfence_core::Result<RunningTask> {
-        self.docker.start(prepared, invocation)
+        match prepared.runner_kind {
+            SandboxKind::Docker => self.docker.start(prepared, invocation),
+            SandboxKind::RemoteSsh => self.remote_ssh.start(prepared, invocation),
+            _ => Err(TaskFenceError::Runner(format!(
+                "{} runner execution is not implemented",
+                prepared.runner_kind.label()
+            ))),
+        }
     }
 
     fn stop(&self, running: &RunningTask) -> taskfence_core::Result<()> {
-        self.docker.stop(running)
+        if running.runner_ref.starts_with("remote-ssh:") {
+            self.remote_ssh.stop(running)
+        } else {
+            self.docker.stop(running)
+        }
     }
 
     fn collect_exit(&self, running: &RunningTask) -> taskfence_core::Result<RunOutput> {
-        self.docker.collect_exit(running)
+        if running.runner_ref.starts_with("remote-ssh:") {
+            self.remote_ssh.collect_exit(running)
+        } else {
+            self.docker.collect_exit(running)
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SshRunPlan {
+    pub prepared: PreparedRun,
+}
+
+#[derive(Clone, Debug)]
+pub struct RemoteSshRunner {
+    ssh_command: String,
+    completed: Arc<Mutex<BTreeMap<String, RunOutput>>>,
+}
+
+impl Default for RemoteSshRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RemoteSshRunner {
+    pub fn new() -> Self {
+        Self {
+            ssh_command: "ssh".into(),
+            completed: Arc::new(Mutex::new(BTreeMap::new())),
+        }
+    }
+
+    pub fn with_ssh_command(mut self, ssh_command: impl Into<String>) -> Self {
+        self.ssh_command = ssh_command.into();
+        self
+    }
+
+    pub fn build_run_plan(&self, task: &ResolvedTask) -> taskfence_core::Result<SshRunPlan> {
+        ensure_remote_ssh_task(task)?;
+        RunnerCapabilityReport::remote_ssh(task).ensure_sufficient_for_task(task)?;
+        let ssh = task
+            .sandbox
+            .ssh
+            .as_ref()
+            .ok_or_else(|| TaskFenceError::Runner("sandbox.ssh is required".into()))?;
+        let prepared_ssh = PreparedSshRun {
+            host: ssh.host.clone(),
+            user: ssh.user.clone(),
+            port: ssh.port,
+            workspace: ssh.workspace.clone().ok_or_else(|| {
+                TaskFenceError::Runner("sandbox.ssh.workspace is required".into())
+            })?,
+            identity_file: ssh.identity_file.clone().ok_or_else(|| {
+                TaskFenceError::Runner("sandbox.ssh.identity_file is required".into())
+            })?,
+            known_hosts_file: ssh.known_hosts_file.clone(),
+        };
+
+        Ok(SshRunPlan {
+            prepared: PreparedRun {
+                task_id: task.id.clone(),
+                runner_kind: SandboxKind::RemoteSsh,
+                image: None,
+                mounts: Vec::new(),
+                env: BTreeMap::new(),
+                network: task.permissions.network.clone(),
+                gateway: PreparedGateway::default(),
+                limits: task.sandbox.limits.clone(),
+                ssh: Some(prepared_ssh),
+            },
+        })
+    }
+
+    fn build_ssh_args(
+        &self,
+        prepared: &PreparedRun,
+        invocation: &AgentInvocation,
+    ) -> taskfence_core::Result<Vec<String>> {
+        let ssh = prepared
+            .ssh
+            .as_ref()
+            .ok_or_else(|| TaskFenceError::Runner("prepared SSH plan is missing".into()))?;
+        reject_ssh_segment("sandbox.ssh.host", &ssh.host)?;
+        if let Some(user) = &ssh.user {
+            reject_ssh_segment("sandbox.ssh.user", user)?;
+        }
+        reject_ssh_path("sandbox.ssh.workspace", &ssh.workspace)?;
+        reject_ssh_path("sandbox.ssh.identity_file", &ssh.identity_file)?;
+        if let Some(path) = &ssh.known_hosts_file {
+            reject_ssh_path("sandbox.ssh.known_hosts_file", path)?;
+        }
+        reject_ssh_arg("agent executable", &invocation.executable)?;
+        reject_ssh_path("agent working directory", &invocation.working_dir)?;
+        for arg in &invocation.args {
+            reject_ssh_arg("agent argument", arg)?;
+        }
+        if !prepared.env.is_empty() || !invocation.env.is_empty() {
+            return Err(TaskFenceError::Runner(
+                "remote SSH runner does not forward environment variables".into(),
+            ));
+        }
+
+        let mut args = vec![
+            "-o".into(),
+            "BatchMode=yes".into(),
+            "-o".into(),
+            "ForwardAgent=no".into(),
+            "-o".into(),
+            "PermitLocalCommand=no".into(),
+            "-o".into(),
+            "IdentitiesOnly=yes".into(),
+            "-o".into(),
+            "StrictHostKeyChecking=yes".into(),
+            "-i".into(),
+            ssh.identity_file.to_string(),
+        ];
+        if let Some(known_hosts) = &ssh.known_hosts_file {
+            args.push("-o".into());
+            args.push(format!("UserKnownHostsFile={known_hosts}"));
+        }
+        if let Some(port) = ssh.port {
+            args.push("-p".into());
+            args.push(port.to_string());
+        }
+        args.push("--".into());
+        args.push(ssh_target(ssh));
+        args.push(remote_command(ssh, invocation)?);
+        Ok(args)
+    }
+}
+
+impl Runner for RemoteSshRunner {
+    fn prepare(&self, task: &ResolvedTask) -> taskfence_core::Result<PreparedRun> {
+        self.build_run_plan(task).map(|plan| plan.prepared)
+    }
+
+    fn start(
+        &self,
+        prepared: PreparedRun,
+        invocation: AgentInvocation,
+    ) -> taskfence_core::Result<RunningTask> {
+        if prepared.runner_kind != SandboxKind::RemoteSsh {
+            return Err(TaskFenceError::Runner(format!(
+                "RemoteSshRunner cannot run {} sandbox tasks",
+                prepared.runner_kind.label()
+            )));
+        }
+        let runner_ref = remote_ssh_runner_ref(&prepared.task_id);
+        let args = self.build_ssh_args(&prepared, &invocation)?;
+        let timeout = prepared
+            .limits
+            .timeout_minutes
+            .map(|minutes| Duration::from_secs(minutes.saturating_mul(60)));
+        let output = run_command_with_timeout(
+            &self.ssh_command,
+            &args,
+            timeout,
+            ProcessMessages {
+                unavailable_message: "ssh executable is unavailable",
+                start_label: "ssh",
+                wait_label: "ssh",
+                kill_label: "ssh",
+                stdout_label: "ssh stdout",
+                stderr_label: "ssh stderr",
+            },
+            None,
+        )?;
+
+        lock_completed(&self.completed, "remote SSH")?.insert(runner_ref.clone(), output);
+        Ok(RunningTask {
+            task_id: prepared.task_id,
+            runner_ref,
+        })
+    }
+
+    fn stop(&self, _running: &RunningTask) -> taskfence_core::Result<()> {
+        Ok(())
+    }
+
+    fn collect_exit(&self, running: &RunningTask) -> taskfence_core::Result<RunOutput> {
+        lock_completed(&self.completed, "remote SSH")?
+            .remove(&running.runner_ref)
+            .ok_or_else(|| {
+                TaskFenceError::Runner(format!(
+                    "no completed remote SSH run was found for {}",
+                    running.runner_ref
+                ))
+            })
     }
 }
 
@@ -333,12 +641,14 @@ impl DockerRunner {
         Ok(DockerRunPlan {
             prepared: PreparedRun {
                 task_id: task.id.clone(),
+                runner_kind: SandboxKind::Docker,
                 image: task.sandbox.image.clone(),
                 mounts,
                 env,
                 network: task.permissions.network.clone(),
                 gateway,
                 limits: task.sandbox.limits.clone(),
+                ssh: None,
             },
             network,
         })
@@ -518,7 +828,7 @@ impl Runner for DockerRunner {
             .map(|minutes| Duration::from_secs(minutes.saturating_mul(60)));
         let output = run_docker_command(&self.docker_command, &runner_ref, &args, timeout)?;
 
-        lock_completed(&self.completed)?.insert(runner_ref.clone(), output);
+        lock_completed(&self.completed, "Docker")?.insert(runner_ref.clone(), output);
 
         Ok(RunningTask {
             task_id: prepared.task_id,
@@ -543,7 +853,7 @@ impl Runner for DockerRunner {
     }
 
     fn collect_exit(&self, running: &RunningTask) -> taskfence_core::Result<RunOutput> {
-        lock_completed(&self.completed)?
+        lock_completed(&self.completed, "Docker")?
             .remove(&running.runner_ref)
             .ok_or_else(|| {
                 TaskFenceError::Runner(format!(
@@ -622,27 +932,58 @@ fn run_docker_command(
     args: &[String],
     timeout: Option<Duration>,
 ) -> taskfence_core::Result<RunOutput> {
-    let mut child = Command::new(docker_command)
+    run_command_with_timeout(
+        docker_command,
+        args,
+        timeout,
+        ProcessMessages {
+            unavailable_message: "docker executable is unavailable",
+            start_label: "docker",
+            wait_label: "docker",
+            kill_label: "docker",
+            stdout_label: "docker stdout",
+            stderr_label: "docker stderr",
+        },
+        Some((docker_command, runner_ref)),
+    )
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ProcessMessages {
+    unavailable_message: &'static str,
+    start_label: &'static str,
+    wait_label: &'static str,
+    kill_label: &'static str,
+    stdout_label: &'static str,
+    stderr_label: &'static str,
+}
+
+fn run_command_with_timeout(
+    executable: &str,
+    args: &[String],
+    timeout: Option<Duration>,
+    messages: ProcessMessages,
+    docker_cleanup: Option<(&str, &str)>,
+) -> taskfence_core::Result<RunOutput> {
+    let mut child = Command::new(executable)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {
-                TaskFenceError::Runner("docker executable is unavailable".into())
+                TaskFenceError::Runner(messages.unavailable_message.into())
             } else {
-                TaskFenceError::Runner(format!("failed to start docker: {err}"))
+                TaskFenceError::Runner(format!("failed to start {}: {err}", messages.start_label))
             }
         })?;
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| TaskFenceError::Runner("failed to capture docker stdout".into()))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| TaskFenceError::Runner("failed to capture docker stderr".into()))?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        TaskFenceError::Runner(format!("failed to capture {}", messages.stdout_label))
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        TaskFenceError::Runner(format!("failed to capture {}", messages.stderr_label))
+    })?;
 
     let stdout_reader = thread::spawn(move || read_pipe(stdout));
     let stderr_reader = thread::spawn(move || read_pipe(stderr));
@@ -650,31 +991,35 @@ fn run_docker_command(
     let mut timed_out = false;
 
     let status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|err| TaskFenceError::Runner(format!("failed to wait for docker: {err}")))?
-        {
+        if let Some(status) = child.try_wait().map_err(|err| {
+            TaskFenceError::Runner(format!("failed to wait for {}: {err}", messages.wait_label))
+        })? {
             break status;
         }
 
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             timed_out = true;
-            child
-                .kill()
-                .map_err(|err| TaskFenceError::Runner(format!("failed to kill docker: {err}")))?;
-            let _ = Command::new(docker_command)
-                .args(["rm", "-f", runner_ref])
-                .output();
+            child.kill().map_err(|err| {
+                TaskFenceError::Runner(format!("failed to kill {}: {err}", messages.kill_label))
+            })?;
+            if let Some((docker_command, runner_ref)) = docker_cleanup {
+                let _ = Command::new(docker_command)
+                    .args(["rm", "-f", runner_ref])
+                    .output();
+            }
             break child.wait().map_err(|err| {
-                TaskFenceError::Runner(format!("failed to wait for killed docker: {err}"))
+                TaskFenceError::Runner(format!(
+                    "failed to wait for killed {}: {err}",
+                    messages.wait_label
+                ))
             })?;
         }
 
         thread::sleep(Duration::from_millis(50));
     };
 
-    let stdout = join_reader(stdout_reader, "stdout")?;
-    let stderr = join_reader(stderr_reader, "stderr")?;
+    let stdout = join_reader(stdout_reader, messages.stdout_label)?;
+    let stderr = join_reader(stderr_reader, messages.stderr_label)?;
     let exit_status = if timed_out {
         ExitStatus {
             code: None,
@@ -708,7 +1053,7 @@ fn join_reader(
 ) -> taskfence_core::Result<String> {
     let bytes = handle
         .join()
-        .map_err(|_| TaskFenceError::Runner(format!("docker {stream} reader panicked")))?;
+        .map_err(|_| TaskFenceError::Runner(format!("{stream} reader panicked")))?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
@@ -787,12 +1132,13 @@ fn reject_docker_mount_path(field: &str, path: &Utf8Path) -> taskfence_core::Res
     Ok(())
 }
 
-fn lock_completed(
-    completed: &Mutex<BTreeMap<String, RunOutput>>,
-) -> taskfence_core::Result<MutexGuard<'_, BTreeMap<String, RunOutput>>> {
-    completed
-        .lock()
-        .map_err(|_| TaskFenceError::Runner("Docker runner completion store is poisoned".into()))
+fn lock_completed<'a>(
+    completed: &'a Mutex<BTreeMap<String, RunOutput>>,
+    runner: &str,
+) -> taskfence_core::Result<MutexGuard<'a, BTreeMap<String, RunOutput>>> {
+    completed.lock().map_err(|_| {
+        TaskFenceError::Runner(format!("{runner} runner completion store is poisoned"))
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -880,12 +1226,14 @@ impl Runner for FakeRunner {
         }
         Ok(PreparedRun {
             task_id: task.id.clone(),
+            runner_kind: task.sandbox.kind.clone(),
             image: task.sandbox.image.clone(),
             mounts: Vec::new(),
             env: BTreeMap::new(),
             network: task.permissions.network.clone(),
             gateway: build_prepared_gateway(task),
             limits: task.sandbox.limits.clone(),
+            ssh: None,
         })
     }
 
@@ -1135,6 +1483,87 @@ fn validate_env_value(name: &str, value: &str) -> taskfence_core::Result<()> {
     Ok(())
 }
 
+fn ensure_remote_ssh_task(task: &ResolvedTask) -> taskfence_core::Result<()> {
+    match &task.sandbox.kind {
+        SandboxKind::RemoteSsh => Ok(()),
+        kind => Err(TaskFenceError::Unsupported(format!(
+            "RemoteSshRunner cannot run {} sandbox tasks",
+            kind.label()
+        ))),
+    }
+}
+
+fn ssh_limits_are_supported(task: &ResolvedTask, ssh: &SshSandboxConfig) -> bool {
+    let resource_limits_requested = task.sandbox.limits.cpu.is_some()
+        || task.sandbox.limits.memory.is_some()
+        || task.sandbox.limits.disk.is_some();
+    (!resource_limits_requested || ssh.enforces_resource_limits)
+        && (task.sandbox.limits.timeout_minutes.is_none() || ssh.terminates_remote_processes)
+}
+
+fn remote_ssh_runner_ref(task_id: &TaskId) -> String {
+    format!("remote-ssh:{}", docker_container_name(task_id))
+}
+
+fn ssh_target(ssh: &PreparedSshRun) -> String {
+    match &ssh.user {
+        Some(user) => format!("{user}@{}", ssh.host),
+        None => ssh.host.clone(),
+    }
+}
+
+fn remote_command(
+    ssh: &PreparedSshRun,
+    invocation: &AgentInvocation,
+) -> taskfence_core::Result<String> {
+    let mut parts = vec![shell_quote(&invocation.executable)?];
+    for arg in &invocation.args {
+        parts.push(shell_quote(arg)?);
+    }
+    Ok(format!(
+        "cd {} && exec {}",
+        shell_quote(ssh.workspace.as_str())?,
+        parts.join(" ")
+    ))
+}
+
+fn shell_quote(value: &str) -> taskfence_core::Result<String> {
+    reject_ssh_arg("remote shell argument", value)?;
+    Ok(format!("'{}'", value.replace('\'', "'\\''")))
+}
+
+fn reject_ssh_segment(field: &str, value: &str) -> taskfence_core::Result<()> {
+    if value.is_empty()
+        || value.contains('@')
+        || value.contains('\0')
+        || value.chars().any(char::is_control)
+    {
+        return Err(TaskFenceError::Runner(format!(
+            "{field} must be a non-empty SSH segment without control characters or '@'"
+        )));
+    }
+    Ok(())
+}
+
+fn reject_ssh_path(field: &str, path: &Utf8Path) -> taskfence_core::Result<()> {
+    reject_ssh_arg(field, path.as_str())?;
+    if !path.is_absolute() || contains_parent_component(path) {
+        return Err(TaskFenceError::Runner(format!(
+            "{field} must be an absolute path without '..': {path}"
+        )));
+    }
+    Ok(())
+}
+
+fn reject_ssh_arg(field: &str, value: &str) -> taskfence_core::Result<()> {
+    if value.contains('\0') || value.chars().any(|ch| matches!(ch, '\r' | '\n')) {
+        return Err(TaskFenceError::Runner(format!(
+            "{field} must not contain NUL or newlines"
+        )));
+    }
+    Ok(())
+}
+
 fn lock_state(
     state: &Mutex<FakeRunnerState>,
 ) -> taskfence_core::Result<MutexGuard<'_, FakeRunnerState>> {
@@ -1178,10 +1607,12 @@ fn unsupported_runner_missing_controls(kind: &RunnerKind) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use taskfence_core::{
         AgentConfig, AgentKind, ApprovalConfig, AuditConfig, EnvPermissions, GatewayConfig,
         GatewayConnectorConfig, GatewayEgressConfig, GatewayToolConfig, LimitConfig,
-        NetworkPermissions, PathPermissions, PermissionConfig, SandboxConfig, SecretConfig, TaskId,
+        NetworkPermissions, PathPermissions, PermissionConfig, SandboxConfig, SecretConfig,
+        SshNetworkPolicy, SshSandboxConfig, TaskId,
     };
 
     fn task() -> ResolvedTask {
@@ -1199,6 +1630,7 @@ mod tests {
             sandbox: SandboxConfig {
                 kind: SandboxKind::Docker,
                 image: Some("taskfence/runner:latest".into()),
+                ssh: None,
                 limits: LimitConfig {
                     timeout_minutes: Some(10),
                     cpu: Some(2),
@@ -1225,6 +1657,42 @@ mod tests {
             gateway: Default::default(),
             audit: AuditConfig::default(),
         }
+    }
+
+    fn remote_ssh_task() -> ResolvedTask {
+        let mut task = task();
+        task.sandbox = SandboxConfig {
+            kind: SandboxKind::RemoteSsh,
+            image: None,
+            ssh: Some(SshSandboxConfig {
+                host: "runner.example".into(),
+                user: Some("taskfence".into()),
+                port: Some(2222),
+                workspace: Some("/srv/taskfence/workspaces/task-1".into()),
+                identity_file: Some("/tmp/taskfence/id_ed25519".into()),
+                known_hosts_file: Some("/tmp/taskfence/known_hosts".into()),
+                isolated_workspace: true,
+                isolated_secrets: true,
+                terminates_remote_processes: true,
+                enforces_resource_limits: false,
+                network_policy: Some(SshNetworkPolicy::UncontrolledAllow),
+            }),
+            limits: LimitConfig {
+                timeout_minutes: Some(10),
+                cpu: None,
+                memory: None,
+                disk: None,
+            },
+        };
+        task.permissions.paths.read.clear();
+        task.permissions.paths.write.clear();
+        task.permissions.env.allow.clear();
+        task.permissions.network = NetworkPermissions {
+            default: NetworkDefault::Allow,
+            allow_domains: Vec::new(),
+        };
+        task.audit.capture.file_diff = false;
+        task
     }
 
     fn runner() -> DockerRunner {
@@ -1594,9 +2062,128 @@ mod tests {
     }
 
     #[test]
+    fn remote_ssh_capability_requires_explicit_runner_contract() {
+        let mut task = remote_ssh_task();
+        let ssh = task.sandbox.ssh.as_mut().unwrap();
+        ssh.isolated_workspace = false;
+        ssh.isolated_secrets = false;
+        ssh.known_hosts_file = None;
+        task.permissions.network.default = NetworkDefault::Deny;
+        task.audit.capture.file_diff = true;
+        let runner = ExpandedRunner::with_docker(runner());
+
+        let report = runner.capability_report(&task);
+        let err = runner.prepare(&task).unwrap_err();
+
+        assert_eq!(report.kind, RunnerKind::RemoteSsh);
+        assert!(!report.available);
+        assert!(report
+            .missing
+            .iter()
+            .any(|missing| missing.contains("isolated_workspace=true")));
+        assert!(report
+            .missing
+            .iter()
+            .any(|missing| missing.contains("known_hosts_file")));
+        assert!(report
+            .missing
+            .iter()
+            .any(|missing| missing.contains("default-deny")));
+        assert!(report
+            .missing
+            .iter()
+            .any(|missing| missing.contains("file_diff=false")));
+        assert!(err.to_string().contains("remote SSH requires"));
+    }
+
+    #[test]
+    fn remote_ssh_runner_prepares_bounded_plan() {
+        let task = remote_ssh_task();
+        let runner = RemoteSshRunner::new();
+
+        let prepared = runner.prepare(&task).unwrap();
+
+        assert_eq!(prepared.runner_kind, SandboxKind::RemoteSsh);
+        assert!(prepared.image.is_none());
+        assert!(prepared.mounts.is_empty());
+        assert!(prepared.env.is_empty());
+        let ssh = prepared.ssh.unwrap();
+        assert_eq!(ssh.host, "runner.example");
+        assert_eq!(ssh.user.as_deref(), Some("taskfence"));
+        assert_eq!(ssh.port, Some(2222));
+        assert_eq!(ssh.workspace.as_str(), "/srv/taskfence/workspaces/task-1");
+        assert_eq!(ssh.identity_file.as_str(), "/tmp/taskfence/id_ed25519");
+    }
+
+    #[test]
+    fn remote_ssh_args_quote_remote_command_and_disable_forwarding() {
+        let task = remote_ssh_task();
+        let prepared = RemoteSshRunner::new().prepare(&task).unwrap();
+        let invocation = AgentInvocation {
+            executable: "/usr/bin/printf".into(),
+            args: vec!["hello world".into(), "it's safe".into()],
+            env: BTreeMap::new(),
+            working_dir: "/workspace".into(),
+        };
+
+        let args = RemoteSshRunner::new()
+            .build_ssh_args(&prepared, &invocation)
+            .unwrap();
+        let remote_command = args.last().unwrap();
+
+        assert!(args.windows(2).any(|pair| pair == ["-o", "BatchMode=yes"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-o", "ForwardAgent=no"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-o", "StrictHostKeyChecking=yes"]));
+        assert!(args.contains(&"taskfence@runner.example".into()));
+        assert!(remote_command.starts_with("cd '/srv/taskfence/workspaces/task-1' && exec "));
+        assert!(remote_command.contains("'/usr/bin/printf' 'hello world' 'it'\\''s safe'"));
+    }
+
+    #[test]
+    fn remote_ssh_runner_executes_mock_ssh_and_captures_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let script = Utf8PathBuf::from_path_buf(temp.path().join("mock-ssh")).unwrap();
+        fs::write(
+            script.as_std_path(),
+            "#!/bin/sh\necho remote-ok\necho remote-err >&2\nexit 3\n",
+        )
+        .unwrap();
+        make_executable(&script);
+        let runner = RemoteSshRunner::new().with_ssh_command(script.to_string());
+        let prepared = runner.prepare(&remote_ssh_task()).unwrap();
+        let invocation = AgentInvocation {
+            executable: "/usr/bin/true".into(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            working_dir: "/workspace".into(),
+        };
+
+        let running = runner.start(prepared, invocation).unwrap();
+        let output = runner.collect_exit(&running).unwrap();
+
+        assert_eq!(output.exit_status.code, Some(3));
+        assert_eq!(output.stdout, "remote-ok\n");
+        assert_eq!(output.stderr, "remote-err\n");
+    }
+
+    #[cfg(unix)]
+    fn make_executable(path: &Utf8Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(path.as_std_path()).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(path.as_std_path(), permissions).unwrap();
+    }
+
+    #[cfg(not(unix))]
+    fn make_executable(_path: &Utf8Path) {}
+
+    #[test]
     fn expanded_runner_fails_closed_for_remote_runner_families() {
         for (kind, expected) in [
-            (SandboxKind::RemoteSsh, "remote SSH isolation contract"),
             (
                 SandboxKind::KubernetesJob,
                 "Kubernetes job namespace/pod security contract",
@@ -1609,6 +2196,7 @@ mod tests {
         ] {
             let mut task = task();
             task.sandbox.kind = kind;
+            task.sandbox.ssh = None;
             let runner = ExpandedRunner::with_docker(runner());
 
             let report = runner.capability_report(&task);

@@ -381,7 +381,7 @@ Completion evidence:
 
 ### Phase 5: Live Remote Runner Backends
 
-Status: pending
+Status: done
 
 Scope:
 
@@ -406,7 +406,41 @@ cargo test -p taskfence-runner -p taskfence-core -p taskfence-cli
 
 Completion evidence:
 
-- Pending.
+- Started on 2026-06-08 after Phase 4 was marked done and committed as
+  `5c8078f` (`replay: execute deterministic local task replays`).
+- Implemented `sandbox.ssh` task schema for `remote_ssh` tasks with validated
+  SSH host/user/port, absolute remote workspace path, absolute local identity
+  file, absolute local known-hosts file, explicit filesystem/secret isolation
+  declarations, remote process termination declaration, optional resource-limit
+  declaration, and typed `network_policy: uncontrolled_allow`.
+- Added the first live `RemoteSshRunner` backend. It prepares a typed SSH run
+  plan, executes through the host `ssh` executable with batch mode, strict
+  host-key checking, identity-only auth, no SSH agent forwarding, no host
+  environment forwarding, safely quoted remote `cd <workspace> && exec ...`,
+  bounded timeout handling, stdout/stderr capture, exit status collection, and
+  no fallback to Docker.
+- Added runner-specific capability checks for remote SSH filesystem isolation,
+  secret isolation, network controls, limits, cancellation/timeout, output
+  capture, and artifact return. Generic SSH fails closed for disabled/default
+  deny network, domain allowlists, host env allowlists, local gateway
+  spool/listener use, raw secret exposure, missing remote confinement
+  declarations, missing identity/known-hosts files, missing remote process
+  termination support, and remote file diff transport.
+- Kubernetes, microVM, managed cloud, and unknown runner families remain
+  fail-closed unsupported capability contracts with explicit missing controls.
+- Added `examples/remote-ssh-task.yaml` as a validation-only reference for the
+  explicit SSH boundary without embedding credentials, plus
+  `docs/decisions/2026-06-08-remote-ssh-runner-boundary.md`.
+- Updated README, architecture, roadmap, development design, and runtime
+  architecture docs to describe implemented SSH behavior and unsupported
+  controls without overclaiming network, gateway, or remote artifact transport.
+- Verification passed: `cargo fmt --all --check`.
+- Verification passed: `cargo test -p taskfence-runner -p taskfence-core -p taskfence-cli -p taskfence-config`
+  (105 CLI tests, 24 config tests, 6 core tests, 24 runner tests, and
+  doc-tests; Docker integration remained ignored because it requires a Docker
+  daemon and locally available test image).
+- Example validation passed:
+  `cargo run -p taskfence-cli -- validate examples/remote-ssh-task.yaml`.
 
 ### Phase 6: Team Server, Durable Workers, And Postgres State
 

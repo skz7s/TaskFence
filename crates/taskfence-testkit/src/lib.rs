@@ -27,6 +27,7 @@ pub fn sample_task() -> ResolvedTask {
         sandbox: SandboxConfig {
             kind: SandboxKind::Docker,
             image: Some("taskfence/runner:latest".into()),
+            ssh: None,
             limits: LimitConfig::default(),
         },
         permissions: PermissionConfig {
@@ -208,12 +209,14 @@ impl taskfence_core::Runner for StaticRunner {
     fn prepare(&self, task: &ResolvedTask) -> Result<PreparedRun> {
         Ok(PreparedRun {
             task_id: task.id.clone(),
+            runner_kind: task.sandbox.kind.clone(),
             image: task.sandbox.image.clone(),
             mounts: Vec::<MountPlan>::new(),
             env: BTreeMap::new(),
             network: task.permissions.network.clone(),
             gateway: PreparedGateway::default(),
             limits: task.sandbox.limits.clone(),
+            ssh: None,
         })
     }
 
@@ -255,6 +258,7 @@ impl RunnerCapabilityFixture {
                 can_enforce_domain_allowlist: false,
                 can_enforce_limits: true,
                 can_capture_output: true,
+                can_return_artifacts: true,
                 missing: Vec::new(),
             },
         }

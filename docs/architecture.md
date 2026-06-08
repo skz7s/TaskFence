@@ -227,15 +227,20 @@ The current Docker runner uses `docker run --pull=never`, bind mounts the
 configured paths, passes only allowlisted environment variables, supports
 disabled/default-deny/default-allow Docker network modes, and captures stdout,
 stderr, timeout, and exit status. Domain-level network allowlists are not
-enforceable by local Docker alone; tasks that configure allowlisted domains fail
-closed until an enforcing proxy is implemented.
+enforceable by local Docker alone unless the task opts into the local gateway
+egress boundary.
 
 The expanded runner dispatcher can parse and classify `remote_ssh`,
-`kubernetes_job`, `microvm`, and `managed_cloud` sandbox types. These runner
-families are currently capability contracts, not executable backends. They
-report missing isolation, network control, secret boundary, limit enforcement,
-and artifact collection guarantees and fail closed before task execution. Docker
-remains the only implemented runner.
+`kubernetes_job`, `microvm`, and `managed_cloud` sandbox types. Remote SSH is a
+live backend when the task declares an operator-isolated remote workspace,
+remote secret isolation, strict identity and known-hosts files, remote process
+termination support, default-allow network policy, no gateway spool/listener
+mounts, no host environment forwarding, and no remote file diff transport.
+Generic SSH cannot enforce disabled/default-deny network access or domain
+allowlists, so those configurations fail closed. Kubernetes, microVM, and
+managed cloud remain capability contracts that report missing isolation,
+network control, secret boundary, limit enforcement, and artifact guarantees
+before task execution.
 
 ### Agent Adapter
 

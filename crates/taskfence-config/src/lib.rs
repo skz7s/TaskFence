@@ -8,7 +8,7 @@ use taskfence_core::{
     GatewayEgressConfig, GatewayMode, GatewaySecretReferenceConfig, GatewayToolConfig, LimitConfig,
     NetworkDefault, NetworkPermissions, PathPermissions, PermissionConfig, ReportConfig,
     ReportFormat, ResolvedTask, SandboxConfig, SandboxKind, SecretConfig, SecretGrant,
-    TaskFenceError, TaskId, ToolPermissions,
+    SshNetworkPolicy, SshSandboxConfig, TaskFenceError, TaskId, ToolPermissions,
 };
 
 pub fn load_task_file(path: impl AsRef<Utf8Path>) -> taskfence_core::Result<ResolvedTask> {
@@ -128,6 +128,7 @@ struct RawSandbox {
     #[serde(rename = "type")]
     kind: Option<String>,
     image: Option<String>,
+    ssh: Option<RawSshSandbox>,
     #[serde(default)]
     limits: LimitConfig,
 }
@@ -149,13 +150,122 @@ impl RawSandbox {
                 "sandbox.limits.timeout_minutes must be positive".into(),
             ));
         }
+        let ssh = match (kind.clone(), self.ssh) {
+            (SandboxKind::RemoteSsh, Some(ssh)) => Some(ssh.resolve()?),
+            (SandboxKind::RemoteSsh, None) => {
+                return Err(TaskFenceError::Config(
+                    "sandbox.ssh is required for remote_ssh tasks".into(),
+                ));
+            }
+            (_, Some(_)) => {
+                return Err(TaskFenceError::Config(
+                    "sandbox.ssh is only supported when sandbox.type is remote_ssh".into(),
+                ));
+            }
+            (_, None) => None,
+        };
 
         Ok(SandboxConfig {
             kind,
             image: self.image,
+            ssh,
             limits: self.limits,
         })
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSshSandbox {
+    host: String,
+    #[serde(default)]
+    user: Option<String>,
+    #[serde(default)]
+    port: Option<u16>,
+    #[serde(default)]
+    workspace: Option<Utf8PathBuf>,
+    #[serde(default)]
+    identity_file: Option<Utf8PathBuf>,
+    #[serde(default)]
+    known_hosts_file: Option<Utf8PathBuf>,
+    #[serde(default)]
+    isolated_workspace: bool,
+    #[serde(default)]
+    isolated_secrets: bool,
+    #[serde(default)]
+    terminates_remote_processes: bool,
+    #[serde(default)]
+    enforces_resource_limits: bool,
+    #[serde(default)]
+    network_policy: Option<RawSshNetworkPolicy>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RawSshNetworkPolicy {
+    UncontrolledAllow,
+}
+
+impl RawSshSandbox {
+    fn resolve(self) -> taskfence_core::Result<SshSandboxConfig> {
+        let host = normalize_ssh_segment("sandbox.ssh.host", self.host)?;
+        let user = self
+            .user
+            .map(|value| normalize_ssh_segment("sandbox.ssh.user", value))
+            .transpose()?;
+        if self.port == Some(0) {
+            return Err(TaskFenceError::Config(
+                "sandbox.ssh.port must be positive".into(),
+            ));
+        }
+        if let Some(path) = &self.workspace {
+            reject_absolute_path_escape("sandbox.ssh.workspace", path)?;
+        }
+        if let Some(path) = &self.identity_file {
+            reject_absolute_path_escape("sandbox.ssh.identity_file", path)?;
+        }
+        if let Some(path) = &self.known_hosts_file {
+            reject_absolute_path_escape("sandbox.ssh.known_hosts_file", path)?;
+        }
+        Ok(SshSandboxConfig {
+            host,
+            user,
+            port: self.port,
+            workspace: self.workspace,
+            identity_file: self.identity_file,
+            known_hosts_file: self.known_hosts_file,
+            isolated_workspace: self.isolated_workspace,
+            isolated_secrets: self.isolated_secrets,
+            terminates_remote_processes: self.terminates_remote_processes,
+            enforces_resource_limits: self.enforces_resource_limits,
+            network_policy: self.network_policy.map(|policy| match policy {
+                RawSshNetworkPolicy::UncontrolledAllow => SshNetworkPolicy::UncontrolledAllow,
+            }),
+        })
+    }
+}
+
+fn normalize_ssh_segment(field: &str, value: String) -> taskfence_core::Result<String> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.contains('\0')
+        || value.contains('@')
+        || value.chars().any(char::is_control)
+    {
+        return Err(TaskFenceError::Config(format!(
+            "{field} must be a non-empty SSH segment without control characters or '@'"
+        )));
+    }
+    Ok(value.into())
+}
+
+fn reject_absolute_path_escape(field: &str, path: &Utf8Path) -> taskfence_core::Result<()> {
+    if !path.is_absolute() || escapes_with_parent(path) || path.as_str().contains('\0') {
+        return Err(TaskFenceError::Config(format!(
+            "{field} must be an absolute path without '..' or NUL"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1014,7 +1124,6 @@ permissions:
     #[test]
     fn parses_known_runner_sandbox_types_as_typed_contracts() {
         for (sandbox_type, expected_kind) in [
-            ("remote_ssh", SandboxKind::RemoteSsh),
             ("kubernetes_job", SandboxKind::KubernetesJob),
             ("microvm", SandboxKind::MicroVm),
             ("managed_cloud", SandboxKind::ManagedCloud),
@@ -1037,6 +1146,137 @@ sandbox:
 
             assert_eq!(task.sandbox.kind, expected_kind);
         }
+    }
+
+    #[test]
+    fn parses_remote_ssh_sandbox_contract() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("repo")).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        let yaml = r#"
+goal: Test remote SSH runner
+workspace: ./repo
+agent:
+  command: /usr/bin/true
+sandbox:
+  type: remote_ssh
+  ssh:
+    host: runner.example
+    user: taskfence
+    port: 2222
+    workspace: /srv/taskfence/workspaces/task-1
+    identity_file: /tmp/taskfence/id_ed25519
+    known_hosts_file: /tmp/taskfence/known_hosts
+    isolated_workspace: true
+    isolated_secrets: true
+    terminates_remote_processes: true
+    network_policy: uncontrolled_allow
+permissions:
+  commands:
+    allow:
+      - /usr/bin/true
+  network:
+    default: allow
+audit:
+  capture:
+    file_diff: false
+"#;
+
+        let task = parse_task_file(&task_file, yaml).unwrap();
+
+        assert_eq!(task.sandbox.kind, SandboxKind::RemoteSsh);
+        let ssh = task.sandbox.ssh.unwrap();
+        assert_eq!(ssh.host, "runner.example");
+        assert_eq!(ssh.user.as_deref(), Some("taskfence"));
+        assert_eq!(ssh.port, Some(2222));
+        assert_eq!(
+            ssh.workspace.unwrap().as_str(),
+            "/srv/taskfence/workspaces/task-1"
+        );
+        assert_eq!(
+            ssh.identity_file.unwrap().as_str(),
+            "/tmp/taskfence/id_ed25519"
+        );
+        assert_eq!(
+            ssh.known_hosts_file.unwrap().as_str(),
+            "/tmp/taskfence/known_hosts"
+        );
+        assert!(ssh.isolated_workspace);
+        assert!(ssh.isolated_secrets);
+        assert!(ssh.terminates_remote_processes);
+        assert_eq!(
+            ssh.network_policy,
+            Some(SshNetworkPolicy::UncontrolledAllow)
+        );
+    }
+
+    #[test]
+    fn remote_ssh_requires_ssh_config() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("repo")).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        let yaml = r#"
+goal: Test remote SSH runner
+workspace: ./repo
+agent:
+  command: /usr/bin/true
+sandbox:
+  type: remote_ssh
+"#;
+
+        let err = parse_task_file(&task_file, yaml).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Config(message) if message.contains("sandbox.ssh is required"))
+        );
+    }
+
+    #[test]
+    fn rejects_ssh_config_on_non_ssh_sandbox() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("repo")).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        let yaml = r#"
+goal: Test bad SSH runner
+workspace: ./repo
+agent:
+  command: /usr/bin/true
+sandbox:
+  type: docker
+  ssh:
+    host: runner.example
+"#;
+
+        let err = parse_task_file(&task_file, yaml).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Config(message) if message.contains("only supported when sandbox.type is remote_ssh"))
+        );
+    }
+
+    #[test]
+    fn rejects_unsafe_ssh_segments_and_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("repo")).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        let yaml = r#"
+goal: Test bad SSH runner
+workspace: ./repo
+agent:
+  command: /usr/bin/true
+sandbox:
+  type: remote_ssh
+  ssh:
+    host: user@runner.example
+    workspace: ../workspace
+    identity_file: id_ed25519
+"#;
+
+        let err = parse_task_file(&task_file, yaml).unwrap_err();
+
+        assert!(
+            matches!(err, TaskFenceError::Config(message) if message.contains("sandbox.ssh.host"))
+        );
     }
 
     #[test]

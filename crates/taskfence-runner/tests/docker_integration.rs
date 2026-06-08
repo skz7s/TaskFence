@@ -123,6 +123,7 @@ fn docker_task(
         sandbox: SandboxConfig {
             kind: SandboxKind::Docker,
             image: Some(image.into()),
+            ssh: None,
             limits: LimitConfig {
                 timeout_minutes,
                 cpu: None,

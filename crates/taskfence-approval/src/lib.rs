@@ -755,6 +755,7 @@ mod tests {
             sandbox: SandboxConfig {
                 kind: SandboxKind::Docker,
                 image: Some("taskfence/runner:latest".into()),
+                ssh: None,
                 limits: LimitConfig::default(),
             },
             permissions: PermissionConfig::default(),

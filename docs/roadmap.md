@@ -324,11 +324,12 @@ Goal: preserve identical task semantics across future runner families.
 - implemented: runner capability reports for Docker and future runner
   families, including whether the runner can isolate filesystem/secrets,
   disable or default-deny network, enforce domain allowlists, enforce limits,
-  and capture output
-- implemented: expanded runner dispatch for Docker plus fail-closed capability
-  checks for unavailable remote runner families
-- remaining: live SSH execution, Kubernetes job execution, microVM lifecycle,
-  managed cloud provider execution, runner-specific artifact transport, and
+  capture output, and return artifacts
+- implemented: expanded runner dispatch for Docker plus the first live remote
+  SSH backend, gated by explicit operator-provided remote confinement and
+  fail-closed checks for unsupported SSH controls
+- remaining: Kubernetes job execution, microVM lifecycle, managed cloud
+  provider execution, richer runner-specific artifact transport, and
   runner-specific integration tests on configured hosts
 
 ## Phase 6: Team and Enterprise Foundation
