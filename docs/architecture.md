@@ -55,20 +55,21 @@ produces typed responses plus structured evidence. `taskfence gateway listen`
 starts a foreground loopback listener for task-scoped JSON tool actions, and
 the bounded `http egress.fetch` action performs gateway-side HTTPS GET/HEAD
 requests only after registry, tool, budget, and network-destination policy
-checks. The team-server foundation is currently contract-only: typed API
-resources, RBAC decisions, approval-owner checks, local development worker
-leases, Postgres state config validation, artifact-root containment, validated
-but unsupported audit-export sink contracts, and local-to-team migration
-planning from structured `.taskfence` files exist without starting a server or
-live database. The local state/review path now has a durable JSON index at
+checks. The team-state foundation now exposes state-layer service functions and
+local CLI commands for typed API resources, RBAC decisions, approval-owner
+checks, durable worker leases, local JSON state, Postgres-backed state storage,
+artifact-root containment with SHA-256 metadata, validated audit-export plans,
+and local-to-team migration from structured `.taskfence` files. It does not
+start a deployed team HTTP daemon, SSO flow, object-store adapter, or live
+audit-export sink. The local state/review path now has a durable JSON index at
 `.taskfence/state/local-index.json`, a `taskfence state index` command, and
 loopback-only review API routes while the foreground review server is running.
 Production MCP servers, arbitrary HTTP proxying, SDK/webhook connectors,
 branch/commit behavior outside the bounded GitHub REST family, long-lived
-persistent API daemon, live Postgres backend, replay for unsupported live
-connector effects, persistent team-server, Slack, and live enterprise
-connector behavior beyond the bounded GitHub REST family are not implemented
-yet.
+persistent API daemon, replay for unsupported live connector effects, deployed
+team-server daemon, Slack, SSO, object storage, live audit export, and live
+enterprise connector behavior beyond the bounded GitHub REST family are not
+implemented yet.
 The local review foundation is CLI-owned: it can render file-backed evidence as
 a static or foreground-served loopback HTML page, refresh a structured local
 index, expose JSON routes for local evidence while serving, resolve pending
@@ -414,32 +415,35 @@ replay execution consume these same structured files. They do not yet provide
 cross-workspace indexing, a long-lived persistent API daemon, replay for live
 connector side effects, or SQLite-backed state.
 
-The team-state contract can build a migration plan from local `.taskfence`
+The team-state service can build a migration plan from local `.taskfence`
 evidence by listing task ids and artifact roots only when structured task input
-or event files are present. Rendered Markdown reports are carried as artifacts,
-not interpreted as source-of-truth state. Team artifact writes are checked
-against configured absolute roots with parent-directory and containment guards.
-The Postgres config type validates a future database URL environment variable
-and schema name, but live Postgres storage returns an explicit unsupported
-error until a backend exists.
+or event files are present, and `taskfence team migrate-local` can import those
+structured summaries into durable team state. Rendered Markdown reports are
+carried as artifacts, not interpreted as source-of-truth state. Team artifact
+writes are checked against configured absolute roots with parent-directory and
+containment guards, then recorded with size and SHA-256 metadata. Team state can
+persist to a local JSON file for development workflows or to a Postgres schema
+through the state crate when the configured database URL environment variable is
+available.
 
 ### Team Control Plane
 
-The future team control plane is modeled as a state-layer contract before any
-API process is started. The current boundary lists task, event, log, diff,
-report, artifact, approval, replay-input, and audit-export resources. RBAC
-roles are explicit: viewers read task evidence, approvers can read and resolve
-approval records, operators can enqueue and resolve task work, auditors can
-read evidence and request audit export, and admins can administer all modeled
-actions. Method/resource mismatches fail closed even for admins.
+The team control plane is currently exposed as state-layer service functions
+and local CLI commands before any deployed API process is started. The boundary
+lists task, event, log, diff, report, artifact, approval, replay-input, and
+audit-export resources. RBAC roles are explicit: viewers read task evidence,
+approvers can read and resolve approval records, operators can enqueue and
+resolve task work, auditors can read evidence and request audit export, and
+admins can administer all modeled actions. Method/resource mismatches fail
+closed even for admins.
 
-The local development worker model is an in-memory lease queue. Tasks can be
-enqueued, leased by one worker id, completed, or failed; wrong-worker,
-duplicate, unleased, and already-terminal transitions are rejected. This is a
-contract for future team execution semantics, not a persistent queue or live
-worker service. Audit export is similarly an RBAC/API boundary with validated
-sink contracts and an unsupported live export-sink error until a concrete sink
-is implemented.
+The worker model is durable lease storage. Tasks can be enqueued, leased by one
+worker id, completed, or failed; wrong-worker, duplicate, unleased, and
+already-terminal transitions are rejected by both the local JSON state backend
+and the Postgres backend. This is persistent team state, not a live worker
+daemon or remote-runner-backed team execution service. Audit export is an
+RBAC/API boundary with validated sink contracts and planned export records; a
+concrete live export sink is still not implemented.
 
 ## Security Boundary
 

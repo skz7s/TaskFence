@@ -32,8 +32,9 @@ use taskfence_report::MarkdownReportGenerator;
 use taskfence_runner::ExpandedRunner;
 use taskfence_state::{
     InMemoryStateStore, LocalReviewIndex, LocalTaskComparison, LocalTaskEvidenceStore,
-    LocalTaskReview, ReplayEvaluation, ReplayPlan, ReplayRunRecord, TaskArtifactKind,
-    TaskArtifacts, TaskEvents, TaskLogs, TaskSummary,
+    LocalTaskReview, LocalTeamStateStore, OrganizationPolicy, RbacGrant, ReplayEvaluation,
+    ReplayPlan, ReplayRunRecord, TaskArtifactKind, TaskArtifacts, TaskEvents, TaskLogs,
+    TaskSummary, TeamRole, TeamStateService, TeamTaskRecord, WorkerLeaseState,
 };
 
 #[derive(Debug, Parser)]
@@ -171,6 +172,11 @@ enum Command {
         #[command(subcommand)]
         command: StateCommand,
     },
+    /// Manage persistent team state and worker leases without requiring local mode.
+    Team {
+        #[command(subcommand)]
+        command: TeamCommand,
+    },
     /// List locally recorded approval requests in a workspace.
     Approvals {
         /// Workspace that owns the .taskfence approval directory.
@@ -247,6 +253,90 @@ enum StateCommand {
         /// Read the existing index instead of rebuilding it from structured evidence.
         #[arg(long)]
         read_only: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TeamCommand {
+    /// Show or initialize a durable local team state file.
+    State {
+        /// Durable local team state JSON file.
+        #[arg(long, default_value = ".taskfence/team/state.json")]
+        state_file: Utf8PathBuf,
+        /// Organization name.
+        #[arg(long, default_value = "default")]
+        organization: String,
+    },
+    /// Import structured local evidence into durable team state.
+    MigrateLocal {
+        /// Workspace that owns the .taskfence task evidence directory.
+        #[arg(long, default_value = ".")]
+        workspace: Utf8PathBuf,
+        /// Durable local team state JSON file.
+        #[arg(long, default_value = ".taskfence/team/state.json")]
+        state_file: Utf8PathBuf,
+        /// Organization name.
+        #[arg(long, default_value = "default")]
+        organization: String,
+        /// Actor performing the import.
+        #[arg(long, default_value = "operator")]
+        actor: String,
+    },
+    /// Manage durable worker leases.
+    Worker {
+        #[command(subcommand)]
+        command: TeamWorkerCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TeamWorkerCommand {
+    /// Enqueue a task id for team execution.
+    Enqueue {
+        task_id: String,
+        #[arg(long, default_value = ".taskfence/team/state.json")]
+        state_file: Utf8PathBuf,
+        #[arg(long, default_value = "default")]
+        organization: String,
+        #[arg(long, default_value = "operator")]
+        actor: String,
+    },
+    /// Lease the next pending task for a worker.
+    Lease {
+        #[arg(long)]
+        worker_id: String,
+        #[arg(long, default_value = ".taskfence/team/state.json")]
+        state_file: Utf8PathBuf,
+        #[arg(long, default_value = "default")]
+        organization: String,
+        #[arg(long, default_value = "operator")]
+        actor: String,
+    },
+    /// Mark a leased task complete.
+    Complete {
+        task_id: String,
+        #[arg(long)]
+        worker_id: String,
+        #[arg(long, default_value = ".taskfence/team/state.json")]
+        state_file: Utf8PathBuf,
+        #[arg(long, default_value = "default")]
+        organization: String,
+        #[arg(long, default_value = "operator")]
+        actor: String,
+    },
+    /// Mark a leased task failed.
+    Fail {
+        task_id: String,
+        #[arg(long)]
+        worker_id: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long, default_value = ".taskfence/team/state.json")]
+        state_file: Utf8PathBuf,
+        #[arg(long, default_value = "default")]
+        organization: String,
+        #[arg(long, default_value = "operator")]
+        actor: String,
     },
 }
 
@@ -450,6 +540,47 @@ fn execute(cli: Cli) -> taskfence_core::Result<()> {
                 workspace,
                 read_only,
             } => show_state_index(workspace, read_only),
+        },
+        Command::Team { command } => match command {
+            TeamCommand::State {
+                state_file,
+                organization,
+            } => show_team_state(state_file, organization),
+            TeamCommand::MigrateLocal {
+                workspace,
+                state_file,
+                organization,
+                actor,
+            } => migrate_local_to_team(workspace, state_file, organization, actor),
+            TeamCommand::Worker { command } => match command {
+                TeamWorkerCommand::Enqueue {
+                    task_id,
+                    state_file,
+                    organization,
+                    actor,
+                } => team_worker_enqueue(state_file, organization, actor, task_id),
+                TeamWorkerCommand::Lease {
+                    worker_id,
+                    state_file,
+                    organization,
+                    actor,
+                } => team_worker_lease(state_file, organization, actor, worker_id),
+                TeamWorkerCommand::Complete {
+                    task_id,
+                    worker_id,
+                    state_file,
+                    organization,
+                    actor,
+                } => team_worker_complete(state_file, organization, actor, task_id, worker_id),
+                TeamWorkerCommand::Fail {
+                    task_id,
+                    worker_id,
+                    reason,
+                    state_file,
+                    organization,
+                    actor,
+                } => team_worker_fail(state_file, organization, actor, task_id, worker_id, reason),
+            },
         },
         Command::Approvals { workspace } => show_approvals(workspace),
         Command::Approval {
@@ -748,6 +879,178 @@ fn show_replay_run(
 fn show_state_index(workspace: Utf8PathBuf, read_only: bool) -> taskfence_core::Result<()> {
     println!("{}", state_index_json(workspace, read_only)?);
     Ok(())
+}
+
+fn show_team_state(state_file: Utf8PathBuf, organization: String) -> taskfence_core::Result<()> {
+    let mut service = open_local_team_service(state_file, organization)?;
+    let tasks = service.list_tasks("viewer")?;
+    println!("Team state");
+    println!("  organization: {}", service.policy().organization);
+    println!("  state_file: {}", service.backend_mut().state_file());
+    println!("  tasks: {}", tasks.len());
+    Ok(())
+}
+
+fn migrate_local_to_team(
+    workspace: Utf8PathBuf,
+    state_file: Utf8PathBuf,
+    organization: String,
+    actor: String,
+) -> taskfence_core::Result<()> {
+    let workspace = make_absolute_utf8(&workspace)?;
+    let store = LocalTaskEvidenceStore::new(workspace.clone());
+    let migration = store.migration_plan(organization.clone())?;
+    let mut service = open_local_team_service(state_file, organization)?;
+    for task_id in &migration.tasks {
+        let summary = store.read_task_summary(task_id)?;
+        service.put_task(
+            &actor,
+            TeamTaskRecord {
+                organization: service.policy().organization.clone(),
+                task_id: task_id.clone(),
+                status: summary.status,
+                goal: summary.goal,
+                evidence_dir: summary.task_dir,
+            },
+        )?;
+    }
+    println!("Team migration planned");
+    println!("  organization: {}", service.policy().organization);
+    println!("  workspace: {workspace}");
+    println!("  tasks: {}", migration.tasks.len());
+    push_stdout_list("warnings", &migration.warnings);
+    Ok(())
+}
+
+fn team_worker_enqueue(
+    state_file: Utf8PathBuf,
+    organization: String,
+    actor: String,
+    task_id: String,
+) -> taskfence_core::Result<()> {
+    let mut service = open_local_team_service(state_file, organization)?;
+    let lease = service.enqueue_task(&actor, TaskId(task_id))?;
+    print_worker_lease("Team task enqueued", &lease);
+    Ok(())
+}
+
+fn team_worker_lease(
+    state_file: Utf8PathBuf,
+    organization: String,
+    actor: String,
+    worker_id: String,
+) -> taskfence_core::Result<()> {
+    let mut service = open_local_team_service(state_file, organization)?;
+    match service.lease_next(&actor, &worker_id)? {
+        Some(lease) => print_worker_lease("Team task leased", &lease),
+        None => println!("No pending team tasks"),
+    }
+    Ok(())
+}
+
+fn team_worker_complete(
+    state_file: Utf8PathBuf,
+    organization: String,
+    actor: String,
+    task_id: String,
+    worker_id: String,
+) -> taskfence_core::Result<()> {
+    let mut service = open_local_team_service(state_file, organization)?;
+    let lease = service.complete_task(&actor, &TaskId(task_id), &worker_id)?;
+    print_worker_lease("Team task completed", &lease);
+    Ok(())
+}
+
+fn team_worker_fail(
+    state_file: Utf8PathBuf,
+    organization: String,
+    actor: String,
+    task_id: String,
+    worker_id: String,
+    reason: String,
+) -> taskfence_core::Result<()> {
+    let mut service = open_local_team_service(state_file, organization)?;
+    let lease = service.fail_task(&actor, &TaskId(task_id), &worker_id, &reason)?;
+    print_worker_lease("Team task failed", &lease);
+    Ok(())
+}
+
+fn open_local_team_service(
+    state_file: Utf8PathBuf,
+    organization: String,
+) -> taskfence_core::Result<TeamStateService<LocalTeamStateStore>> {
+    let organization = organization.trim();
+    if organization.is_empty() {
+        return Err(TaskFenceError::State(
+            "team organization must not be empty".into(),
+        ));
+    }
+    let state_file = make_absolute_utf8(&state_file)?;
+    let policy = default_local_team_policy(organization);
+    let backend = LocalTeamStateStore::open(policy.clone(), state_file)?;
+    Ok(TeamStateService::new(policy, backend))
+}
+
+fn default_local_team_policy(organization: &str) -> OrganizationPolicy {
+    OrganizationPolicy {
+        organization: organization.to_owned(),
+        grants: vec![
+            RbacGrant {
+                actor: "viewer".into(),
+                role: TeamRole::Viewer,
+            },
+            RbacGrant {
+                actor: "approver".into(),
+                role: TeamRole::Approver,
+            },
+            RbacGrant {
+                actor: "operator".into(),
+                role: TeamRole::Operator,
+            },
+            RbacGrant {
+                actor: "auditor".into(),
+                role: TeamRole::Auditor,
+            },
+            RbacGrant {
+                actor: "admin".into(),
+                role: TeamRole::Admin,
+            },
+        ],
+        require_approval_owner: true,
+        allowed_artifact_roots: vec![make_absolute_utf8(&Utf8PathBuf::from(
+            ".taskfence/team/artifacts",
+        ))
+        .unwrap_or_else(|_| Utf8PathBuf::from(".taskfence/team/artifacts"))],
+    }
+}
+
+fn print_worker_lease(label: &str, lease: &taskfence_state::WorkerLease) {
+    println!("{label}");
+    println!("  task: {}", lease.task_id.0);
+    println!("  organization: {}", lease.organization);
+    println!("  state: {}", worker_lease_state_label(&lease.state));
+}
+
+fn worker_lease_state_label(state: &WorkerLeaseState) -> String {
+    match state {
+        WorkerLeaseState::Pending => "pending".into(),
+        WorkerLeaseState::Leased { worker_id } => format!("leased:{worker_id}"),
+        WorkerLeaseState::Completed => "completed".into(),
+        WorkerLeaseState::Failed { reason } => format!("failed:{reason}"),
+    }
+}
+
+fn make_absolute_utf8(path: &Utf8PathBuf) -> taskfence_core::Result<Utf8PathBuf> {
+    if path.is_absolute() {
+        Ok(path.clone())
+    } else {
+        let cwd = std::env::current_dir()
+            .map_err(|err| TaskFenceError::Config(format!("failed to read cwd: {err}")))?;
+        let cwd = Utf8PathBuf::from_path_buf(cwd).map_err(|path| {
+            TaskFenceError::Config(format!("cwd is not valid UTF-8: {}", path.display()))
+        })?;
+        Ok(cwd.join(path))
+    }
 }
 
 fn show_approvals(workspace: Utf8PathBuf) -> taskfence_core::Result<()> {
@@ -3898,6 +4201,74 @@ mod tests {
     }
 
     #[test]
+    fn parses_team_state_command() {
+        let cli = Cli::try_parse_from([
+            "taskfence",
+            "team",
+            "state",
+            "--state-file",
+            "team.json",
+            "--organization",
+            "acme",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Team {
+                command:
+                    TeamCommand::State {
+                        state_file,
+                        organization,
+                    },
+            } => {
+                assert_eq!(state_file, Utf8PathBuf::from("team.json"));
+                assert_eq!(organization, "acme");
+            }
+            other => panic!("expected team state command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_team_worker_lease_command() {
+        let cli = Cli::try_parse_from([
+            "taskfence",
+            "team",
+            "worker",
+            "lease",
+            "--worker-id",
+            "worker-1",
+            "--state-file",
+            "team.json",
+            "--organization",
+            "acme",
+            "--actor",
+            "operator",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Team {
+                command:
+                    TeamCommand::Worker {
+                        command:
+                            TeamWorkerCommand::Lease {
+                                worker_id,
+                                state_file,
+                                organization,
+                                actor,
+                            },
+                    },
+            } => {
+                assert_eq!(worker_id, "worker-1");
+                assert_eq!(state_file, Utf8PathBuf::from("team.json"));
+                assert_eq!(organization, "acme");
+                assert_eq!(actor, "operator");
+            }
+            other => panic!("expected team worker lease command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_approvals_default_workspace() {
         let cli = Cli::try_parse_from(["taskfence", "approvals"]).unwrap();
 
@@ -4713,6 +5084,70 @@ mod tests {
         assert!(refreshed.contains("\"source\": \"StructuredEvidence\""));
         assert!(refreshed.contains("\"task_id\": \"cli-state-index\""));
         assert_eq!(refreshed, read_only);
+    }
+
+    #[test]
+    fn team_worker_commands_persist_durable_local_leases() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_file = Utf8PathBuf::from_path_buf(temp.path().join("team/state.json")).unwrap();
+
+        team_worker_enqueue(
+            state_file.clone(),
+            "acme".into(),
+            "operator".into(),
+            "team-task".into(),
+        )
+        .unwrap();
+        team_worker_lease(
+            state_file.clone(),
+            "acme".into(),
+            "operator".into(),
+            "worker-1".into(),
+        )
+        .unwrap();
+        team_worker_complete(
+            state_file.clone(),
+            "acme".into(),
+            "operator".into(),
+            "team-task".into(),
+            "worker-1".into(),
+        )
+        .unwrap();
+
+        let contents = fs::read_to_string(state_file).unwrap();
+        assert!(contents.contains("team-task"));
+        assert!(contents.contains("Completed"));
+    }
+
+    #[test]
+    fn team_migrate_local_imports_structured_evidence_without_requiring_run_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        fs::write(&task_file, task_yaml("team-import", &workspace, "echo ok")).unwrap();
+        run_task_with_runner(
+            task_file,
+            &FakeRunner::succeeding(),
+            RunApprovalMode::FailClosed,
+        )
+        .unwrap();
+        let state_file = Utf8PathBuf::from_path_buf(temp.path().join("team/state.json")).unwrap();
+
+        migrate_local_to_team(
+            workspace.clone(),
+            state_file.clone(),
+            "acme".into(),
+            "operator".into(),
+        )
+        .unwrap();
+        let mut service = open_local_team_service(state_file, "acme".into()).unwrap();
+        let tasks = service.list_tasks("viewer").unwrap();
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].task_id, TaskId("team-import".into()));
+        assert_eq!(tasks[0].organization, "acme");
+        assert!(tasks[0].evidence_dir.starts_with(&workspace));
     }
 
     #[test]

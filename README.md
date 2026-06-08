@@ -32,16 +32,17 @@ records what happened, and creates evidence that can be reviewed later.
 > for task evidence, comparisons, replay inputs, approvals, and contained
 > artifact downloads while serving review, resolves workspace-local approvals
 > from that page or API, and plans replay inputs from saved structured
-> evidence. A contract-only team foundation now defines API resources, RBAC
-> decisions, approval-owner checks, worker leases, Postgres state configuration
-> validation, artifact-root boundaries, validated audit-export sink contracts
-> with unsupported live export behavior, and local-to-team migration planning
-> from structured evidence. MCP/HTTP listener or proxy servers, SDK/webhook
-> connectors, long-lived persistent API daemon, live Postgres backend, replay
-> for unsupported live connector effects, Kubernetes, microVM, or managed cloud
-> runner execution, persistent team server, live audit export sink, and live
-> enterprise connector execution beyond the bounded GitHub REST family remain
-> future work.
+> evidence. The team foundation now exposes persistent state-layer service
+> functions and `taskfence team` local commands for organization-scoped task
+> records, RBAC decisions, approval-owner checks, durable worker leases,
+> local JSON state, a Postgres-backed state backend, artifact-root containment
+> with SHA-256 metadata, validated audit-export plans, and local-to-team
+> migration from structured evidence. MCP/HTTP listener or proxy servers,
+> SDK/webhook connectors, long-lived persistent API daemon, replay for
+> unsupported live connector effects, Kubernetes, microVM, or managed cloud
+> runner execution, deployed team server daemon, SSO, live audit export sink,
+> and live enterprise connector execution beyond the bounded GitHub REST family
+> remain future work.
 
 ## Why TaskFence
 
@@ -395,13 +396,16 @@ foreground listener mode, and network allow/default-allow requirements. Use
 `--accept-limitations` when the plan records nondeterministic limits such as
 runner image availability, re-requested approvals, or external state.
 
-The team-server foundation is currently a Rust contract and test surface, not
-a service command. It validates a future Postgres state config by environment
-variable name and schema, models RBAC and approval-owner decisions, bounds team
-artifact writes to configured absolute roots, provides an in-memory worker
-lease queue for local development tests, and creates migration plans from
-structured `.taskfence/tasks` files. Rendered Markdown reports are explicitly
-treated as migration artifacts rather than source-of-truth state.
+The team-state foundation is currently a Rust state-layer service and local
+CLI surface, not a deployed daemon. It validates Postgres state configuration
+from an environment variable name and schema, can connect a Postgres-backed
+state store when that database is available, models RBAC and approval-owner
+decisions, persists team task records and durable worker leases, bounds team
+artifact writes to configured absolute roots with SHA-256 metadata, plans
+validated audit exports, and imports structured `.taskfence/tasks` files into
+team state. Rendered Markdown reports are explicitly treated as migration
+artifacts rather than source-of-truth state. Local task execution remains
+independent and does not require team state.
 
 ## Documentation
 
@@ -505,14 +509,15 @@ The first implementation currently includes:
     artifact return path. Kubernetes, microVM, and managed cloud families still
     provide typed capability reports and fail-closed validation when required
     controls are unavailable.
-17. A contract-only team-server foundation in `taskfence-state`: typed team API
-    resource boundaries, role-based access decisions, approval-owner
-    enforcement, deterministic in-memory worker leases for local development
-    tests, Postgres state config validation with explicit unsupported live
-    backend errors, team artifact root containment checks, validated but
-    unsupported audit-export sink contracts, and migration planning from
-    structured local `.taskfence` evidence without treating rendered reports as
-    source of truth.
+17. A persistent team-state foundation in `taskfence-state` and `taskfence
+    team`: typed team API resource boundaries, role-based access decisions,
+    approval-owner enforcement, durable local JSON and Postgres state backends,
+    worker lease storage with duplicate, wrong-worker, unleased, and terminal
+    state protections, team artifact root containment checks with SHA-256
+    metadata, validated audit-export plans, and migration from structured local
+    `.taskfence` evidence without treating rendered reports as source of truth.
+    A deployed team HTTP daemon, SSO, object-store adapter, and live export sink
+    are still not implemented.
 
 ## Non-Goals
 

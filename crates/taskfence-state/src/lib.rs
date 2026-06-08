@@ -5,7 +5,9 @@ use std::path::Component;
 use std::sync::Mutex;
 
 use camino::{Utf8Path, Utf8PathBuf};
+use postgres::{Client, NoTls};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use taskfence_core::{
     ApprovalId, ApprovalRecord, AuditEvent, LogStream, ResolvedTask, StateStore, TaskFenceError,
     TaskId, TaskStatus,
@@ -238,7 +240,7 @@ pub struct ReplayEvaluation {
     pub notes: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TeamApiResource {
     TaskList,
     TaskDetail(TaskId),
@@ -253,15 +255,16 @@ pub enum TeamApiResource {
     AuditExport,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TeamApiMethod {
     Read,
     ResolveApproval,
     EnqueueTask,
+    WriteArtifact,
     ExportAudit,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamApiRequest {
     pub organization: String,
     pub actor: String,
@@ -269,7 +272,7 @@ pub struct TeamApiRequest {
     pub resource: TeamApiResource,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TeamRole {
     Viewer,
     Approver,
@@ -278,13 +281,13 @@ pub enum TeamRole {
     Admin,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RbacGrant {
     pub actor: String,
     pub role: TeamRole,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrganizationPolicy {
     pub organization: String,
     pub grants: Vec<RbacGrant>,
@@ -292,13 +295,13 @@ pub struct OrganizationPolicy {
     pub allowed_artifact_roots: Vec<Utf8PathBuf>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TeamAccessDecision {
     Allow { role: TeamRole, reason: String },
     Deny { reason: String },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkerLeaseState {
     Pending,
     Leased { worker_id: String },
@@ -306,14 +309,14 @@ pub enum WorkerLeaseState {
     Failed { reason: String },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkerLease {
     pub task_id: TaskId,
     pub organization: String,
     pub state: WorkerLeaseState,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PostgresTeamStateConfig {
     pub database_url_env: String,
     pub schema: String,
@@ -334,21 +337,25 @@ impl PostgresTeamStateConfig {
         })
     }
 
-    pub fn unsupported_live_state_error(&self) -> TaskFenceError {
-        TaskFenceError::Unsupported(
-            "Postgres team state is contract-only; no live Postgres backend is implemented".into(),
-        )
+    pub fn connect_from_env(&self) -> taskfence_core::Result<PostgresTeamStateStore> {
+        let database_url = std::env::var(&self.database_url_env).map_err(|_| {
+            TaskFenceError::State(format!(
+                "Postgres database URL env {} is not set",
+                self.database_url_env
+            ))
+        })?;
+        PostgresTeamStateStore::connect(database_url, self.schema.clone())
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuditExportSinkKind {
     Siem,
     Webhook,
     ObjectStorage,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditExportSinkConfig {
     pub kind: AuditExportSinkKind,
     pub destination_ref: String,
@@ -373,7 +380,7 @@ impl AuditExportSinkConfig {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalToTeamMigrationPlan {
     pub workspace: Utf8PathBuf,
     pub organization: String,
@@ -383,7 +390,7 @@ pub struct LocalToTeamMigrationPlan {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamServerBoundary {
     pub api_resources: Vec<TeamApiResource>,
     pub worker_model: String,
@@ -408,7 +415,7 @@ impl TeamServerBoundary {
         Ok(Self {
             api_resources: team_api_boundary_resources(),
             worker_model:
-                "deterministic in-memory lease contract for local development; live workers are unsupported"
+                "durable worker lease storage with duplicate, wrong-worker, unleased, and terminal-state protections"
                     .into(),
             state_config,
             artifact_roots,
@@ -431,7 +438,7 @@ impl TeamServerBoundary {
 
     pub fn unsupported_start_error(&self) -> TaskFenceError {
         TaskFenceError::Unsupported(
-            "team API server and workers are contract-only; no persistent server is implemented"
+            "team API is exposed as state-layer service functions; no long-lived HTTP daemon is implemented"
                 .into(),
         )
     }
@@ -441,6 +448,952 @@ impl TeamServerBoundary {
             "team audit export is a validated sink contract only; no live export sink is implemented"
                 .into(),
         )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamTaskRecord {
+    pub organization: String,
+    pub task_id: TaskId,
+    pub status: Option<TaskStatus>,
+    pub goal: Option<String>,
+    pub evidence_dir: Utf8PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamArtifactRecord {
+    pub organization: String,
+    pub task_id: TaskId,
+    pub path: Utf8PathBuf,
+    pub size_bytes: u64,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamAuditExportRecord {
+    pub organization: String,
+    pub sink: AuditExportSinkConfig,
+    pub requested_by: String,
+    pub status: TeamAuditExportStatus,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TeamAuditExportStatus {
+    Planned,
+    Completed { artifact: Utf8PathBuf },
+    Failed { reason: String },
+}
+
+pub trait TeamStateBackend {
+    fn put_task(&mut self, record: TeamTaskRecord) -> taskfence_core::Result<()>;
+    fn get_task(
+        &mut self,
+        organization: &str,
+        task_id: &TaskId,
+    ) -> taskfence_core::Result<Option<TeamTaskRecord>>;
+    fn list_tasks(&mut self, organization: &str) -> taskfence_core::Result<Vec<TeamTaskRecord>>;
+    fn enqueue_task(
+        &mut self,
+        organization: &str,
+        task_id: TaskId,
+    ) -> taskfence_core::Result<WorkerLease>;
+    fn lease_next(
+        &mut self,
+        organization: &str,
+        worker_id: &str,
+    ) -> taskfence_core::Result<Option<WorkerLease>>;
+    fn complete_task(
+        &mut self,
+        organization: &str,
+        task_id: &TaskId,
+        worker_id: &str,
+    ) -> taskfence_core::Result<WorkerLease>;
+    fn fail_task(
+        &mut self,
+        organization: &str,
+        task_id: &TaskId,
+        worker_id: &str,
+        reason: &str,
+    ) -> taskfence_core::Result<WorkerLease>;
+    fn write_artifact(
+        &mut self,
+        organization: &str,
+        task_id: &TaskId,
+        path: &Utf8Path,
+        bytes: &[u8],
+    ) -> taskfence_core::Result<TeamArtifactRecord>;
+    fn plan_audit_export(
+        &mut self,
+        organization: &str,
+        sink: AuditExportSinkConfig,
+        requested_by: &str,
+    ) -> taskfence_core::Result<TeamAuditExportRecord>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileTeamState {
+    tasks: Vec<TeamTaskRecord>,
+    leases: Vec<WorkerLease>,
+    artifacts: Vec<TeamArtifactRecord>,
+    audit_exports: Vec<TeamAuditExportRecord>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LocalTeamStateStore {
+    policy: OrganizationPolicy,
+    path: Utf8PathBuf,
+    state: FileTeamState,
+}
+
+impl LocalTeamStateStore {
+    pub fn open(
+        policy: OrganizationPolicy,
+        path: impl Into<Utf8PathBuf>,
+    ) -> taskfence_core::Result<Self> {
+        let path = path.into();
+        validate_team_state_file_path(&path)?;
+        let state = if path.is_file() {
+            let contents = fs::read_to_string(path.as_std_path()).map_err(|err| {
+                TaskFenceError::State(format!("failed to read team state file {path}: {err}"))
+            })?;
+            serde_json::from_str(&contents).map_err(|err| {
+                TaskFenceError::State(format!("failed to parse team state file {path}: {err}"))
+            })?
+        } else {
+            FileTeamState {
+                tasks: Vec::new(),
+                leases: Vec::new(),
+                artifacts: Vec::new(),
+                audit_exports: Vec::new(),
+            }
+        };
+        Ok(Self {
+            policy,
+            path,
+            state,
+        })
+    }
+
+    pub fn state_file(&self) -> &Utf8Path {
+        &self.path
+    }
+
+    fn persist(&self) -> taskfence_core::Result<()> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent.as_std_path()).map_err(|err| {
+                TaskFenceError::State(format!(
+                    "failed to create team state directory {parent}: {err}"
+                ))
+            })?;
+        }
+        let bytes = serde_json::to_vec_pretty(&self.state).map_err(|err| {
+            TaskFenceError::State(format!("failed to serialize team state: {err}"))
+        })?;
+        fs::write(self.path.as_std_path(), bytes).map_err(|err| {
+            TaskFenceError::State(format!(
+                "failed to write team state file {}: {err}",
+                self.path
+            ))
+        })
+    }
+}
+
+pub struct PostgresTeamStateStore {
+    client: Client,
+    schema: String,
+}
+
+impl PostgresTeamStateStore {
+    pub fn connect(
+        database_url: impl AsRef<str>,
+        schema: impl Into<String>,
+    ) -> taskfence_core::Result<Self> {
+        let schema = schema.into();
+        validate_schema_name(&schema)?;
+        let client = Client::connect(database_url.as_ref(), NoTls).map_err(|err| {
+            TaskFenceError::State(format!("failed to connect to Postgres: {err}"))
+        })?;
+        let mut store = Self { client, schema };
+        store.ensure_schema()?;
+        Ok(store)
+    }
+
+    fn ensure_schema(&mut self) -> taskfence_core::Result<()> {
+        let schema = sql_ident(&self.schema)?;
+        let statements = [
+            format!("CREATE SCHEMA IF NOT EXISTS {schema}"),
+            format!(
+                "CREATE TABLE IF NOT EXISTS {schema}.tasks (
+                    organization TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    status TEXT,
+                    goal TEXT,
+                    evidence_dir TEXT NOT NULL,
+                    PRIMARY KEY (organization, task_id)
+                )"
+            ),
+            format!(
+                "CREATE TABLE IF NOT EXISTS {schema}.worker_leases (
+                    organization TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    worker_id TEXT,
+                    failure_reason TEXT,
+                    PRIMARY KEY (organization, task_id)
+                )"
+            ),
+            format!(
+                "CREATE TABLE IF NOT EXISTS {schema}.artifacts (
+                    organization TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    size_bytes BIGINT NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    PRIMARY KEY (organization, task_id, path)
+                )"
+            ),
+            format!(
+                "CREATE TABLE IF NOT EXISTS {schema}.audit_exports (
+                    id BIGSERIAL PRIMARY KEY,
+                    organization TEXT NOT NULL,
+                    sink_json TEXT NOT NULL,
+                    requested_by TEXT NOT NULL,
+                    status_json TEXT NOT NULL
+                )"
+            ),
+        ];
+        for statement in statements {
+            self.client.batch_execute(&statement).map_err(|err| {
+                TaskFenceError::State(format!("failed to initialize Postgres team schema: {err}"))
+            })?;
+        }
+        Ok(())
+    }
+}
+
+impl TeamStateBackend for PostgresTeamStateStore {
+    fn put_task(&mut self, record: TeamTaskRecord) -> taskfence_core::Result<()> {
+        validate_team_task_record(&record)?;
+        let schema = sql_ident(&self.schema)?;
+        let status = record.status.as_ref().map(task_status_label);
+        self.client
+            .execute(
+                &format!(
+                    "INSERT INTO {schema}.tasks (organization, task_id, status, goal, evidence_dir)
+                     VALUES ($1, $2, $3, $4, $5)
+                     ON CONFLICT (organization, task_id)
+                     DO UPDATE SET status = EXCLUDED.status, goal = EXCLUDED.goal, evidence_dir = EXCLUDED.evidence_dir"
+                ),
+                &[
+                    &record.organization,
+                    &record.task_id.0,
+                    &status,
+                    &record.goal,
+                    &record.evidence_dir.to_string(),
+                ],
+            )
+            .map_err(postgres_state_error)?;
+        Ok(())
+    }
+
+    fn get_task(
+        &mut self,
+        organization: &str,
+        task_id: &TaskId,
+    ) -> taskfence_core::Result<Option<TeamTaskRecord>> {
+        validate_task_id_component(&task_id.0)?;
+        let schema = sql_ident(&self.schema)?;
+        let row = self
+            .client
+            .query_opt(
+                &format!(
+                    "SELECT organization, task_id, status, goal, evidence_dir
+                     FROM {schema}.tasks WHERE organization = $1 AND task_id = $2"
+                ),
+                &[&organization, &task_id.0],
+            )
+            .map_err(postgres_state_error)?;
+        row.map(team_task_record_from_row).transpose()
+    }
+
+    fn list_tasks(&mut self, organization: &str) -> taskfence_core::Result<Vec<TeamTaskRecord>> {
+        let organization = normalize_non_empty("organization", organization.to_owned())?;
+        let schema = sql_ident(&self.schema)?;
+        self.client
+            .query(
+                &format!(
+                    "SELECT organization, task_id, status, goal, evidence_dir
+                     FROM {schema}.tasks WHERE organization = $1 ORDER BY task_id"
+                ),
+                &[&organization],
+            )
+            .map_err(postgres_state_error)?
+            .into_iter()
+            .map(team_task_record_from_row)
+            .collect()
+    }
+
+    fn enqueue_task(
+        &mut self,
+        organization: &str,
+        task_id: TaskId,
+    ) -> taskfence_core::Result<WorkerLease> {
+        validate_task_id_component(&task_id.0)?;
+        let organization = normalize_non_empty("organization", organization.to_owned())?;
+        let schema = sql_ident(&self.schema)?;
+        match self.client.execute(
+            &format!(
+                "INSERT INTO {schema}.worker_leases (task_id, organization, state)
+                 VALUES ($1, $2, 'pending')"
+            ),
+            &[&task_id.0, &organization],
+        ) {
+            Ok(_) => Ok(WorkerLease {
+                task_id,
+                organization,
+                state: WorkerLeaseState::Pending,
+            }),
+            Err(err) if postgres_unique_violation(&err) => Err(TaskFenceError::State(format!(
+                "task {} is already queued for team execution",
+                task_id.0
+            ))),
+            Err(err) => Err(postgres_state_error(err)),
+        }
+    }
+
+    fn lease_next(
+        &mut self,
+        organization: &str,
+        worker_id: &str,
+    ) -> taskfence_core::Result<Option<WorkerLease>> {
+        let organization = normalize_non_empty("organization", organization.to_owned())?;
+        let worker_id = normalize_non_empty("worker_id", worker_id.to_owned())?;
+        let schema = sql_ident(&self.schema)?;
+        let transaction = self.client.transaction().map_err(postgres_state_error)?;
+        let mut transaction = transaction;
+        let row = transaction
+            .query_opt(
+                &format!(
+                    "SELECT task_id FROM {schema}.worker_leases
+                     WHERE organization = $1 AND state = 'pending'
+                     ORDER BY task_id
+                     FOR UPDATE SKIP LOCKED
+                     LIMIT 1"
+                ),
+                &[&organization],
+            )
+            .map_err(postgres_state_error)?;
+        let Some(row) = row else {
+            transaction.commit().map_err(postgres_state_error)?;
+            return Ok(None);
+        };
+        let task_id: String = row.get(0);
+        transaction
+            .execute(
+                &format!(
+                    "UPDATE {schema}.worker_leases
+                     SET state = 'leased', worker_id = $1, failure_reason = NULL
+                     WHERE task_id = $2 AND organization = $3 AND state = 'pending'"
+                ),
+                &[&worker_id, &task_id, &organization],
+            )
+            .map_err(postgres_state_error)?;
+        transaction.commit().map_err(postgres_state_error)?;
+        Ok(Some(WorkerLease {
+            task_id: TaskId(task_id),
+            organization,
+            state: WorkerLeaseState::Leased { worker_id },
+        }))
+    }
+
+    fn complete_task(
+        &mut self,
+        organization: &str,
+        task_id: &TaskId,
+        worker_id: &str,
+    ) -> taskfence_core::Result<WorkerLease> {
+        self.finish_postgres_lease(
+            organization,
+            task_id,
+            worker_id,
+            WorkerLeaseState::Completed,
+        )
+    }
+
+    fn fail_task(
+        &mut self,
+        organization: &str,
+        task_id: &TaskId,
+        worker_id: &str,
+        reason: &str,
+    ) -> taskfence_core::Result<WorkerLease> {
+        let reason = normalize_non_empty("reason", reason.to_owned())?;
+        self.finish_postgres_lease(
+            organization,
+            task_id,
+            worker_id,
+            WorkerLeaseState::Failed { reason },
+        )
+    }
+
+    fn write_artifact(
+        &mut self,
+        organization: &str,
+        task_id: &TaskId,
+        path: &Utf8Path,
+        bytes: &[u8],
+    ) -> taskfence_core::Result<TeamArtifactRecord> {
+        validate_task_id_component(&task_id.0)?;
+        if !path.is_absolute() || path_contains_parent_dir(path) {
+            return Err(TaskFenceError::State(
+                "team artifact path must be absolute without '..'".into(),
+            ));
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent.as_std_path()).map_err(|err| {
+                TaskFenceError::State(format!("failed to create team artifact directory: {err}"))
+            })?;
+        }
+        fs::write(path.as_std_path(), bytes).map_err(|err| {
+            TaskFenceError::State(format!("failed to write team artifact {path}: {err}"))
+        })?;
+        let record = TeamArtifactRecord {
+            organization: organization.to_owned(),
+            task_id: task_id.clone(),
+            path: path.to_path_buf(),
+            size_bytes: bytes.len() as u64,
+            sha256: sha256_hex(bytes),
+        };
+        let schema = sql_ident(&self.schema)?;
+        self.client
+            .execute(
+                &format!(
+                    "INSERT INTO {schema}.artifacts (organization, task_id, path, size_bytes, sha256)
+                     VALUES ($1, $2, $3, $4, $5)
+                     ON CONFLICT (organization, task_id, path)
+                     DO UPDATE SET size_bytes = EXCLUDED.size_bytes, sha256 = EXCLUDED.sha256"
+                ),
+                &[
+                    &record.organization,
+                    &record.task_id.0,
+                    &record.path.to_string(),
+                    &(record.size_bytes as i64),
+                    &record.sha256,
+                ],
+            )
+            .map_err(postgres_state_error)?;
+        Ok(record)
+    }
+
+    fn plan_audit_export(
+        &mut self,
+        organization: &str,
+        sink: AuditExportSinkConfig,
+        requested_by: &str,
+    ) -> taskfence_core::Result<TeamAuditExportRecord> {
+        let organization = normalize_non_empty("organization", organization.to_owned())?;
+        let requested_by = normalize_non_empty("requested_by", requested_by.to_owned())?;
+        let record = TeamAuditExportRecord {
+            organization,
+            sink,
+            requested_by,
+            status: TeamAuditExportStatus::Planned,
+        };
+        let schema = sql_ident(&self.schema)?;
+        let sink_json = serde_json::to_string(&record.sink).map_err(|err| {
+            TaskFenceError::State(format!("failed to serialize audit export sink: {err}"))
+        })?;
+        let status_json = serde_json::to_string(&record.status).map_err(|err| {
+            TaskFenceError::State(format!("failed to serialize audit export status: {err}"))
+        })?;
+        self.client
+            .execute(
+                &format!(
+                    "INSERT INTO {schema}.audit_exports (organization, sink_json, requested_by, status_json)
+                     VALUES ($1, $2, $3, $4)"
+                ),
+                &[
+                    &record.organization,
+                    &sink_json,
+                    &record.requested_by,
+                    &status_json,
+                ],
+            )
+            .map_err(postgres_state_error)?;
+        Ok(record)
+    }
+}
+
+impl PostgresTeamStateStore {
+    fn finish_postgres_lease(
+        &mut self,
+        organization: &str,
+        task_id: &TaskId,
+        worker_id: &str,
+        next_state: WorkerLeaseState,
+    ) -> taskfence_core::Result<WorkerLease> {
+        let organization = normalize_non_empty("organization", organization.to_owned())?;
+        validate_task_id_component(&task_id.0)?;
+        let worker_id = normalize_non_empty("worker_id", worker_id.to_owned())?;
+        let schema = sql_ident(&self.schema)?;
+        let current = self
+            .client
+            .query_opt(
+                &format!(
+                    "SELECT organization, state, worker_id, failure_reason
+                     FROM {schema}.worker_leases WHERE organization = $1 AND task_id = $2"
+                ),
+                &[&organization, &task_id.0],
+            )
+            .map_err(postgres_state_error)?;
+        let Some(current) = current else {
+            return Err(TaskFenceError::State(format!(
+                "task {} is not queued for team execution",
+                task_id.0
+            )));
+        };
+        let organization: String = current.get(0);
+        let current_state: String = current.get(1);
+        let leased_by: Option<String> = current.get(2);
+        let failure_reason: Option<String> = current.get(3);
+        match current_state.as_str() {
+            "leased" if leased_by.as_deref() == Some(worker_id.as_str()) => {}
+            "leased" => {
+                return Err(TaskFenceError::State(format!(
+                    "task {} is leased by worker {}, not {worker_id}",
+                    task_id.0,
+                    leased_by.unwrap_or_else(|| "<unknown>".into())
+                )));
+            }
+            "pending" => {
+                return Err(TaskFenceError::State(format!(
+                    "task {} has not been leased by a worker",
+                    task_id.0
+                )));
+            }
+            "completed" => {
+                return Err(TaskFenceError::State(format!(
+                    "task {} is already completed",
+                    task_id.0
+                )));
+            }
+            "failed" => {
+                return Err(TaskFenceError::State(format!(
+                    "task {} is already failed: {}",
+                    task_id.0,
+                    failure_reason.unwrap_or_else(|| "unknown".into())
+                )));
+            }
+            other => {
+                return Err(TaskFenceError::State(format!(
+                    "task {} has unknown worker lease state {other}",
+                    task_id.0
+                )));
+            }
+        }
+        let (state_label, failure_reason) = worker_state_to_storage(&next_state);
+        self.client
+            .execute(
+                &format!(
+                    "UPDATE {schema}.worker_leases
+                     SET state = $1, worker_id = $2, failure_reason = $3
+                     WHERE task_id = $4 AND organization = $5 AND state = 'leased' AND worker_id = $2"
+                ),
+                &[
+                    &state_label,
+                    &worker_id,
+                    &failure_reason,
+                    &task_id.0,
+                    &organization,
+                ],
+            )
+            .map_err(postgres_state_error)?;
+        Ok(WorkerLease {
+            task_id: task_id.clone(),
+            organization: organization.clone(),
+            state: next_state,
+        })
+    }
+}
+
+impl TeamStateBackend for LocalTeamStateStore {
+    fn put_task(&mut self, record: TeamTaskRecord) -> taskfence_core::Result<()> {
+        validate_team_task_record(&record)?;
+        if record.organization != self.policy.organization {
+            return Err(TaskFenceError::State(
+                "team task organization does not match policy".into(),
+            ));
+        }
+        self.state.tasks.retain(|task| {
+            !(task.organization == record.organization && task.task_id == record.task_id)
+        });
+        self.state.tasks.push(record);
+        self.state
+            .tasks
+            .sort_by(|left, right| left.task_id.0.cmp(&right.task_id.0));
+        self.persist()
+    }
+
+    fn get_task(
+        &mut self,
+        organization: &str,
+        task_id: &TaskId,
+    ) -> taskfence_core::Result<Option<TeamTaskRecord>> {
+        validate_task_id_component(&task_id.0)?;
+        Ok(self
+            .state
+            .tasks
+            .iter()
+            .find(|task| task.organization == organization && task.task_id == *task_id)
+            .cloned())
+    }
+
+    fn list_tasks(&mut self, organization: &str) -> taskfence_core::Result<Vec<TeamTaskRecord>> {
+        let organization = normalize_non_empty("organization", organization.to_owned())?;
+        let mut tasks = self
+            .state
+            .tasks
+            .iter()
+            .filter(|task| task.organization == organization)
+            .cloned()
+            .collect::<Vec<_>>();
+        tasks.sort_by(|left, right| left.task_id.0.cmp(&right.task_id.0));
+        Ok(tasks)
+    }
+
+    fn enqueue_task(
+        &mut self,
+        organization: &str,
+        task_id: TaskId,
+    ) -> taskfence_core::Result<WorkerLease> {
+        validate_task_id_component(&task_id.0)?;
+        let organization = normalize_non_empty("organization", organization.to_owned())?;
+        if self
+            .state
+            .leases
+            .iter()
+            .any(|lease| lease.task_id == task_id)
+        {
+            return Err(TaskFenceError::State(format!(
+                "task {} is already queued for team execution",
+                task_id.0
+            )));
+        }
+        let lease = WorkerLease {
+            task_id,
+            organization,
+            state: WorkerLeaseState::Pending,
+        };
+        self.state.leases.push(lease.clone());
+        self.persist()?;
+        Ok(lease)
+    }
+
+    fn lease_next(
+        &mut self,
+        organization: &str,
+        worker_id: &str,
+    ) -> taskfence_core::Result<Option<WorkerLease>> {
+        let organization = normalize_non_empty("organization", organization.to_owned())?;
+        let worker_id = normalize_non_empty("worker_id", worker_id.to_owned())?;
+        let Some(lease) = self.state.leases.iter_mut().find(|lease| {
+            lease.organization == organization && lease.state == WorkerLeaseState::Pending
+        }) else {
+            return Ok(None);
+        };
+        lease.state = WorkerLeaseState::Leased { worker_id };
+        let lease = lease.clone();
+        self.persist()?;
+        Ok(Some(lease))
+    }
+
+    fn complete_task(
+        &mut self,
+        organization: &str,
+        task_id: &TaskId,
+        worker_id: &str,
+    ) -> taskfence_core::Result<WorkerLease> {
+        self.finish_lease(
+            organization,
+            task_id,
+            worker_id,
+            WorkerLeaseState::Completed,
+        )
+    }
+
+    fn fail_task(
+        &mut self,
+        organization: &str,
+        task_id: &TaskId,
+        worker_id: &str,
+        reason: &str,
+    ) -> taskfence_core::Result<WorkerLease> {
+        let reason = normalize_non_empty("reason", reason.to_owned())?;
+        self.finish_lease(
+            organization,
+            task_id,
+            worker_id,
+            WorkerLeaseState::Failed { reason },
+        )
+    }
+
+    fn write_artifact(
+        &mut self,
+        organization: &str,
+        task_id: &TaskId,
+        path: &Utf8Path,
+        bytes: &[u8],
+    ) -> taskfence_core::Result<TeamArtifactRecord> {
+        validate_task_id_component(&task_id.0)?;
+        if organization != self.policy.organization {
+            return Err(TaskFenceError::State(
+                "artifact organization does not match policy".into(),
+            ));
+        }
+        match evaluate_artifact_storage_path(&self.policy, path) {
+            TeamArtifactDecision::Allow { .. } => {}
+            TeamArtifactDecision::Deny { reason } => return Err(TaskFenceError::State(reason)),
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent.as_std_path()).map_err(|err| {
+                TaskFenceError::State(format!("failed to create team artifact directory: {err}"))
+            })?;
+        }
+        fs::write(path.as_std_path(), bytes).map_err(|err| {
+            TaskFenceError::State(format!("failed to write team artifact {path}: {err}"))
+        })?;
+        let record = TeamArtifactRecord {
+            organization: organization.to_owned(),
+            task_id: task_id.clone(),
+            path: path.to_path_buf(),
+            size_bytes: bytes.len() as u64,
+            sha256: sha256_hex(bytes),
+        };
+        self.state.artifacts.push(record.clone());
+        self.persist()?;
+        Ok(record)
+    }
+
+    fn plan_audit_export(
+        &mut self,
+        organization: &str,
+        sink: AuditExportSinkConfig,
+        requested_by: &str,
+    ) -> taskfence_core::Result<TeamAuditExportRecord> {
+        let organization = normalize_non_empty("organization", organization.to_owned())?;
+        let requested_by = normalize_non_empty("requested_by", requested_by.to_owned())?;
+        let request = TeamApiRequest {
+            organization: organization.clone(),
+            actor: requested_by.clone(),
+            method: TeamApiMethod::ExportAudit,
+            resource: TeamApiResource::AuditExport,
+        };
+        if let TeamAccessDecision::Deny { reason } = evaluate_team_access(&self.policy, &request) {
+            return Err(TaskFenceError::State(reason));
+        }
+        let record = TeamAuditExportRecord {
+            organization,
+            sink,
+            requested_by,
+            status: TeamAuditExportStatus::Planned,
+        };
+        self.state.audit_exports.push(record.clone());
+        self.persist()?;
+        Ok(record)
+    }
+}
+
+impl LocalTeamStateStore {
+    fn finish_lease(
+        &mut self,
+        organization: &str,
+        task_id: &TaskId,
+        worker_id: &str,
+        next_state: WorkerLeaseState,
+    ) -> taskfence_core::Result<WorkerLease> {
+        let organization = normalize_non_empty("organization", organization.to_owned())?;
+        validate_task_id_component(&task_id.0)?;
+        let worker_id = normalize_non_empty("worker_id", worker_id.to_owned())?;
+        let lease = self
+            .state
+            .leases
+            .iter_mut()
+            .find(|lease| lease.organization == organization && lease.task_id == *task_id)
+            .ok_or_else(|| {
+                TaskFenceError::State(format!(
+                    "task {} is not queued for team execution",
+                    task_id.0
+                ))
+            })?;
+        match &lease.state {
+            WorkerLeaseState::Leased {
+                worker_id: leased_by,
+            } if leased_by == &worker_id => {
+                lease.state = next_state;
+                let lease = lease.clone();
+                self.persist()?;
+                Ok(lease)
+            }
+            WorkerLeaseState::Leased {
+                worker_id: leased_by,
+            } => Err(TaskFenceError::State(format!(
+                "task {} is leased by worker {leased_by}, not {worker_id}",
+                task_id.0
+            ))),
+            WorkerLeaseState::Pending => Err(TaskFenceError::State(format!(
+                "task {} has not been leased by a worker",
+                task_id.0
+            ))),
+            WorkerLeaseState::Completed => Err(TaskFenceError::State(format!(
+                "task {} is already completed",
+                task_id.0
+            ))),
+            WorkerLeaseState::Failed { reason } => Err(TaskFenceError::State(format!(
+                "task {} is already failed: {reason}",
+                task_id.0
+            ))),
+        }
+    }
+}
+
+pub struct TeamStateService<B> {
+    policy: OrganizationPolicy,
+    backend: B,
+}
+
+impl<B: TeamStateBackend> TeamStateService<B> {
+    pub fn new(policy: OrganizationPolicy, backend: B) -> Self {
+        Self { policy, backend }
+    }
+
+    pub fn policy(&self) -> &OrganizationPolicy {
+        &self.policy
+    }
+
+    pub fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
+
+    pub fn put_task(&mut self, actor: &str, record: TeamTaskRecord) -> taskfence_core::Result<()> {
+        self.ensure_access(actor, TeamApiMethod::EnqueueTask, TeamApiResource::TaskList)?;
+        self.backend.put_task(record)
+    }
+
+    pub fn list_tasks(&mut self, actor: &str) -> taskfence_core::Result<Vec<TeamTaskRecord>> {
+        self.ensure_access(actor, TeamApiMethod::Read, TeamApiResource::TaskList)?;
+        self.backend.list_tasks(&self.policy.organization)
+    }
+
+    pub fn get_task(
+        &mut self,
+        actor: &str,
+        task_id: &TaskId,
+    ) -> taskfence_core::Result<Option<TeamTaskRecord>> {
+        self.ensure_access(
+            actor,
+            TeamApiMethod::Read,
+            TeamApiResource::TaskDetail(task_id.clone()),
+        )?;
+        self.backend.get_task(&self.policy.organization, task_id)
+    }
+
+    pub fn enqueue_task(
+        &mut self,
+        actor: &str,
+        task_id: TaskId,
+    ) -> taskfence_core::Result<WorkerLease> {
+        self.ensure_access(actor, TeamApiMethod::EnqueueTask, TeamApiResource::TaskList)?;
+        self.backend
+            .enqueue_task(&self.policy.organization, task_id)
+    }
+
+    pub fn lease_next(
+        &mut self,
+        actor: &str,
+        worker_id: &str,
+    ) -> taskfence_core::Result<Option<WorkerLease>> {
+        self.ensure_access(actor, TeamApiMethod::EnqueueTask, TeamApiResource::TaskList)?;
+        self.backend
+            .lease_next(&self.policy.organization, worker_id)
+    }
+
+    pub fn complete_task(
+        &mut self,
+        actor: &str,
+        task_id: &TaskId,
+        worker_id: &str,
+    ) -> taskfence_core::Result<WorkerLease> {
+        self.ensure_access(actor, TeamApiMethod::EnqueueTask, TeamApiResource::TaskList)?;
+        self.backend
+            .complete_task(&self.policy.organization, task_id, worker_id)
+    }
+
+    pub fn fail_task(
+        &mut self,
+        actor: &str,
+        task_id: &TaskId,
+        worker_id: &str,
+        reason: &str,
+    ) -> taskfence_core::Result<WorkerLease> {
+        self.ensure_access(actor, TeamApiMethod::EnqueueTask, TeamApiResource::TaskList)?;
+        self.backend
+            .fail_task(&self.policy.organization, task_id, worker_id, reason)
+    }
+
+    pub fn write_artifact(
+        &mut self,
+        actor: &str,
+        task_id: &TaskId,
+        path: &Utf8Path,
+        bytes: &[u8],
+    ) -> taskfence_core::Result<TeamArtifactRecord> {
+        self.ensure_access(
+            actor,
+            TeamApiMethod::WriteArtifact,
+            TeamApiResource::TaskArtifacts(task_id.clone()),
+        )?;
+        match evaluate_artifact_storage_path(&self.policy, path) {
+            TeamArtifactDecision::Allow { .. } => {}
+            TeamArtifactDecision::Deny { reason } => return Err(TaskFenceError::State(reason)),
+        }
+        self.backend
+            .write_artifact(&self.policy.organization, task_id, path, bytes)
+    }
+
+    pub fn plan_audit_export(
+        &mut self,
+        actor: &str,
+        sink: AuditExportSinkConfig,
+    ) -> taskfence_core::Result<TeamAuditExportRecord> {
+        self.ensure_access(
+            actor,
+            TeamApiMethod::ExportAudit,
+            TeamApiResource::AuditExport,
+        )?;
+        self.backend
+            .plan_audit_export(&self.policy.organization, sink, actor)
+    }
+
+    fn ensure_access(
+        &self,
+        actor: &str,
+        method: TeamApiMethod,
+        resource: TeamApiResource,
+    ) -> taskfence_core::Result<()> {
+        let request = TeamApiRequest {
+            organization: self.policy.organization.clone(),
+            actor: actor.to_owned(),
+            method,
+            resource,
+        };
+        match evaluate_team_access(&self.policy, &request) {
+            TeamAccessDecision::Allow { .. } => Ok(()),
+            TeamAccessDecision::Deny { reason } => Err(TaskFenceError::State(reason)),
+        }
     }
 }
 
@@ -1250,22 +2203,14 @@ pub fn evaluate_artifact_storage_path(
             reason: "artifact path must have a parent directory".into(),
         };
     };
-    let requested_parent = match canonical_utf8(requested_parent) {
-        Ok(path) => path,
-        Err(err) => {
-            return TeamArtifactDecision::Deny {
-                reason: format!("artifact parent must exist and be canonicalizable: {err}"),
-            };
-        }
-    };
 
-    for root in &policy.allowed_artifact_roots {
-        if let Err(err) = validate_team_artifact_root(root) {
+    for configured_root in &policy.allowed_artifact_roots {
+        if let Err(err) = validate_team_artifact_root(configured_root) {
             return TeamArtifactDecision::Deny {
                 reason: err.to_string(),
             };
         }
-        let root = match canonical_utf8(root) {
+        let root = match canonical_utf8(configured_root) {
             Ok(path) => path,
             Err(err) => {
                 return TeamArtifactDecision::Deny {
@@ -1273,7 +2218,28 @@ pub fn evaluate_artifact_storage_path(
                 };
             }
         };
-        if requested_parent == root || requested_parent.starts_with(&root) {
+        let requested_parent = match canonical_utf8(requested_parent) {
+            Ok(path) => path,
+            Err(_)
+                if requested_path.starts_with(configured_root)
+                    || requested_path.starts_with(&root) =>
+            {
+                requested_path
+                    .parent()
+                    .map(Utf8Path::to_path_buf)
+                    .unwrap_or_else(|| requested_path.to_path_buf())
+            }
+            Err(err) => {
+                return TeamArtifactDecision::Deny {
+                    reason: format!("artifact parent must be under an allowed root: {err}"),
+                };
+            }
+        };
+        if requested_parent == root
+            || requested_parent.starts_with(&root)
+            || requested_parent == *configured_root
+            || requested_parent.starts_with(configured_root)
+        {
             return TeamArtifactDecision::Allow { root };
         }
     }
@@ -1306,6 +2272,7 @@ fn method_matches_resource(method: &TeamApiMethod, resource: &TeamApiResource) -
         TeamApiMethod::Read => !matches!(resource, TeamApiResource::AuditExport),
         TeamApiMethod::ResolveApproval => matches!(resource, TeamApiResource::ApprovalDetail(_)),
         TeamApiMethod::EnqueueTask => matches!(resource, TeamApiResource::TaskList),
+        TeamApiMethod::WriteArtifact => matches!(resource, TeamApiResource::TaskArtifacts(_)),
         TeamApiMethod::ExportAudit => matches!(resource, TeamApiResource::AuditExport),
     }
 }
@@ -1342,17 +2309,23 @@ fn role_allows(role: &TeamRole, method: &TeamApiMethod, resource: &TeamApiResour
                     | TeamApiResource::ReplayInputs(_)
             ),
             TeamApiMethod::ResolveApproval => true,
-            TeamApiMethod::EnqueueTask | TeamApiMethod::ExportAudit => false,
+            TeamApiMethod::EnqueueTask
+            | TeamApiMethod::WriteArtifact
+            | TeamApiMethod::ExportAudit => false,
         },
         TeamRole::Operator => match method {
             TeamApiMethod::Read => !matches!(resource, TeamApiResource::AuditExport),
-            TeamApiMethod::EnqueueTask | TeamApiMethod::ResolveApproval => true,
+            TeamApiMethod::EnqueueTask
+            | TeamApiMethod::WriteArtifact
+            | TeamApiMethod::ResolveApproval => true,
             TeamApiMethod::ExportAudit => false,
         },
         TeamRole::Auditor => match method {
             TeamApiMethod::Read => !matches!(resource, TeamApiResource::ReplayInputs(_)),
             TeamApiMethod::ExportAudit => matches!(resource, TeamApiResource::AuditExport),
-            TeamApiMethod::ResolveApproval | TeamApiMethod::EnqueueTask => false,
+            TeamApiMethod::ResolveApproval
+            | TeamApiMethod::EnqueueTask
+            | TeamApiMethod::WriteArtifact => false,
         },
     }
 }
@@ -1366,6 +2339,27 @@ fn validate_team_artifact_root(root: &Utf8Path) -> taskfence_core::Result<()> {
     if path_contains_parent_dir(root) {
         return Err(TaskFenceError::State(format!(
             "team artifact root must not contain '..': {root}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_team_state_file_path(path: &Utf8Path) -> taskfence_core::Result<()> {
+    if !path.is_absolute() || path_contains_parent_dir(path) {
+        return Err(TaskFenceError::State(format!(
+            "team state file path must be absolute without '..': {path}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_team_task_record(record: &TeamTaskRecord) -> taskfence_core::Result<()> {
+    normalize_non_empty("organization", record.organization.clone())?;
+    validate_task_id_component(&record.task_id.0)?;
+    if !record.evidence_dir.is_absolute() || path_contains_parent_dir(&record.evidence_dir) {
+        return Err(TaskFenceError::State(format!(
+            "team task evidence_dir must be absolute without '..': {}",
+            record.evidence_dir
         )));
     }
     Ok(())
@@ -1409,6 +2403,84 @@ fn validate_schema_name(value: &str) -> taskfence_core::Result<()> {
         ));
     }
     Ok(())
+}
+
+fn sql_ident(value: &str) -> taskfence_core::Result<String> {
+    validate_schema_name(value)?;
+    Ok(format!("\"{}\"", value.replace('"', "\"\"")))
+}
+
+fn task_status_label(status: &TaskStatus) -> String {
+    match status {
+        TaskStatus::Created => "created",
+        TaskStatus::Validating => "validating",
+        TaskStatus::Preparing => "preparing",
+        TaskStatus::Running => "running",
+        TaskStatus::WaitingForApproval => "waiting_for_approval",
+        TaskStatus::Stopping => "stopping",
+        TaskStatus::CollectingArtifacts => "collecting_artifacts",
+        TaskStatus::Reporting => "reporting",
+        TaskStatus::Succeeded => "succeeded",
+        TaskStatus::Failed => "failed",
+        TaskStatus::Denied => "denied",
+        TaskStatus::TimedOut => "timed_out",
+        TaskStatus::Cancelled => "cancelled",
+    }
+    .into()
+}
+
+fn task_status_from_label(value: &str) -> taskfence_core::Result<TaskStatus> {
+    match value {
+        "created" => Ok(TaskStatus::Created),
+        "validating" => Ok(TaskStatus::Validating),
+        "preparing" => Ok(TaskStatus::Preparing),
+        "running" => Ok(TaskStatus::Running),
+        "waiting_for_approval" => Ok(TaskStatus::WaitingForApproval),
+        "stopping" => Ok(TaskStatus::Stopping),
+        "collecting_artifacts" => Ok(TaskStatus::CollectingArtifacts),
+        "reporting" => Ok(TaskStatus::Reporting),
+        "succeeded" => Ok(TaskStatus::Succeeded),
+        "failed" => Ok(TaskStatus::Failed),
+        "denied" => Ok(TaskStatus::Denied),
+        "timed_out" => Ok(TaskStatus::TimedOut),
+        "cancelled" => Ok(TaskStatus::Cancelled),
+        other => Err(TaskFenceError::State(format!(
+            "unknown task status label from team state: {other}"
+        ))),
+    }
+}
+
+fn worker_state_to_storage(state: &WorkerLeaseState) -> (String, Option<String>) {
+    match state {
+        WorkerLeaseState::Pending => ("pending".into(), None),
+        WorkerLeaseState::Leased { .. } => ("leased".into(), None),
+        WorkerLeaseState::Completed => ("completed".into(), None),
+        WorkerLeaseState::Failed { reason } => ("failed".into(), Some(reason.clone())),
+    }
+}
+
+fn team_task_record_from_row(row: postgres::Row) -> taskfence_core::Result<TeamTaskRecord> {
+    let status: Option<String> = row.get(2);
+    Ok(TeamTaskRecord {
+        organization: row.get(0),
+        task_id: TaskId(row.get(1)),
+        status: status.as_deref().map(task_status_from_label).transpose()?,
+        goal: row.get(3),
+        evidence_dir: Utf8PathBuf::from(row.get::<_, String>(4)),
+    })
+}
+
+fn postgres_state_error(err: postgres::Error) -> TaskFenceError {
+    TaskFenceError::State(format!("Postgres team state error: {err}"))
+}
+
+fn postgres_unique_violation(err: &postgres::Error) -> bool {
+    err.code().is_some_and(|code| code.code() == "23505")
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn normalize_non_empty(field: &str, value: String) -> taskfence_core::Result<String> {
@@ -2093,14 +3165,15 @@ mod tests {
     }
 
     #[test]
-    fn postgres_config_validates_contract_and_live_backend_is_unsupported() {
+    fn postgres_config_validates_contract_and_env_connection() {
         let config =
             PostgresTeamStateConfig::new("TASKFENCE_DATABASE_URL", "taskfence_team").unwrap();
         assert_eq!(config.database_url_env, "TASKFENCE_DATABASE_URL");
         assert_eq!(config.schema, "taskfence_team");
+        std::env::remove_var("TASKFENCE_DATABASE_URL");
         assert!(matches!(
-            config.unsupported_live_state_error(),
-            TaskFenceError::Unsupported(message) if message.contains("no live Postgres backend")
+            config.connect_from_env(),
+            Err(TaskFenceError::State(message)) if message.contains("TASKFENCE_DATABASE_URL is not set")
         ));
 
         assert!(matches!(
@@ -2142,10 +3215,10 @@ mod tests {
         );
         assert!(boundary
             .worker_model
-            .contains("deterministic in-memory lease"));
+            .contains("durable worker lease storage"));
         assert!(matches!(
             boundary.unsupported_start_error(),
-            TaskFenceError::Unsupported(message) if message.contains("contract-only")
+            TaskFenceError::Unsupported(message) if message.contains("no long-lived HTTP daemon")
         ));
         assert!(matches!(
             boundary.unsupported_audit_export_error(),
@@ -2174,6 +3247,183 @@ mod tests {
             ),
             Err(TaskFenceError::State(message)) if message.contains("at least one")
         ));
+    }
+
+    #[test]
+    fn local_team_state_persists_tasks_leases_artifacts_and_audit_exports() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().join("artifacts")).unwrap();
+        let state_file = Utf8PathBuf::from_path_buf(temp.path().join("team/state.json")).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        let mut policy = team_policy();
+        policy.allowed_artifact_roots = vec![root.clone()];
+        let mut store = LocalTeamStateStore::open(policy.clone(), state_file.clone()).unwrap();
+        let task = TeamTaskRecord {
+            organization: "acme".into(),
+            task_id: TaskId("team-task".into()),
+            status: Some(TaskStatus::Created),
+            goal: Some("team task".into()),
+            evidence_dir: root.join("team-task"),
+        };
+
+        store.put_task(task.clone()).unwrap();
+        assert_eq!(
+            store.get_task("acme", &TaskId("team-task".into())).unwrap(),
+            Some(task.clone())
+        );
+        assert_eq!(store.list_tasks("acme").unwrap(), vec![task]);
+        assert_eq!(
+            store
+                .enqueue_task("acme", TaskId("team-task".into()))
+                .unwrap()
+                .state,
+            WorkerLeaseState::Pending
+        );
+        assert!(matches!(
+            store.enqueue_task("acme", TaskId("team-task".into())),
+            Err(TaskFenceError::State(message)) if message.contains("already queued")
+        ));
+        let leased = store.lease_next("acme", "worker-a").unwrap().unwrap();
+        assert_eq!(
+            leased.state,
+            WorkerLeaseState::Leased {
+                worker_id: "worker-a".into()
+            }
+        );
+        assert!(matches!(
+            store.complete_task("acme", &TaskId("team-task".into()), "worker-b"),
+            Err(TaskFenceError::State(message)) if message.contains("worker-a")
+        ));
+        assert_eq!(
+            store
+                .complete_task("acme", &TaskId("team-task".into()), "worker-a")
+                .unwrap()
+                .state,
+            WorkerLeaseState::Completed
+        );
+        let artifact = store
+            .write_artifact(
+                "acme",
+                &TaskId("team-task".into()),
+                &root.join("team-task/output.json"),
+                b"{\"ok\":true}\n",
+            )
+            .unwrap();
+        assert_eq!(artifact.size_bytes, 12);
+        assert_eq!(artifact.sha256.len(), 64);
+        let export = store
+            .plan_audit_export(
+                "acme",
+                AuditExportSinkConfig::new(
+                    AuditExportSinkKind::Siem,
+                    "soc-pipeline",
+                    "TASKFENCE_AUDIT_EXPORT_TOKEN",
+                )
+                .unwrap(),
+                "auditor",
+            )
+            .unwrap();
+        assert_eq!(export.status, TeamAuditExportStatus::Planned);
+        assert!(state_file.is_file());
+
+        let mut reopened = LocalTeamStateStore::open(policy, state_file).unwrap();
+        assert_eq!(reopened.list_tasks("acme").unwrap().len(), 1);
+        assert!(matches!(
+            reopened.fail_task("acme", &TaskId("team-task".into()), "worker-a", "late"),
+            Err(TaskFenceError::State(message)) if message.contains("already completed")
+        ));
+    }
+
+    #[test]
+    fn team_state_service_enforces_rbac_for_persistent_operations() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().join("artifacts")).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        let state_file = Utf8PathBuf::from_path_buf(temp.path().join("team/state.json")).unwrap();
+        let mut policy = team_policy();
+        policy.allowed_artifact_roots = vec![root.clone()];
+        let backend = LocalTeamStateStore::open(policy.clone(), state_file).unwrap();
+        let mut service = TeamStateService::new(policy, backend);
+        let task = TeamTaskRecord {
+            organization: "acme".into(),
+            task_id: TaskId("team-task".into()),
+            status: Some(TaskStatus::Created),
+            goal: Some("team task".into()),
+            evidence_dir: root.join("team-task"),
+        };
+
+        assert!(matches!(
+            service.put_task("viewer", task.clone()),
+            Err(TaskFenceError::State(message)) if message.contains("Viewer")
+        ));
+        service.put_task("operator", task).unwrap();
+        assert_eq!(service.list_tasks("viewer").unwrap().len(), 1);
+        assert_eq!(
+            service
+                .enqueue_task("operator", TaskId("team-task".into()))
+                .unwrap()
+                .state,
+            WorkerLeaseState::Pending
+        );
+        assert!(matches!(
+            service.write_artifact(
+                "viewer",
+                &TaskId("team-task".into()),
+                &root.join("team-task/output.json"),
+                b"{}"
+            ),
+            Err(TaskFenceError::State(message)) if message.contains("Viewer")
+        ));
+        assert_eq!(
+            service
+                .write_artifact(
+                    "operator",
+                    &TaskId("team-task".into()),
+                    &root.join("team-task/output.json"),
+                    b"{}"
+                )
+                .unwrap()
+                .size_bytes,
+            2
+        );
+        let outside_root = Utf8PathBuf::from_path_buf(temp.path().join("outside")).unwrap();
+        fs::create_dir_all(&outside_root).unwrap();
+        assert!(matches!(
+            service.write_artifact(
+                "operator",
+                &TaskId("team-task".into()),
+                &outside_root.join("output.json"),
+                b"{}"
+            ),
+            Err(TaskFenceError::State(message)) if message.contains("outside allowed")
+        ));
+        assert!(matches!(
+            service.plan_audit_export(
+                "viewer",
+                AuditExportSinkConfig::new(
+                    AuditExportSinkKind::Siem,
+                    "soc-pipeline",
+                    "TASKFENCE_AUDIT_EXPORT_TOKEN",
+                )
+                .unwrap()
+            ),
+            Err(TaskFenceError::State(message)) if message.contains("Viewer")
+        ));
+        assert_eq!(
+            service
+                .plan_audit_export(
+                    "auditor",
+                    AuditExportSinkConfig::new(
+                        AuditExportSinkKind::Siem,
+                        "soc-pipeline",
+                        "TASKFENCE_AUDIT_EXPORT_TOKEN",
+                    )
+                    .unwrap()
+                )
+                .unwrap()
+                .requested_by,
+            "auditor"
+        );
     }
 
     #[test]

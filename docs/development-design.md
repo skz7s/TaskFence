@@ -534,13 +534,14 @@ local JSON state index from those same files. Task summaries use structured
 `task.resolved.json` and `events.jsonl` evidence and do not infer status from
 rendered report text.
 
-The team-server foundation lives here as a contract before a service exists. It
-defines typed team API resources, RBAC and organization-policy decisions,
-approval-owner enforcement, team artifact-root containment, a deterministic
-in-memory worker lease queue for local development tests, Postgres state config
-validation, explicit unsupported live Postgres/server/audit-export errors, and
-local-to-team migration plans from structured `.taskfence` evidence. Migration
-plans must not treat rendered Markdown reports as source-of-truth state.
+The team-state foundation lives here as state-layer service functions before a
+deployed service exists. It defines typed team API resources, RBAC and
+organization-policy decisions, approval-owner enforcement, team artifact-root
+containment, durable worker lease storage, local JSON and Postgres-backed state
+backends, planned audit-export records, and local-to-team migration/import from
+structured `.taskfence` evidence. Migration plans must not treat rendered
+Markdown reports as source-of-truth state. This is not a live worker daemon,
+SSO flow, object-storage adapter, or audit-export sink.
 
 Responsibilities:
 
@@ -548,8 +549,8 @@ Responsibilities:
 - Approval status.
 - Artifact index.
 - Replay input index.
-- Future team-server migration path.
-- Team API/RBAC/state migration contracts until a persistent team server is
+- Team-state service functions, migration/import, durable leases, and
+  persistent local/Postgres state backends until a deployed team server is
   implemented.
 
 ### `taskfence-testkit`
@@ -1053,7 +1054,7 @@ domain allowlists without the configured local gateway egress boundary,
 production MCP servers, arbitrary HTTP proxying, SDK/webhook connectors,
 branch/commit behavior outside the bounded GitHub REST family, arbitrary
 in-container command observation, long-lived persistent Web/API daemon
-behavior, SQLite-backed state migration, live Postgres backend, replay for
-unsupported live connector effects, persistent team server,
-live audit export sink, Slack, and live enterprise behavior beyond the bounded
-GitHub REST family.
+behavior, SQLite-backed state migration, replay for unsupported live connector
+effects, deployed team-server daemon, live worker service, SSO,
+object-storage adapter, live audit export sink, Slack, and live enterprise
+behavior beyond the bounded GitHub REST family.

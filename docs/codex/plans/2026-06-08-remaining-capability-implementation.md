@@ -444,7 +444,7 @@ Completion evidence:
 
 ### Phase 6: Team Server, Durable Workers, And Postgres State
 
-Status: pending
+Status: done
 
 Scope:
 
@@ -469,7 +469,33 @@ cargo test -p taskfence-state -p taskfence-core -p taskfence-cli
 
 Completion evidence:
 
-- Pending.
+- Started on 2026-06-08 after Phase 5 was marked done and committed as
+  `f31efed` (`runner: implement first live remote runner backend`).
+- Added `TeamStateBackend` and `TeamStateService` as the persistent
+  state-layer API boundary, with organization-scoped RBAC checks before
+  persistent mutations and approval-owner enforcement preserved in the team
+  access model.
+- Implemented durable local JSON and Postgres-backed team state for
+  organization task records, durable worker leases, artifact metadata, and
+  planned audit exports. Worker lease transitions reject duplicate,
+  wrong-worker, unleased, and already-terminal states, and completion/failure
+  are organization-scoped.
+- Added `taskfence team state`, `taskfence team migrate-local`, and
+  `taskfence team worker enqueue|lease|complete|fail` so team state can be
+  inspected, imported from structured local evidence, and exercised without
+  requiring local task execution to use team mode.
+- Added team artifact containment and integrity checks at the service boundary:
+  writes must stay under configured absolute roots and are recorded with size
+  and SHA-256 metadata. Audit export remains a validated planned record; no
+  live export sink is claimed.
+- Updated README, architecture, roadmap, development design, runtime facts, ops
+  facts, and `docs/decisions/2026-06-08-persistent-team-state-boundary.md` to
+  describe implemented persistent team state while keeping deployed HTTP daemon,
+  SSO, object storage adapter, live worker service, managed Postgres service,
+  and live audit export sink unsupported.
+- Verification passed: `cargo fmt --all --check`.
+- Verification passed: `cargo test -p taskfence-state -p taskfence-core -p taskfence-cli`
+  (109 CLI tests, 6 core tests, 52 state tests, and doc-tests).
 
 ### Phase 7: Enterprise Connectors, Audit Export, And Compliance Reports
 

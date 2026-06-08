@@ -343,23 +343,25 @@ Current team-server foundation:
   and audit export
 - implemented: RBAC and organization-policy decision contracts, including
   method/resource mismatch denial and optional approval-owner enforcement
-- implemented: deterministic in-memory worker lease model for local
-  development tests, with fail-closed duplicate, wrong-worker, unleased, and
-  already-terminal transitions
-- implemented: Postgres-backed team state configuration validation for a future
-  database URL environment variable and schema, with explicit unsupported live
-  backend errors
+- implemented: persistent local JSON and Postgres-backed team state stores for
+  organization task records, durable worker leases, artifact metadata, and
+  planned audit exports
+- implemented: durable worker lease protections for duplicate, wrong-worker,
+  unleased, and already-terminal transitions
 - implemented: team artifact storage root containment checks for absolute,
-  canonical roots
-- implemented: local `.taskfence` to team migration planning from structured
-  task input and event files without treating rendered Markdown reports as
-  source-of-truth state
+  canonical roots, plus size and SHA-256 integrity metadata
+- implemented: `taskfence team` local commands for state inspection,
+  structured local-evidence import, enqueue, lease, complete, and fail
+  operations without requiring local task execution to use team mode
+- implemented: local `.taskfence` to team migration planning/import from
+  structured task input and event files without treating rendered Markdown
+  reports as source-of-truth state
 - implemented: audit export as an RBAC/API boundary with validated sink
-  contracts and an explicit unsupported live export-sink error
-- remaining: persistent team API server, live Postgres backend, durable worker
-  queue, SSO, team quota/chargeback, object storage, remote-runner-backed team
-  execution, live SIEM export sink, and live GitHub Enterprise/GitLab team
-  integrations
+  contracts and planned export records
+- remaining: deployed team API server, live worker service,
+  remote-runner-backed team execution, SSO, team quota/chargeback, object
+  storage adapter, live SIEM export sink, and live GitHub Enterprise/GitLab
+  team integrations
 
 ## Phase 7: Broader Enterprise Agent Gateway
 
