@@ -2010,7 +2010,7 @@ impl EnterpriseHttpClient for UreqEnterpriseHttpClient {
         let status = response.status();
         let body = response
             .into_json::<serde_json::Value>()
-            .unwrap_or_else(|_| serde_json::Value::Null);
+            .unwrap_or(serde_json::Value::Null);
         Ok(EnterpriseHttpResponse { status, body })
     }
 }

@@ -434,12 +434,19 @@ Responsibilities:
 
 - Convert generic and specialized adapter config into a runner invocation.
 - Validate command and args against policy before execution.
-- Provide adapter metadata for reports.
+- Provide non-secret adapter metadata and prompt/workspace hints for reports
+  and agent setup.
 
 Adapters:
 
-- `generic` first.
-- `codex`, `claude-code`, `gemini`, and other specialized adapters later.
+- `generic` remains the default.
+- `codex_cli`, `claude_code`, `gemini_cli`, and `openhands` are implemented as
+  specialized profiles that add only non-secret runtime hints.
+- Coding-agent policy templates are exposed as conservative guidance for
+  explicit task-file permissions; they deny high-risk host commands by pattern,
+  keep network disabled by default, and are not auto-applied by the runtime.
+- Additional specialized adapters require connector-specific tests before they
+  are documented as supported.
 
 Must not:
 

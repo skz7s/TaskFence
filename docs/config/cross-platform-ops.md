@@ -26,9 +26,9 @@ Supported `deploy/manage.sh` commands:
 
 - `detect-env`: detect local tools and write ignored `.codex-helper/local-env.toml`
 - `doctor`: print detected facts and missing dependency guidance
-- `setup`: prepare detected repo-local dependencies when supported
-- `dev`: start detected foreground dev scripts when supported
-- `build`: run detected build scripts or write explicit systemd service files only when invoked with documented options
+- `setup`: prepare detected repo-local dependencies and verify Rust tooling when supported
+- `dev`: run the foreground Rust development check for specialized agent adapters and example validation
+- `build`: run `cargo build --workspace` and detected build scripts, or write explicit systemd service files only when invoked with documented options
 
 Rust validation gates:
 

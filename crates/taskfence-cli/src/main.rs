@@ -5,7 +5,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::ExitCode;
-use taskfence_agent::GenericAgentAdapter;
+use taskfence_agent::{GenericAgentAdapter, SpecializedAgentAdapter};
 use taskfence_approval::{LocalApprovalEngine, LocalApprovalStore, LocalExternalApprovalEngine};
 use taskfence_artifacts::LocalArtifactStore;
 use taskfence_audit::LocalJsonlAuditLogger;
@@ -770,12 +770,22 @@ fn validate_task_file(task_file: Utf8PathBuf) -> taskfence_core::Result<()> {
 
 fn validate_task_file_summary(task_file: Utf8PathBuf) -> taskfence_core::Result<ValidationSummary> {
     let task = load_task_file(&task_file)?;
-    let adapter = GenericAgentAdapter;
+    let adapter = adapter_for_task(&task);
     let policy = BuiltInPolicyEngine;
     let runner = ExpandedRunner::new();
     Ok(validation_summary(validate_task_for_run(
-        &task, &adapter, &policy, &runner,
+        &task,
+        adapter.as_ref(),
+        &policy,
+        &runner,
     )?))
+}
+
+fn adapter_for_task(task: &ResolvedTask) -> Box<dyn taskfence_core::AgentAdapter> {
+    match &task.agent.kind {
+        taskfence_core::AgentKind::Generic => Box::new(GenericAgentAdapter),
+        taskfence_core::AgentKind::Specialized(_) => Box::new(SpecializedAgentAdapter),
+    }
 }
 
 fn validation_summary(validation: TaskValidation) -> ValidationSummary {
@@ -1416,7 +1426,7 @@ fn run_resolved_task_collecting_result(
     let events_path = artifacts.task_dir(&task)?.join("events.jsonl");
     let audit = LocalJsonlAuditLogger::new(events_path)?;
     let policy = BuiltInPolicyEngine;
-    let adapter = GenericAgentAdapter;
+    let adapter = adapter_for_task(&task);
     let report = MarkdownReportGenerator::new();
     let state = InMemoryStateStore::new();
     let orchestrator = Orchestrator {
@@ -1424,7 +1434,7 @@ fn run_resolved_task_collecting_result(
         approval,
         audit: &audit,
         artifacts: &artifacts,
-        adapter: &adapter,
+        adapter: adapter.as_ref(),
         runner,
         report: &report,
         state: &state,
@@ -1596,8 +1606,8 @@ fn review_http_response(workspace: &Utf8PathBuf, request: &ReviewHttpRequest) ->
                 &err.to_string(),
             ),
         },
-        ("GET", path) if path == "/api/index" => local_api_index_response(workspace),
-        ("GET", path) if path == "/api/tasks" => local_api_tasks_response(workspace),
+        ("GET", "/api/index") => local_api_index_response(workspace),
+        ("GET", "/api/tasks") => local_api_tasks_response(workspace),
         ("GET", path) if path.starts_with("/api/task/") => local_api_task_response(workspace, path),
         ("GET", path) if path.starts_with("/api/artifacts/") => {
             local_api_artifacts_response(workspace, path)
@@ -1616,7 +1626,7 @@ fn review_http_response(workspace: &Utf8PathBuf, request: &ReviewHttpRequest) ->
         ("GET", path) if path.starts_with("/api/compare/") => {
             local_api_compare_response(workspace, path)
         }
-        ("GET", path) if path == "/api/approvals" => local_api_approvals_response(workspace),
+        ("GET", "/api/approvals") => local_api_approvals_response(workspace),
         ("GET", path) if path.starts_with("/api/approval/") => {
             local_api_approval_response(workspace, path)
         }
@@ -3688,7 +3698,7 @@ fn run_resolved_task_with_runner_and_approval(
     let events_path = artifacts.task_dir(&task)?.join("events.jsonl");
     let audit = LocalJsonlAuditLogger::new(events_path)?;
     let policy = BuiltInPolicyEngine;
-    let adapter = GenericAgentAdapter;
+    let adapter = adapter_for_task(&task);
     let report = MarkdownReportGenerator::new();
     let state = InMemoryStateStore::new();
     let orchestrator = Orchestrator {
@@ -3696,7 +3706,7 @@ fn run_resolved_task_with_runner_and_approval(
         approval,
         audit: &audit,
         artifacts: &artifacts,
-        adapter: &adapter,
+        adapter: adapter.as_ref(),
         runner,
         report: &report,
         state: &state,

@@ -1062,6 +1062,41 @@ sandbox:
     }
 
     #[test]
+    fn parses_specialized_coding_agent_kind() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("repo")).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        let yaml = r#"
+goal: Test specialized agent
+workspace: ./repo
+agent:
+  type: codex_cli
+  command: codex
+  args:
+    - exec
+sandbox:
+  type: docker
+permissions:
+  paths:
+    read: ["./repo"]
+    write: ["./repo"]
+  commands:
+    allow: ["codex"]
+  network:
+    default: disabled
+"#;
+
+        let task = parse_task_file(&task_file, yaml).unwrap();
+
+        assert!(matches!(
+            task.agent.kind,
+            AgentKind::Specialized(ref kind) if kind == "codex_cli"
+        ));
+        assert_eq!(task.agent.command, "codex");
+        assert_eq!(task.agent.args, vec!["exec"]);
+    }
+
+    #[test]
     fn parses_tool_permissions() {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir(temp.path().join("repo")).unwrap();

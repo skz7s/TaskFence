@@ -522,6 +522,14 @@ The first implementation currently includes:
     without treating rendered reports as source of truth. A deployed team HTTP
     daemon, SSO, object-store adapter, and background export service are still
     not implemented.
+18. Specialized coding-agent adapter profiles for `codex_cli`, `claude_code`,
+    `gemini_cli`, and `openhands`. They build runner invocations with
+    non-secret profile, prompt, workspace, and gateway-mode hints while keeping
+    `generic` as the default adapter. The agent crate also exposes
+    conservative coding-agent policy templates for explicit task-file policy;
+    they are guidance and are not applied automatically. `deploy/manage.sh
+    setup`, `dev`, `build`, and `doctor` now expose Rust-workspace-oriented
+    operator flows without adding a deployed service.
 
 ## Non-Goals
 

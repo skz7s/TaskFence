@@ -6,6 +6,7 @@ set -euo pipefail
 # Update with: python3 .codex/skills/ops-script-maintenance/scripts/scaffold_manage.py --root .
 
 PROJECT_PROFILE=generic
+HAS_RUST=1
 HAS_PYTHON=0
 PYTHON_REQUIREMENT=''
 PYTHON_HAS_PYPROJECT=0
@@ -81,9 +82,9 @@ Usage: bash deploy/manage.sh <command> [options]
 
 Commands:
   detect-env             Detect local tools and write .codex-helper/local-env.toml
-  setup                  Prepare repo-local Python/Node dependencies
-  dev                    Start detected foreground dev scripts
-  build                  Run detected build scripts; pass --systemd for a service file
+  setup                  Prepare repo-local dependencies and verify Rust tooling
+  dev                    Run foreground development checks
+  build                  Build the Rust workspace; pass --systemd for a service file
   doctor                 Print detected facts and missing dependency guidance
 
 Options:
@@ -343,6 +344,7 @@ detect_env() {
     write_tool_table uv uv "${now}"
     write_tool_table node node "${now}"
     write_tool_table npm npm "${now}"
+    write_tool_table cargo cargo "${now}"
     write_tool_table codex codex "${now}"
     write_tool_table git git "${now}"
 
@@ -415,6 +417,9 @@ package_path() {
 missing_commands() {
   local missing=()
   command -v git >/dev/null 2>&1 || missing+=(git)
+  if [[ "${HAS_RUST}" -eq 1 ]]; then
+    command -v cargo >/dev/null 2>&1 || missing+=(cargo)
+  fi
   if [[ "${HAS_PYTHON}" -eq 1 ]]; then
     command -v uv >/dev/null 2>&1 || missing+=(uv)
   fi
@@ -490,10 +495,17 @@ sync_node_dependencies() {
   done
 }
 
+check_rust_toolchain() {
+  [[ "${HAS_RUST}" -eq 1 ]] || return
+  command -v cargo >/dev/null 2>&1 || die "cargo is required for this Rust workspace"
+  (cd "${ROOT_DIR}" && cargo --version >/dev/null)
+}
+
 setup_command() {
   parse_args "$@"
   detect_env
   ensure_dependencies_or_explain
+  check_rust_toolchain
   sync_python_env
   sync_node_dependencies
   detect_env
@@ -502,15 +514,29 @@ setup_command() {
 
 print_dev_plan() {
   local relative_dir package_dir
+  if [[ "${HAS_RUST}" -eq 1 ]]; then
+    echo "Rust dev check: cargo test -p taskfence-agent -p taskfence-config -p taskfence-cli -p taskfence-core"
+    echo "Rust example validation: cargo run -p taskfence-cli -- validate examples/codex-cli-task.yaml"
+  fi
   if [[ "${HAS_PYTHON}" -eq 1 ]]; then
     echo "Python dev command: not inferred; customize deploy/manage.sh for this app's server entrypoint."
   fi
-  for relative_dir in "${NODE_DEV_DIRS[@]}"; do
-    package_dir="$(package_path "${relative_dir}")"
-    echo "Node dev command: npm --prefix $(printf '%q' "${package_dir}") run dev"
-  done
-  if [[ "${#NODE_DEV_DIRS[@]}" -eq 0 && "${HAS_PYTHON}" -eq 0 ]]; then
+  if [[ "${NODE_DEV_DIRS+x}" == "x" ]]; then
+    for relative_dir in "${NODE_DEV_DIRS[@]}"; do
+      package_dir="$(package_path "${relative_dir}")"
+      echo "Node dev command: npm --prefix $(printf '%q' "${package_dir}") run dev"
+    done
+  fi
+  if [[ "$(node_dev_dir_count)" -eq 0 && "${HAS_PYTHON}" -eq 0 && "${HAS_RUST}" -eq 0 ]]; then
     echo "No dev command inferred for profile ${PROJECT_PROFILE}."
+  fi
+}
+
+node_dev_dir_count() {
+  if [[ "${NODE_DEV_DIRS+x}" == "x" ]]; then
+    printf '%s\n' "${#NODE_DEV_DIRS[@]}"
+  else
+    printf '0\n'
   fi
 }
 
@@ -522,13 +548,19 @@ dev_command() {
     return
   fi
   ensure_dependencies_or_explain
+  if [[ "${HAS_RUST}" -eq 1 ]]; then
+    (cd "${ROOT_DIR}" && cargo test -p taskfence-agent -p taskfence-config -p taskfence-cli -p taskfence-core)
+    (cd "${ROOT_DIR}" && cargo run -p taskfence-cli -- validate examples/codex-cli-task.yaml)
+  fi
   local pids=()
   local relative_dir package_dir
-  for relative_dir in "${NODE_DEV_DIRS[@]}"; do
-    package_dir="$(package_path "${relative_dir}")"
-    npm --prefix "${package_dir}" run dev &
-    pids+=("$!")
-  done
+  if [[ "${NODE_DEV_DIRS+x}" == "x" ]]; then
+    for relative_dir in "${NODE_DEV_DIRS[@]}"; do
+      package_dir="$(package_path "${relative_dir}")"
+      npm --prefix "${package_dir}" run dev &
+      pids+=("$!")
+    done
+  fi
   if [[ "${#pids[@]}" -eq 0 ]]; then
     print_dev_plan
     return
@@ -549,6 +581,9 @@ dev_command() {
 
 run_builds() {
   local relative_dir package_dir
+  if [[ "${HAS_RUST}" -eq 1 ]]; then
+    (cd "${ROOT_DIR}" && cargo build --workspace)
+  fi
   if [[ "${HAS_PYTHON}" -eq 1 && "${PYTHON_HAS_PYPROJECT}" -eq 1 ]]; then
     command -v uv >/dev/null 2>&1 || die "uv is required for Python build"
     (cd "${ROOT_DIR}" && uv build)
@@ -630,6 +665,7 @@ doctor_command() {
   detect_env
   echo
   echo "Project profile: ${PROJECT_PROFILE}"
+  echo "Rust workspace: ${HAS_RUST}"
   echo "Node packages: ${NODE_PACKAGE_DIRS[*]:-(none)}"
   echo
   sed -n '1,220p' "${LOCAL_ENV_FILE}"

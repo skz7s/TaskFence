@@ -391,13 +391,16 @@ Current bounded connector foundation:
 - Compliance-oriented Markdown reports can be rendered from structured local
   events with `taskfence compliance`; team audit export records can write
   contained structured payload artifacts through the team state service.
+- Specialized coding-agent profiles for Codex CLI, Claude Code, Gemini CLI,
+  and OpenHands now add non-secret prompt/workspace/gateway hints, and the
+  agent crate exposes conservative policy-template guidance for explicit
+  task-file permissions.
 - Slack, department-level policy packs, managed runner execution, production
   MCP servers, arbitrary HTTP proxying, SDK/webhook connectors, and replay of
   live connector side effects remain future work.
 
 ## Open Questions
 
-- Which first CLI agent should receive a specialized adapter?
 - Should the default runner image include common language runtimes or stay
   minimal?
 - How strict should default network isolation be on macOS?

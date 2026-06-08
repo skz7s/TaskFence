@@ -249,7 +249,7 @@ An adapter starts an agent inside the runner.
 
 The generic adapter accepts a command string and treats the agent as a black-box
 process. Specialized adapters can improve setup and reporting for specific
-agents.
+agents while preserving the same sandbox, policy, and runner boundary.
 
 Possible adapters:
 
@@ -261,7 +261,14 @@ Possible adapters:
 - OpenClaw
 - Hermes
 
-Adapters should not be required for basic sandboxing.
+The implemented specialized profiles are Codex CLI, Claude Code, Gemini CLI,
+and OpenHands. They validate known task-file `agent.type` values, keep the
+generic adapter as the default, and add only non-secret container-local hints
+such as profile, prompt, workspace, and configured gateway mode. Adapters
+should not be required for basic sandboxing. Coding-agent policy templates are
+available as explicit guidance for common profile command, generated adapter
+environment, network, and deny patterns; task files still opt into concrete
+permissions and no template is applied automatically.
 
 ### Tool Gateway
 

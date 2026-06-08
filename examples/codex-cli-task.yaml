@@ -1,0 +1,39 @@
+# Example TaskFence task file for a specialized Codex CLI adapter profile.
+#
+# This file is intended for validation and adapter planning. It does not embed
+# provider credentials and does not require Codex to be installed to validate.
+
+id: "codex-cli-demo"
+goal: "Run a coding agent through the Codex CLI profile"
+workspace: "./repo"
+
+agent:
+  type: "codex_cli"
+  command: "/usr/bin/true"
+  args: []
+
+sandbox:
+  type: "docker"
+  image: "debian:bookworm-slim"
+
+permissions:
+  paths:
+    read:
+      - "./repo"
+    write:
+      - "./repo"
+  commands:
+    allow:
+      - "/usr/bin/true"
+  network:
+    default: "disabled"
+
+audit:
+  report:
+    format: "markdown"
+  capture:
+    stdout: true
+    stderr: true
+    file_diff: true
+    network_destinations: true
+    approvals: true

@@ -127,8 +127,9 @@ Verification:
 
 Status: done
 
-This plan is active. Phases 1, 2, 3, and 4 are complete. The next executable
-phase is Phase 5, live remote runner backends.
+All eight phases are complete. Final validation evidence is recorded below, and
+the plan is ready to archive from `docs/codex/plans/` to
+`docs/codex/plan_archived/`.
 
 ## Phases
 
@@ -499,7 +500,7 @@ Completion evidence:
 
 ### Phase 7: Enterprise Connectors, Audit Export, And Compliance Reports
 
-Status: in_progress
+Status: done
 
 Scope:
 
@@ -553,7 +554,7 @@ Completion evidence:
 
 ### Phase 8: Specialized Agent Adapters And Packaged Operator Experience
 
-Status: pending
+Status: done
 
 Scope:
 
@@ -577,7 +578,40 @@ cargo test -p taskfence-agent -p taskfence-config -p taskfence-cli -p taskfence-
 
 Completion evidence:
 
-- Pending.
+- Started on 2026-06-08 after Phase 7 was marked done and committed as
+  `4cb8664` (`gateway: add prioritized enterprise connectors and audit export`).
+- Added `SpecializedAgentAdapter` profiles for `codex_cli`, `claude_code`,
+  `gemini_cli`, and `openhands`, including known aliases, default executables,
+  and validation that unknown specialized kinds fail closed.
+- Kept `GenericAgentAdapter` as the default. CLI validation, run, and replay
+  execution now select the specialized adapter only when the resolved task
+  declares a specialized `agent.type`.
+- Specialized profiles add only non-secret TaskFence-generated runner hints:
+  profile label, prompt, workspace, and configured gateway mode. They do not
+  pass host environment variables, provider credentials, Docker sockets, SSH
+  agents, or host home paths into the sandbox.
+- Added conservative coding-agent policy-template guidance in
+  `taskfence-agent` for supported profiles. Templates expose explicit command,
+  generated adapter environment, disabled-network default, and high-risk deny
+  patterns, but are not applied automatically and do not weaken default-deny
+  task policy.
+- Added a validation-only `examples/codex-cli-task.yaml` that exercises the
+  specialized Codex CLI profile without embedding credentials or requiring
+  Codex installation.
+- Packaged Rust operator flows through the existing `deploy/manage.sh`
+  entrypoint: `setup` verifies cargo, `dev` runs the targeted Phase 8 Rust
+  check and example validation unless `--skip-start` is used, `build` runs
+  `cargo build --workspace`, and `doctor` reports the Rust workspace fact.
+- Updated README, architecture, development design, roadmap, runtime
+  architecture, cross-platform ops docs, and
+  `docs/decisions/2026-06-08-specialized-agent-adapter-boundary.md`.
+- Verification passed: `cargo fmt --all --check`.
+- Verification passed: `bash -n deploy/manage.sh`.
+- Verification passed: `cargo test -p taskfence-agent -p taskfence-config -p taskfence-cli -p taskfence-core`
+  (8 agent tests, 111 CLI tests, 25 config tests, 6 core tests, and doc-tests).
+- Example validation passed:
+  `cargo run -p taskfence-cli -- validate examples/codex-cli-task.yaml`.
+- Operator dry-run validation passed: `bash deploy/manage.sh dev --skip-start`.
 
 ## Commit Plan
 
@@ -597,3 +631,22 @@ Completion evidence:
   commit plan were written.
 - `git status --short` showed only this new plan file as untracked before final
   validation.
+
+## Final Evidence
+
+Status: done
+
+All eight phases are complete and recorded above with phase-specific evidence.
+Phase 8 passed its targeted validation with `cargo fmt --all --check`,
+`bash -n deploy/manage.sh`,
+`cargo test -p taskfence-agent -p taskfence-config -p taskfence-cli -p taskfence-core`,
+`cargo run -p taskfence-cli -- validate examples/codex-cli-task.yaml`, and
+`bash deploy/manage.sh dev --skip-start`. Broad final validation also passed
+with `git diff --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+and `cargo test --workspace`; the workspace suite kept the Docker integration
+test ignored because it requires a Docker daemon and a locally available test
+image.
+
+Completed change scopes were committed through Phase 7, ending with `4cb8664`
+(`gateway: add prioritized enterprise connectors and audit export`). The final
+planned commit is `agent: add specialized adapters and operator packaging`.
