@@ -1,11 +1,13 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
+use std::path::Component;
 use std::sync::Mutex;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use taskfence_core::{
-    AuditEvent, LogStream, ResolvedTask, StateStore, TaskFenceError, TaskId, TaskStatus,
+    ApprovalId, ApprovalRecord, AuditEvent, LogStream, ResolvedTask, StateStore, TaskFenceError,
+    TaskId, TaskStatus,
 };
 
 const TASKFENCE_DIR: &str = ".taskfence";
@@ -157,6 +159,293 @@ pub struct ReplayPlan {
     pub deterministic: bool,
     pub blockers: Vec<String>,
     pub limitations: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TeamApiResource {
+    TaskList,
+    TaskDetail(TaskId),
+    TaskEvents(TaskId),
+    TaskLogs(TaskId),
+    TaskDiff(TaskId),
+    TaskReport(TaskId),
+    TaskArtifacts(TaskId),
+    Approvals,
+    ApprovalDetail(ApprovalId),
+    ReplayInputs(TaskId),
+    AuditExport,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TeamApiMethod {
+    Read,
+    ResolveApproval,
+    EnqueueTask,
+    ExportAudit,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TeamApiRequest {
+    pub organization: String,
+    pub actor: String,
+    pub method: TeamApiMethod,
+    pub resource: TeamApiResource,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TeamRole {
+    Viewer,
+    Approver,
+    Operator,
+    Auditor,
+    Admin,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RbacGrant {
+    pub actor: String,
+    pub role: TeamRole,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrganizationPolicy {
+    pub organization: String,
+    pub grants: Vec<RbacGrant>,
+    pub require_approval_owner: bool,
+    pub allowed_artifact_roots: Vec<Utf8PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TeamAccessDecision {
+    Allow { role: TeamRole, reason: String },
+    Deny { reason: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorkerLeaseState {
+    Pending,
+    Leased { worker_id: String },
+    Completed,
+    Failed { reason: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkerLease {
+    pub task_id: TaskId,
+    pub organization: String,
+    pub state: WorkerLeaseState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PostgresTeamStateConfig {
+    pub database_url_env: String,
+    pub schema: String,
+}
+
+impl PostgresTeamStateConfig {
+    pub fn new(
+        database_url_env: impl Into<String>,
+        schema: impl Into<String>,
+    ) -> taskfence_core::Result<Self> {
+        let database_url_env = database_url_env.into();
+        validate_env_ref("database_url_env", &database_url_env)?;
+        let schema = schema.into();
+        validate_schema_name(&schema)?;
+        Ok(Self {
+            database_url_env,
+            schema,
+        })
+    }
+
+    pub fn unsupported_live_state_error(&self) -> TaskFenceError {
+        TaskFenceError::Unsupported(
+            "Postgres team state is contract-only; no live Postgres backend is implemented".into(),
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalToTeamMigrationPlan {
+    pub workspace: Utf8PathBuf,
+    pub organization: String,
+    pub tasks: Vec<TaskId>,
+    pub approval_records_source: Utf8PathBuf,
+    pub artifact_roots: Vec<Utf8PathBuf>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TeamServerBoundary {
+    pub api_resources: Vec<TeamApiResource>,
+    pub worker_model: String,
+    pub state_config: PostgresTeamStateConfig,
+    pub artifact_roots: Vec<Utf8PathBuf>,
+}
+
+impl TeamServerBoundary {
+    pub fn new(
+        state_config: PostgresTeamStateConfig,
+        artifact_roots: Vec<Utf8PathBuf>,
+    ) -> taskfence_core::Result<Self> {
+        if artifact_roots.is_empty() {
+            return Err(TaskFenceError::State(
+                "team artifact storage requires at least one allowed root".into(),
+            ));
+        }
+        for root in &artifact_roots {
+            validate_team_artifact_root(root)?;
+        }
+        Ok(Self {
+            api_resources: team_api_boundary_resources(),
+            worker_model:
+                "deterministic in-memory lease contract for local development; live workers are unsupported"
+                    .into(),
+            state_config,
+            artifact_roots,
+        })
+    }
+
+    pub fn unsupported_start_error(&self) -> TaskFenceError {
+        TaskFenceError::Unsupported(
+            "team API server and workers are contract-only; no persistent server is implemented"
+                .into(),
+        )
+    }
+
+    pub fn unsupported_audit_export_error(&self) -> TaskFenceError {
+        TaskFenceError::Unsupported(
+            "team audit export is an API/RBAC boundary only; no export sink is implemented".into(),
+        )
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct InMemoryWorkerQueue {
+    leases: Mutex<BTreeMap<TaskId, WorkerLease>>,
+}
+
+impl InMemoryWorkerQueue {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn enqueue(
+        &self,
+        organization: impl Into<String>,
+        task_id: TaskId,
+    ) -> taskfence_core::Result<WorkerLease> {
+        validate_task_id_component(&task_id.0)?;
+        let organization = normalize_non_empty("organization", organization.into())?;
+        let mut leases = self
+            .leases
+            .lock()
+            .map_err(|_| TaskFenceError::State("worker queue is poisoned".into()))?;
+        if leases.contains_key(&task_id) {
+            return Err(TaskFenceError::State(format!(
+                "task {} is already queued for team execution",
+                task_id.0
+            )));
+        }
+        let lease = WorkerLease {
+            task_id: task_id.clone(),
+            organization,
+            state: WorkerLeaseState::Pending,
+        };
+        leases.insert(task_id, lease.clone());
+        Ok(lease)
+    }
+
+    pub fn lease_next(
+        &self,
+        organization: impl Into<String>,
+        worker_id: impl Into<String>,
+    ) -> taskfence_core::Result<Option<WorkerLease>> {
+        let organization = normalize_non_empty("organization", organization.into())?;
+        let worker_id = normalize_non_empty("worker_id", worker_id.into())?;
+        let mut leases = self
+            .leases
+            .lock()
+            .map_err(|_| TaskFenceError::State("worker queue is poisoned".into()))?;
+        let Some((_, lease)) = leases.iter_mut().find(|(_, lease)| {
+            lease.organization == organization && lease.state == WorkerLeaseState::Pending
+        }) else {
+            return Ok(None);
+        };
+        lease.state = WorkerLeaseState::Leased { worker_id };
+        Ok(Some(lease.clone()))
+    }
+
+    pub fn complete(
+        &self,
+        task_id: &TaskId,
+        worker_id: impl Into<String>,
+    ) -> taskfence_core::Result<WorkerLease> {
+        self.finish_leased(task_id, worker_id, WorkerLeaseState::Completed)
+    }
+
+    pub fn fail(
+        &self,
+        task_id: &TaskId,
+        worker_id: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> taskfence_core::Result<WorkerLease> {
+        let reason = normalize_non_empty("reason", reason.into())?;
+        self.finish_leased(task_id, worker_id, WorkerLeaseState::Failed { reason })
+    }
+
+    pub fn snapshot(&self) -> taskfence_core::Result<Vec<WorkerLease>> {
+        let leases = self
+            .leases
+            .lock()
+            .map_err(|_| TaskFenceError::State("worker queue is poisoned".into()))?;
+        Ok(leases.values().cloned().collect())
+    }
+
+    fn finish_leased(
+        &self,
+        task_id: &TaskId,
+        worker_id: impl Into<String>,
+        next_state: WorkerLeaseState,
+    ) -> taskfence_core::Result<WorkerLease> {
+        validate_task_id_component(&task_id.0)?;
+        let worker_id = normalize_non_empty("worker_id", worker_id.into())?;
+        let mut leases = self
+            .leases
+            .lock()
+            .map_err(|_| TaskFenceError::State("worker queue is poisoned".into()))?;
+        let lease = leases.get_mut(task_id).ok_or_else(|| {
+            TaskFenceError::State(format!(
+                "task {} is not queued for team execution",
+                task_id.0
+            ))
+        })?;
+        match &lease.state {
+            WorkerLeaseState::Leased {
+                worker_id: leased_by,
+            } if leased_by == &worker_id => {
+                lease.state = next_state;
+                Ok(lease.clone())
+            }
+            WorkerLeaseState::Leased {
+                worker_id: leased_by,
+            } => Err(TaskFenceError::State(format!(
+                "task {} is leased by worker {leased_by}, not {worker_id}",
+                task_id.0
+            ))),
+            WorkerLeaseState::Pending => Err(TaskFenceError::State(format!(
+                "task {} has not been leased by a worker",
+                task_id.0
+            ))),
+            WorkerLeaseState::Completed => Err(TaskFenceError::State(format!(
+                "task {} is already completed",
+                task_id.0
+            ))),
+            WorkerLeaseState::Failed { reason } => Err(TaskFenceError::State(format!(
+                "task {} is already failed: {reason}",
+                task_id.0
+            ))),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -361,6 +650,48 @@ impl LocalTaskEvidenceStore {
         })
     }
 
+    pub fn migration_plan(
+        &self,
+        organization: impl Into<String>,
+    ) -> taskfence_core::Result<LocalToTeamMigrationPlan> {
+        let organization = normalize_non_empty("organization", organization.into())?;
+        let index = self.review_index()?;
+        let mut warnings = Vec::new();
+        let mut artifact_roots = Vec::new();
+        let mut tasks = Vec::new();
+        for task in index.tasks {
+            let has_structured_state = task.task_dir.join(RESOLVED_TASK_FILE).is_file()
+                || task.task_dir.join(EVENTS_FILE).is_file();
+            if has_structured_state {
+                tasks.push(task.task_id.clone());
+                artifact_roots.push(task.task_dir.clone());
+            } else {
+                warnings.push(format!(
+                    "task {} has no structured task input or event log; rendered reports are ignored",
+                    task.task_id.0
+                ));
+            }
+            if !task.warnings.is_empty() {
+                warnings.push(format!(
+                    "task {} has {} evidence warning(s); migrate structured files only",
+                    task.task_id.0,
+                    task.warnings.len()
+                ));
+            }
+        }
+        warnings.push(
+            "rendered Markdown reports are migration artifacts, not source-of-truth state".into(),
+        );
+        Ok(LocalToTeamMigrationPlan {
+            workspace: self.workspace.clone(),
+            organization,
+            tasks,
+            approval_records_source: self.workspace.join(TASKFENCE_DIR).join("approvals"),
+            artifact_roots,
+            warnings,
+        })
+    }
+
     pub fn read_task_summary(&self, task_id: &TaskId) -> taskfence_core::Result<TaskSummary> {
         let task_dir = self.task_dir(task_id)?;
         ensure_task_dir(task_id, &task_dir)?;
@@ -535,6 +866,285 @@ fn push_optional_warning<T>(warnings: &mut Vec<String>, evidence: &OptionalEvide
     if let Some(warning) = &evidence.warning {
         warnings.push(warning.clone());
     }
+}
+
+pub fn evaluate_team_access(
+    policy: &OrganizationPolicy,
+    request: &TeamApiRequest,
+) -> TeamAccessDecision {
+    if policy.organization != request.organization {
+        return TeamAccessDecision::Deny {
+            reason: "request organization does not match policy".into(),
+        };
+    }
+
+    let Some(role) = policy
+        .grants
+        .iter()
+        .find(|grant| grant.actor == request.actor)
+        .map(|grant| grant.role.clone())
+    else {
+        return TeamAccessDecision::Deny {
+            reason: "actor has no organization role".into(),
+        };
+    };
+
+    if !method_matches_resource(&request.method, &request.resource) {
+        return TeamAccessDecision::Deny {
+            reason: format!(
+                "method {:?} is not valid for resource {:?}",
+                request.method, request.resource
+            ),
+        };
+    }
+
+    if role_allows(&role, &request.method, &request.resource) {
+        TeamAccessDecision::Allow {
+            role,
+            reason: "role permits resource action".into(),
+        }
+    } else {
+        TeamAccessDecision::Deny {
+            reason: format!("role {role:?} does not permit {:?}", request.method),
+        }
+    }
+}
+
+pub fn evaluate_approval_resolution(
+    policy: &OrganizationPolicy,
+    request: &TeamApiRequest,
+    record: &ApprovalRecord,
+) -> TeamAccessDecision {
+    if request.method != TeamApiMethod::ResolveApproval {
+        return TeamAccessDecision::Deny {
+            reason: "request method is not approval resolution".into(),
+        };
+    }
+    if !matches!(
+        &request.resource,
+        TeamApiResource::ApprovalDetail(approval_id) if approval_id == &record.id
+    ) {
+        return TeamAccessDecision::Deny {
+            reason: "approval request resource does not match approval record".into(),
+        };
+    }
+    let access = evaluate_team_access(policy, request);
+    if matches!(access, TeamAccessDecision::Deny { .. }) {
+        return access;
+    }
+    if policy.require_approval_owner && request.actor != record.actor {
+        return TeamAccessDecision::Deny {
+            reason: format!(
+                "approval {} is owned by {}, not {}",
+                record.id.0, record.actor, request.actor
+            ),
+        };
+    }
+    if record.decision.is_some() {
+        return TeamAccessDecision::Deny {
+            reason: format!("approval {} is already resolved", record.id.0),
+        };
+    }
+    access
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TeamArtifactDecision {
+    Allow { root: Utf8PathBuf },
+    Deny { reason: String },
+}
+
+pub fn evaluate_artifact_storage_path(
+    policy: &OrganizationPolicy,
+    requested_path: &Utf8Path,
+) -> TeamArtifactDecision {
+    if policy.allowed_artifact_roots.is_empty() {
+        return TeamArtifactDecision::Deny {
+            reason: "organization has no allowed artifact roots".into(),
+        };
+    }
+    if !requested_path.is_absolute() {
+        return TeamArtifactDecision::Deny {
+            reason: "artifact path must be absolute".into(),
+        };
+    }
+    if path_contains_parent_dir(requested_path) {
+        return TeamArtifactDecision::Deny {
+            reason: "artifact path must not contain '..'".into(),
+        };
+    }
+    let Some(requested_parent) = requested_path.parent() else {
+        return TeamArtifactDecision::Deny {
+            reason: "artifact path must have a parent directory".into(),
+        };
+    };
+    let requested_parent = match canonical_utf8(requested_parent) {
+        Ok(path) => path,
+        Err(err) => {
+            return TeamArtifactDecision::Deny {
+                reason: format!("artifact parent must exist and be canonicalizable: {err}"),
+            };
+        }
+    };
+
+    for root in &policy.allowed_artifact_roots {
+        if let Err(err) = validate_team_artifact_root(root) {
+            return TeamArtifactDecision::Deny {
+                reason: err.to_string(),
+            };
+        }
+        let root = match canonical_utf8(root) {
+            Ok(path) => path,
+            Err(err) => {
+                return TeamArtifactDecision::Deny {
+                    reason: format!("artifact root must exist and be canonicalizable: {err}"),
+                };
+            }
+        };
+        if requested_parent == root || requested_parent.starts_with(&root) {
+            return TeamArtifactDecision::Allow { root };
+        }
+    }
+
+    TeamArtifactDecision::Deny {
+        reason: "artifact path is outside allowed organization roots".into(),
+    }
+}
+
+pub fn team_api_boundary_resources() -> Vec<TeamApiResource> {
+    let task_id = TaskId("{task_id}".into());
+    let approval_id = ApprovalId("{approval_id}".into());
+    vec![
+        TeamApiResource::TaskList,
+        TeamApiResource::TaskDetail(task_id.clone()),
+        TeamApiResource::TaskEvents(task_id.clone()),
+        TeamApiResource::TaskLogs(task_id.clone()),
+        TeamApiResource::TaskDiff(task_id.clone()),
+        TeamApiResource::TaskReport(task_id.clone()),
+        TeamApiResource::TaskArtifacts(task_id.clone()),
+        TeamApiResource::Approvals,
+        TeamApiResource::ApprovalDetail(approval_id),
+        TeamApiResource::ReplayInputs(task_id),
+        TeamApiResource::AuditExport,
+    ]
+}
+
+fn method_matches_resource(method: &TeamApiMethod, resource: &TeamApiResource) -> bool {
+    match method {
+        TeamApiMethod::Read => !matches!(resource, TeamApiResource::AuditExport),
+        TeamApiMethod::ResolveApproval => matches!(resource, TeamApiResource::ApprovalDetail(_)),
+        TeamApiMethod::EnqueueTask => matches!(resource, TeamApiResource::TaskList),
+        TeamApiMethod::ExportAudit => matches!(resource, TeamApiResource::AuditExport),
+    }
+}
+
+fn role_allows(role: &TeamRole, method: &TeamApiMethod, resource: &TeamApiResource) -> bool {
+    match role {
+        TeamRole::Admin => true,
+        TeamRole::Viewer => {
+            matches!(method, TeamApiMethod::Read)
+                && matches!(
+                    resource,
+                    TeamApiResource::TaskList
+                        | TeamApiResource::TaskDetail(_)
+                        | TeamApiResource::TaskEvents(_)
+                        | TeamApiResource::TaskLogs(_)
+                        | TeamApiResource::TaskDiff(_)
+                        | TeamApiResource::TaskReport(_)
+                        | TeamApiResource::TaskArtifacts(_)
+                        | TeamApiResource::ReplayInputs(_)
+                )
+        }
+        TeamRole::Approver => match method {
+            TeamApiMethod::Read => matches!(
+                resource,
+                TeamApiResource::TaskList
+                    | TeamApiResource::TaskDetail(_)
+                    | TeamApiResource::TaskEvents(_)
+                    | TeamApiResource::TaskLogs(_)
+                    | TeamApiResource::TaskDiff(_)
+                    | TeamApiResource::TaskReport(_)
+                    | TeamApiResource::TaskArtifacts(_)
+                    | TeamApiResource::Approvals
+                    | TeamApiResource::ApprovalDetail(_)
+                    | TeamApiResource::ReplayInputs(_)
+            ),
+            TeamApiMethod::ResolveApproval => true,
+            TeamApiMethod::EnqueueTask | TeamApiMethod::ExportAudit => false,
+        },
+        TeamRole::Operator => match method {
+            TeamApiMethod::Read => !matches!(resource, TeamApiResource::AuditExport),
+            TeamApiMethod::EnqueueTask | TeamApiMethod::ResolveApproval => true,
+            TeamApiMethod::ExportAudit => false,
+        },
+        TeamRole::Auditor => match method {
+            TeamApiMethod::Read => !matches!(resource, TeamApiResource::ReplayInputs(_)),
+            TeamApiMethod::ExportAudit => matches!(resource, TeamApiResource::AuditExport),
+            TeamApiMethod::ResolveApproval | TeamApiMethod::EnqueueTask => false,
+        },
+    }
+}
+
+fn validate_team_artifact_root(root: &Utf8Path) -> taskfence_core::Result<()> {
+    if !root.is_absolute() {
+        return Err(TaskFenceError::State(format!(
+            "team artifact root must be absolute: {root}"
+        )));
+    }
+    if path_contains_parent_dir(root) {
+        return Err(TaskFenceError::State(format!(
+            "team artifact root must not contain '..': {root}"
+        )));
+    }
+    Ok(())
+}
+
+fn path_contains_parent_dir(path: &Utf8Path) -> bool {
+    path.as_std_path()
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+}
+
+fn canonical_utf8(path: &Utf8Path) -> taskfence_core::Result<Utf8PathBuf> {
+    let canonical = fs::canonicalize(path.as_std_path())
+        .map_err(|err| TaskFenceError::State(format!("failed to canonicalize {path}: {err}")))?;
+    Utf8PathBuf::from_path_buf(canonical).map_err(|path| {
+        TaskFenceError::State(format!("canonical path is not valid UTF-8: {path:?}"))
+    })
+}
+
+fn validate_env_ref(field: &str, value: &str) -> taskfence_core::Result<()> {
+    if value.is_empty()
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+    {
+        return Err(TaskFenceError::State(format!(
+            "{field} must be an uppercase environment variable name"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_schema_name(value: &str) -> taskfence_core::Result<()> {
+    if value.is_empty()
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+    {
+        return Err(TaskFenceError::State(
+            "Postgres schema must contain only lowercase letters, digits, or '_'".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn normalize_non_empty(field: &str, value: String) -> taskfence_core::Result<String> {
+    let normalized = value.trim();
+    if normalized.is_empty() {
+        return Err(TaskFenceError::State(format!("{field} must not be empty")));
+    }
+    Ok(normalized.to_owned())
 }
 
 fn read_task_summary(task_id: TaskId, task_dir: Utf8PathBuf) -> TaskSummary {
@@ -830,8 +1440,8 @@ mod tests {
     use camino::Utf8PathBuf;
     use std::fs;
     use taskfence_core::{
-        AgentConfig, AgentKind, ApprovalConfig, AuditConfig, LimitConfig, PermissionConfig,
-        SandboxConfig, SandboxKind,
+        Action, ActionDecision, AgentConfig, AgentKind, ApprovalConfig, ApprovalDecision,
+        AuditConfig, LimitConfig, PermissionConfig, RiskLevel, SandboxConfig, SandboxKind,
     };
     use time::macros::datetime;
 
@@ -873,6 +1483,298 @@ mod tests {
             snapshot.get(&TaskId("task-1".into())),
             Some(&TaskStatus::Succeeded)
         );
+    }
+
+    #[test]
+    fn team_rbac_allows_and_denies_by_role_and_resource() {
+        let policy = team_policy();
+
+        assert_eq!(
+            evaluate_team_access(
+                &policy,
+                &team_request("viewer", TeamApiMethod::Read, TeamApiResource::TaskList)
+            ),
+            TeamAccessDecision::Allow {
+                role: TeamRole::Viewer,
+                reason: "role permits resource action".into(),
+            }
+        );
+        assert!(matches!(
+            evaluate_team_access(
+                &policy,
+                &team_request(
+                    "viewer",
+                    TeamApiMethod::ExportAudit,
+                    TeamApiResource::AuditExport
+                )
+            ),
+            TeamAccessDecision::Deny { reason } if reason.contains("Viewer")
+        ));
+        assert!(matches!(
+            evaluate_team_access(
+                &policy,
+                &team_request(
+                    "auditor",
+                    TeamApiMethod::ExportAudit,
+                    TeamApiResource::AuditExport
+                )
+            ),
+            TeamAccessDecision::Allow {
+                role: TeamRole::Auditor,
+                ..
+            }
+        ));
+        assert!(matches!(
+            evaluate_team_access(
+                &policy,
+                &team_request(
+                    "auditor",
+                    TeamApiMethod::ResolveApproval,
+                    TeamApiResource::ApprovalDetail(ApprovalId("approval-1".into()))
+                )
+            ),
+            TeamAccessDecision::Deny { reason } if reason.contains("Auditor")
+        ));
+        assert!(matches!(
+            evaluate_team_access(
+                &policy,
+                &team_request(
+                    "operator",
+                    TeamApiMethod::EnqueueTask,
+                    TeamApiResource::TaskList
+                )
+            ),
+            TeamAccessDecision::Allow {
+                role: TeamRole::Operator,
+                ..
+            }
+        ));
+        assert!(matches!(
+            evaluate_team_access(
+                &policy,
+                &TeamApiRequest {
+                    organization: "other-org".into(),
+                    actor: "admin".into(),
+                    method: TeamApiMethod::Read,
+                    resource: TeamApiResource::TaskList,
+                }
+            ),
+            TeamAccessDecision::Deny { reason } if reason.contains("organization")
+        ));
+        assert!(matches!(
+            evaluate_team_access(
+                &policy,
+                &team_request(
+                    "admin",
+                    TeamApiMethod::EnqueueTask,
+                    TeamApiResource::ApprovalDetail(ApprovalId("approval-1".into()))
+                )
+            ),
+            TeamAccessDecision::Deny { reason } if reason.contains("not valid")
+        ));
+    }
+
+    #[test]
+    fn approval_owner_policy_blocks_non_owner_resolution() {
+        let mut policy = team_policy();
+        policy.require_approval_owner = true;
+        let record = approval_record("approval-1", "approver");
+
+        let non_owner = evaluate_approval_resolution(
+            &policy,
+            &team_request(
+                "operator",
+                TeamApiMethod::ResolveApproval,
+                TeamApiResource::ApprovalDetail(record.id.clone()),
+            ),
+            &record,
+        );
+
+        assert!(
+            matches!(non_owner, TeamAccessDecision::Deny { reason } if reason.contains("owned by approver"))
+        );
+
+        let owner = evaluate_approval_resolution(
+            &policy,
+            &team_request(
+                "approver",
+                TeamApiMethod::ResolveApproval,
+                TeamApiResource::ApprovalDetail(record.id.clone()),
+            ),
+            &record,
+        );
+
+        assert!(matches!(
+            owner,
+            TeamAccessDecision::Allow {
+                role: TeamRole::Approver,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn approval_resolution_rejects_mismatch_and_already_resolved_records() {
+        let policy = team_policy();
+        let mut record = approval_record("approval-1", "approver");
+
+        let mismatch = evaluate_approval_resolution(
+            &policy,
+            &team_request(
+                "approver",
+                TeamApiMethod::ResolveApproval,
+                TeamApiResource::ApprovalDetail(ApprovalId("approval-2".into())),
+            ),
+            &record,
+        );
+        assert!(
+            matches!(mismatch, TeamAccessDecision::Deny { reason } if reason.contains("does not match"))
+        );
+
+        record.decision = Some(ApprovalDecision::Approved);
+        let resolved = evaluate_approval_resolution(
+            &policy,
+            &team_request(
+                "approver",
+                TeamApiMethod::ResolveApproval,
+                TeamApiResource::ApprovalDetail(record.id.clone()),
+            ),
+            &record,
+        );
+        assert!(
+            matches!(resolved, TeamAccessDecision::Deny { reason } if reason.contains("already resolved"))
+        );
+    }
+
+    #[test]
+    fn in_memory_worker_queue_leases_completes_and_fails_closed() {
+        let queue = InMemoryWorkerQueue::new();
+        let task_a = TaskId("task-a".into());
+        let task_b = TaskId("task-b".into());
+
+        queue.enqueue("acme", task_b.clone()).unwrap();
+        queue.enqueue("acme", task_a.clone()).unwrap();
+        assert!(
+            matches!(queue.enqueue("acme", task_a.clone()), Err(TaskFenceError::State(message)) if message.contains("already queued"))
+        );
+
+        let leased = queue.lease_next("acme", "worker-1").unwrap().unwrap();
+        assert_eq!(leased.task_id, task_a);
+        assert_eq!(
+            leased.state,
+            WorkerLeaseState::Leased {
+                worker_id: "worker-1".into()
+            }
+        );
+        assert!(
+            matches!(queue.complete(&task_a, "worker-2"), Err(TaskFenceError::State(message)) if message.contains("worker-1"))
+        );
+        assert_eq!(
+            queue.complete(&task_a, "worker-1").unwrap().state,
+            WorkerLeaseState::Completed
+        );
+        assert!(
+            matches!(queue.fail(&task_a, "worker-1", "late fail"), Err(TaskFenceError::State(message)) if message.contains("already completed"))
+        );
+        let failed = queue.lease_next("acme", "worker-2").unwrap().unwrap();
+        assert_eq!(failed.task_id, task_b);
+        assert_eq!(
+            queue
+                .fail(&task_b, "worker-2", "runner unavailable")
+                .unwrap()
+                .state,
+            WorkerLeaseState::Failed {
+                reason: "runner unavailable".into()
+            }
+        );
+        assert_eq!(queue.snapshot().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn artifact_storage_path_must_stay_under_allowed_roots() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().join("artifacts")).unwrap();
+        let outside = Utf8PathBuf::from_path_buf(temp.path().join("outside")).unwrap();
+        fs::create_dir_all(root.join("task-1")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let mut policy = team_policy();
+        policy.allowed_artifact_roots = vec![root.clone()];
+
+        let canonical_root = canonical_utf8(&root).unwrap();
+        let allowed = evaluate_artifact_storage_path(&policy, &root.join("task-1/output.json"));
+        assert!(
+            matches!(allowed, TeamArtifactDecision::Allow { root: allowed_root } if allowed_root == canonical_root)
+        );
+
+        let denied = evaluate_artifact_storage_path(&policy, &outside.join("output.json"));
+        assert!(
+            matches!(denied, TeamArtifactDecision::Deny { reason } if reason.contains("outside allowed"))
+        );
+
+        let relative =
+            evaluate_artifact_storage_path(&policy, Utf8Path::new("relative/output.json"));
+        assert!(
+            matches!(relative, TeamArtifactDecision::Deny { reason } if reason.contains("absolute"))
+        );
+
+        let escape = evaluate_artifact_storage_path(&policy, &root.join("../outside/output.json"));
+        assert!(matches!(escape, TeamArtifactDecision::Deny { reason } if reason.contains("'..'")));
+    }
+
+    #[test]
+    fn postgres_config_validates_contract_and_live_backend_is_unsupported() {
+        let config =
+            PostgresTeamStateConfig::new("TASKFENCE_DATABASE_URL", "taskfence_team").unwrap();
+        assert_eq!(config.database_url_env, "TASKFENCE_DATABASE_URL");
+        assert_eq!(config.schema, "taskfence_team");
+        assert!(matches!(
+            config.unsupported_live_state_error(),
+            TaskFenceError::Unsupported(message) if message.contains("no live Postgres backend")
+        ));
+
+        assert!(matches!(
+            PostgresTeamStateConfig::new("taskfence_database_url", "taskfence_team"),
+            Err(TaskFenceError::State(message)) if message.contains("uppercase")
+        ));
+        assert!(matches!(
+            PostgresTeamStateConfig::new("TASKFENCE_DATABASE_URL", "TaskFence"),
+            Err(TaskFenceError::State(message)) if message.contains("lowercase")
+        ));
+    }
+
+    #[test]
+    fn team_boundary_lists_resources_and_rejects_live_server_start() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().join("artifacts")).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        let boundary = TeamServerBoundary::new(
+            PostgresTeamStateConfig::new("TASKFENCE_DATABASE_URL", "taskfence_team").unwrap(),
+            vec![root],
+        )
+        .unwrap();
+
+        assert!(boundary
+            .api_resources
+            .iter()
+            .any(|resource| matches!(resource, TeamApiResource::AuditExport)));
+        assert!(boundary
+            .worker_model
+            .contains("deterministic in-memory lease"));
+        assert!(matches!(
+            boundary.unsupported_start_error(),
+            TaskFenceError::Unsupported(message) if message.contains("contract-only")
+        ));
+        assert!(matches!(
+            boundary.unsupported_audit_export_error(),
+            TaskFenceError::Unsupported(message) if message.contains("no export sink")
+        ));
+        assert!(matches!(
+            TeamServerBoundary::new(
+                PostgresTeamStateConfig::new("TASKFENCE_DATABASE_URL", "taskfence_team").unwrap(),
+                Vec::new(),
+            ),
+            Err(TaskFenceError::State(message)) if message.contains("at least one")
+        ));
     }
 
     #[test]
@@ -1348,6 +2250,44 @@ mod tests {
     }
 
     #[test]
+    fn migration_plan_uses_structured_local_state_not_rendered_reports() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        write_task_evidence(
+            &workspace,
+            "structured-task",
+            "structured migration",
+            &[TaskStatus::Succeeded],
+            &["report.md"],
+        );
+        let report_only_dir = workspace.join(".taskfence/tasks/report-only");
+        fs::create_dir_all(&report_only_dir).unwrap();
+        fs::write(report_only_dir.join("report.md"), "# Rendered only\n").unwrap();
+        let store = LocalTaskEvidenceStore::new(workspace.clone());
+
+        let plan = store.migration_plan(" acme ").unwrap();
+
+        assert_eq!(plan.workspace, workspace);
+        assert_eq!(plan.organization, "acme");
+        assert_eq!(plan.tasks, vec![TaskId("structured-task".into())]);
+        assert!(plan
+            .approval_records_source
+            .ends_with(".taskfence/approvals"));
+        assert_eq!(
+            plan.artifact_roots,
+            vec![report_only_dir.with_file_name("structured-task")]
+        );
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("report-only") && warning.contains("ignored")));
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("rendered Markdown reports")));
+    }
+
+    #[test]
     fn reads_single_structured_task_summary() {
         let temp = tempfile::tempdir().unwrap();
         let workspace = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
@@ -1722,6 +2662,71 @@ mod tests {
             contents.push('\n');
         }
         fs::write(task_dir.join("events.jsonl"), contents).unwrap();
+    }
+
+    fn team_policy() -> OrganizationPolicy {
+        OrganizationPolicy {
+            organization: "acme".into(),
+            grants: vec![
+                RbacGrant {
+                    actor: "viewer".into(),
+                    role: TeamRole::Viewer,
+                },
+                RbacGrant {
+                    actor: "approver".into(),
+                    role: TeamRole::Approver,
+                },
+                RbacGrant {
+                    actor: "operator".into(),
+                    role: TeamRole::Operator,
+                },
+                RbacGrant {
+                    actor: "auditor".into(),
+                    role: TeamRole::Auditor,
+                },
+                RbacGrant {
+                    actor: "admin".into(),
+                    role: TeamRole::Admin,
+                },
+            ],
+            require_approval_owner: false,
+            allowed_artifact_roots: Vec::new(),
+        }
+    }
+
+    fn team_request(
+        actor: &str,
+        method: TeamApiMethod,
+        resource: TeamApiResource,
+    ) -> TeamApiRequest {
+        TeamApiRequest {
+            organization: "acme".into(),
+            actor: actor.into(),
+            method,
+            resource,
+        }
+    }
+
+    fn approval_record(id: &str, actor: &str) -> ApprovalRecord {
+        ApprovalRecord {
+            id: ApprovalId(id.into()),
+            task_id: TaskId("task-approval".into()),
+            actor: actor.into(),
+            source: Some("team-api".into()),
+            requested_at: datetime!(2024-01-01 00:00 UTC),
+            resolved_at: None,
+            action: Action::Budget {
+                kind: "gateway_calls".into(),
+                amount: 1,
+            },
+            policy_decision: ActionDecision::RequireApproval {
+                approval_kind: "budget".into(),
+                rule_id: Some("approval-owner-test".into()),
+                reason: "test approval ownership".into(),
+                risk: RiskLevel::Medium,
+            },
+            decision: None,
+        }
     }
 
     fn test_task(task_id: &str, workspace: &Utf8PathBuf, goal: &str) -> ResolvedTask {

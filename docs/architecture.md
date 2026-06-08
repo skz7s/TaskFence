@@ -49,10 +49,15 @@ local fixtures and a bounded GitHub REST connector for `github.read_issue`,
 request/response spool prototype is processed by `taskfence gateway spool
 process`. The spool path is task-local, mounted separately into Docker only for
 tasks with configured gateway tools, and produces typed responses plus
-structured evidence. MCP/HTTP listener or proxy servers, SDK/webhook
-connectors, arbitrary HTTP proxying, branch/commit creation, persistent API
-server, SQLite-backed state migration, deterministic replay execution,
-team-server, and enterprise control-plane behavior are not implemented yet.
+structured evidence. The team-server foundation is currently contract-only:
+typed API resources, RBAC decisions, approval-owner checks, local development
+worker leases, Postgres state config validation, artifact-root containment,
+explicit unsupported audit export, and local-to-team migration planning from
+structured `.taskfence` files exist without starting a server or live
+database. MCP/HTTP listener or proxy servers, SDK/webhook connectors,
+arbitrary HTTP proxying, branch/commit creation, persistent API server, live
+Postgres backend, deterministic replay execution, persistent team-server, and
+enterprise control-plane behavior are not implemented yet.
 The local review foundation is CLI-owned: it can render file-backed evidence as
 a static or foreground-served loopback HTML page, resolve pending
 workspace-local approvals from that page, and plan replay inputs without
@@ -366,6 +371,32 @@ that workspace-local artifact directory. The local review page and replay-plan
 command consume these same structured files. They do not yet provide
 cross-workspace indexing, a persistent API server, replay execution, or
 SQLite-backed state.
+
+The team-state contract can build a migration plan from local `.taskfence`
+evidence by listing task ids and artifact roots only when structured task input
+or event files are present. Rendered Markdown reports are carried as artifacts,
+not interpreted as source-of-truth state. Team artifact writes are checked
+against configured absolute roots with parent-directory and containment guards.
+The Postgres config type validates a future database URL environment variable
+and schema name, but live Postgres storage returns an explicit unsupported
+error until a backend exists.
+
+### Team Control Plane
+
+The future team control plane is modeled as a state-layer contract before any
+API process is started. The current boundary lists task, event, log, diff,
+report, artifact, approval, replay-input, and audit-export resources. RBAC
+roles are explicit: viewers read task evidence, approvers can read and resolve
+approval records, operators can enqueue and resolve task work, auditors can
+read evidence and request audit export, and admins can administer all modeled
+actions. Method/resource mismatches fail closed even for admins.
+
+The local development worker model is an in-memory lease queue. Tasks can be
+enqueued, leased by one worker id, completed, or failed; wrong-worker,
+duplicate, unleased, and already-terminal transitions are rejected. This is a
+contract for future team execution semantics, not a persistent queue or live
+worker service. Audit export is similarly an RBAC/API boundary with an
+unsupported export-sink error until a concrete sink is implemented.
 
 ## Security Boundary
 

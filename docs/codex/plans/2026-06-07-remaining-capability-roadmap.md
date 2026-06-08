@@ -353,7 +353,7 @@ Completion evidence:
 
 ### Phase 6: Team Server Foundation
 
-Status: pending
+Status: done
 
 Scope:
 
@@ -380,7 +380,32 @@ Additional verification:
 
 Completion evidence:
 
-- Pending.
+- Added contract-only team-server foundations in `taskfence-state`: typed team
+  API resources, organization/RBAC access decisions with fail-closed
+  method/resource matching, approval-owner enforcement, deterministic
+  in-memory worker leases for local development tests, Postgres state config
+  validation with explicit unsupported live-backend behavior, team artifact
+  root containment checks, unsupported audit-export sink behavior, and
+  local-to-team migration planning from structured `.taskfence` files without
+  treating rendered Markdown reports as source-of-truth state.
+- Preserved local development behavior without adding a persistent API server,
+  live Postgres backend, worker daemon, audit export sink, service port,
+  systemd/launchd unit, or deployment command.
+- Updated README, roadmap, architecture, runtime architecture, development
+  design, cross-platform ops docs, and
+  `docs/decisions/2026-06-08-team-server-foundation-contract.md` to document
+  the bounded team foundation and keep live team-server, SSO, SIEM, object
+  storage, and enterprise connector behavior unclaimed.
+- Aligned the expanded runner capability error for Docker domain allowlists so
+  `taskfence validate` continues to fail closed with the operator-facing
+  enforcing-proxy explanation.
+- Passed: `cargo test -p taskfence-state`; `cargo test -p taskfence-runner
+  expanded_runner_reports_docker_capabilities_and_domain_gap`; `cargo test -p
+  taskfence-cli validate_rejects_unsupported_domain_allowlist`; `cargo fmt
+  --all --check`; `git diff --check`; `cargo test --workspace`. The workspace
+  suite reported the Docker integration test ignored because it requires a
+  Docker daemon and a locally available test image. No deployment or ops-script
+  validation was needed because no service entrypoints changed.
 
 ### Phase 7: Enterprise Connectors And Audit Export
 

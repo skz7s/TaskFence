@@ -17,6 +17,7 @@ or generalized by governance sync.
 - Default dependency policy is reuse-first: discover tools, record paths, and install missing tools only when the operator explicitly asks.
 - Current local development target is the Rust workspace rooted at `Cargo.toml`.
 - Current deployment target is not implemented. Do not add systemd, launchd, Docker image deployment, or persistent service behavior until a concrete TaskFence runtime command is ready.
+- The team-server foundation is contract-only. It does not add a supported API server, worker service, Postgres service, audit-export service, port, launchd unit, systemd unit, or deployment command.
 - Do not generalize Ubuntu-only, Debian-only, macOS-only, WSL-specific, or other OS-specific deployment facts into generic Linux systemd support.
 - Store stable deployment facts and operator runbooks in `docs/config/*`; do not store local tool paths there.
 - Use `bash deploy/manage.sh doctor` for read-only diagnostics; do not let doctor rewrite global package manager configuration.

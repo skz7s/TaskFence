@@ -81,7 +81,10 @@ impl RunnerCapabilityReport {
     pub fn docker(network: &NetworkPermissions) -> Self {
         let mut missing = Vec::new();
         if !network.allow_domains.is_empty() {
-            missing.push("domain allowlist enforcement".into());
+            missing.push(
+                "local Docker cannot enforce domain allowlists; configure an enforcing proxy before allowing domains"
+                    .into(),
+            );
         }
         Self {
             kind: RunnerKind::Docker,
@@ -1450,7 +1453,8 @@ mod tests {
         assert!(!report.can_enforce_domain_allowlist);
         assert!(report
             .missing
-            .contains(&"domain allowlist enforcement".into()));
+            .iter()
+            .any(|missing| missing.contains("cannot enforce domain allowlists")));
         assert!(runner.ensure_capable(&task).is_err());
     }
 

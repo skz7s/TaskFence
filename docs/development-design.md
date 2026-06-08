@@ -509,6 +509,14 @@ assemble local review detail and replay plans from those same files. Task
 summaries use structured `task.resolved.json` and `events.jsonl` evidence and
 do not infer status from rendered report text.
 
+The team-server foundation lives here as a contract before a service exists. It
+defines typed team API resources, RBAC and organization-policy decisions,
+approval-owner enforcement, team artifact-root containment, a deterministic
+in-memory worker lease queue for local development tests, Postgres state config
+validation, explicit unsupported live Postgres/server/audit-export errors, and
+local-to-team migration plans from structured `.taskfence` evidence. Migration
+plans must not treat rendered Markdown reports as source-of-truth state.
+
 Responsibilities:
 
 - Task status.
@@ -516,6 +524,8 @@ Responsibilities:
 - Artifact index.
 - Replay input index.
 - Future team-server migration path.
+- Team API/RBAC/state migration contracts until a persistent team server is
+  implemented.
 
 ### `taskfence-testkit`
 
@@ -1008,4 +1018,5 @@ domain allowlists without an enforcing proxy, MCP/HTTP listener or proxy
 servers, SDK/webhook connectors, arbitrary HTTP proxying, branch/commit
 creation, sidecar/listener behavior, arbitrary in-container command
 observation, persistent Web/API server behavior, SQLite-backed state migration,
-deterministic replay execution, team server, and enterprise behavior.
+live Postgres backend, deterministic replay execution, persistent team server,
+audit export sink, and enterprise behavior.

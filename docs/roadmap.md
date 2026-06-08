@@ -299,18 +299,30 @@ Goal: preserve identical task semantics across future runner families.
 
 Goal: support teams running multiple agents and policies.
 
-Deliverables:
+Current team-server foundation:
 
-- API server
-- worker model
-- Postgres backend
-- remote runner
-- RBAC
-- SSO
-- organization policies
-- audit export
-- SIEM integration
-- GitHub Enterprise and GitLab support
+- implemented: typed team API resource boundaries for task lists/details,
+  event/log/diff/report/artifact reads, approval queues/details, replay inputs,
+  and audit export
+- implemented: RBAC and organization-policy decision contracts, including
+  method/resource mismatch denial and optional approval-owner enforcement
+- implemented: deterministic in-memory worker lease model for local
+  development tests, with fail-closed duplicate, wrong-worker, unleased, and
+  already-terminal transitions
+- implemented: Postgres-backed team state configuration validation for a future
+  database URL environment variable and schema, with explicit unsupported live
+  backend errors
+- implemented: team artifact storage root containment checks for absolute,
+  canonical roots
+- implemented: local `.taskfence` to team migration planning from structured
+  task input and event files without treating rendered Markdown reports as
+  source-of-truth state
+- implemented: audit export as an RBAC/API boundary with an explicit
+  unsupported export-sink error
+- remaining: persistent API server, live Postgres backend, durable worker
+  queue, SSO, team quota/chargeback, object storage, remote-runner-backed team
+  execution, SIEM export sink, and live GitHub Enterprise/GitLab team
+  integrations
 
 ## Phase 7: Broader Enterprise Agent Gateway
 

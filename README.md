@@ -20,11 +20,15 @@ records what happened, and creates evidence that can be reviewed later.
 > registry, gateway-side secret brokering, audit, and report behavior.
 > The local review foundation can render workspace evidence as a static or
 > foreground-served HTML page, resolve workspace-local approvals from that
-> page, and plan replay inputs from saved structured evidence. MCP/HTTP
-> listener or proxy servers, SDK/webhook connectors, persistent API server,
-> SQLite migration, deterministic replay execution, live remote SSH,
-> Kubernetes, microVM, or managed cloud runner execution, team-server, and
-> enterprise surfaces remain future work.
+> page, and plan replay inputs from saved structured evidence. A contract-only
+> team foundation now defines API resources, RBAC decisions, approval-owner
+> checks, worker leases, Postgres state configuration validation, artifact-root
+> boundaries, audit-export unsupported behavior, and local-to-team migration
+> planning from structured evidence. MCP/HTTP listener or proxy servers,
+> SDK/webhook connectors, persistent API server, live Postgres backend,
+> deterministic replay execution, live remote SSH, Kubernetes, microVM, or
+> managed cloud runner execution, persistent team server, audit export sink,
+> and enterprise connector surfaces remain future work.
 
 ## Why TaskFence
 
@@ -303,6 +307,14 @@ cargo run -p taskfence-cli -- replay plan local-demo --workspace examples/repo
 The command reports saved task inputs, artifact paths, last status, blockers,
 and determinism limits. It does not execute a replay.
 
+The team-server foundation is currently a Rust contract and test surface, not
+a service command. It validates a future Postgres state config by environment
+variable name and schema, models RBAC and approval-owner decisions, bounds team
+artifact writes to configured absolute roots, provides an in-memory worker
+lease queue for local development tests, and creates migration plans from
+structured `.taskfence/tasks` files. Rendered Markdown reports are explicitly
+treated as migration artifacts rather than source-of-truth state.
+
 ## Documentation
 
 - [Product Positioning](docs/positioning.md)
@@ -390,6 +402,13 @@ The first implementation currently includes:
     and `managed_cloud` sandbox families. They currently provide typed
     capability reports and fail-closed validation when required controls are
     unavailable; Docker remains the only executable runner.
+16. A contract-only team-server foundation in `taskfence-state`: typed team API
+    resource boundaries, role-based access decisions, approval-owner
+    enforcement, deterministic in-memory worker leases for local development
+    tests, Postgres state config validation with explicit unsupported live
+    backend errors, team artifact root containment checks, unsupported
+    audit-export behavior, and migration planning from structured local
+    `.taskfence` evidence without treating rendered reports as source of truth.
 
 ## Non-Goals
 
