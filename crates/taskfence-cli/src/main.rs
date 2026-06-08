@@ -2147,8 +2147,22 @@ fn gateway_adapter_for(task: &ResolvedTask, action: &ToolAction) -> Box<dyn Tool
             GatewayConnectorConfig::LocalFixture { .. } => {
                 Box::new(LocalFixtureToolAdapter::new(tool.clone())) as Box<dyn ToolAdapter>
             }
-            GatewayConnectorConfig::GitHubRest { .. } => {
+            GatewayConnectorConfig::GitHubRest { .. }
+            | GatewayConnectorConfig::GitHubEnterpriseRest { .. } => {
                 Box::new(GitHubRestAdapter::new(tool.clone(), UreqGitHubClient))
+                    as Box<dyn ToolAdapter>
+            }
+            GatewayConnectorConfig::GitLab { .. }
+            | GatewayConnectorConfig::Jira { .. }
+            | GatewayConnectorConfig::Feishu { .. }
+            | GatewayConnectorConfig::WeCom { .. }
+            | GatewayConnectorConfig::DingTalk { .. }
+            | GatewayConnectorConfig::Gitee { .. }
+            | GatewayConnectorConfig::Coding { .. }
+            | GatewayConnectorConfig::Database { .. }
+            | GatewayConnectorConfig::InternalHttp { .. }
+            | GatewayConnectorConfig::SiemExport { .. } => {
+                Box::new(UnsupportedGatewayAdapter::for_contract_tool(tool.clone()))
                     as Box<dyn ToolAdapter>
             }
             GatewayConnectorConfig::Unsupported { kind } => {
@@ -2169,7 +2183,11 @@ fn gateway_secret_broker_for(task: &ResolvedTask, action: &ToolAction) -> Box<dy
         tool.protocol == action.protocol
             && tool.tool == action.tool
             && tool.operation == action.operation
-            && matches!(tool.connector, GatewayConnectorConfig::GitHubRest { .. })
+            && matches!(
+                tool.connector,
+                GatewayConnectorConfig::GitHubRest { .. }
+                    | GatewayConnectorConfig::GitHubEnterpriseRest { .. }
+            )
     });
 
     if uses_live_connector {

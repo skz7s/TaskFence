@@ -449,13 +449,18 @@ Responsibilities:
 - Normalize MCP/HTTP-shaped adapter requests into tool actions and execute them
   through the gateway executor when the normalized action is explicitly
   configured.
-- Execute configured deterministic local fixture adapters and the bounded
-  `github_rest` adapter through typed request, result, failure, approval,
-  redaction, audit, artifact, and report contracts.
-- Keep live GitHub REST credentials gateway-side via
+- Execute configured deterministic local fixture adapters, the bounded
+  `github_rest` / `github_enterprise_rest` adapters, and contract-only
+  enterprise connector surfaces through typed request, result, failure,
+  approval, redaction, audit, artifact, and report contracts.
+- Keep live GitHub/GitHub Enterprise REST credentials gateway-side via
   `TASKFENCE_GATEWAY_SECRET_<NORMALIZED_SECRET_NAME>` and pass raw tokens only
   out-of-band to the connector client after policy, registry, and approval
   checks.
+- Keep GitLab, Jira, Feishu, WeCom, DingTalk, Gitee, CODING, database,
+  internal HTTP, and SIEM export connectors opt-in and fail-closed until each
+  has a live adapter with connector-specific mocked tests and explicit
+  credential handling.
 - Emit structured audit events.
 
 This crate can start with contracts and deterministic local fixtures, but the
@@ -463,8 +468,9 @@ contracts must stay aligned with Phase 3 so policy and audit are not limited to
 shell commands. The bounded agent-facing request/response spool prototype is
 implemented as a task-local file contract over configured gateway action
 execution. MCP/HTTP listener or proxy servers, SDK/webhook connectors,
-arbitrary HTTP proxying, branch/commit creation, and sidecar/listener behavior
-still need separate plans.
+arbitrary HTTP proxying, branch/commit creation, live enterprise connectors
+beyond the bounded GitHub REST family, and sidecar/listener behavior still need
+separate plans.
 
 ### `taskfence-report`
 
@@ -1000,8 +1006,9 @@ The first usable version is complete when:
   redacted secret references into audit/report output. The current executable
   paths are limited to `taskfence gateway call` and one-request
   `taskfence gateway spool process` handling against configured local fixture
-  adapters or the bounded `github_rest` adapter, not arbitrary external tool
-  execution.
+  adapters, the bounded `github_rest` / `github_enterprise_rest` adapter, or
+  contract-only enterprise connectors that fail closed for live execution, not
+  arbitrary external tool execution.
 - Approval-required actions fail closed by default in local mode. Operators can
   opt into in-process terminal approval with `taskfence run --interactive-approval`
   or explicitly wait for workspace-local external approval with
@@ -1019,4 +1026,5 @@ servers, SDK/webhook connectors, arbitrary HTTP proxying, branch/commit
 creation, sidecar/listener behavior, arbitrary in-container command
 observation, persistent Web/API server behavior, SQLite-backed state migration,
 live Postgres backend, deterministic replay execution, persistent team server,
-audit export sink, and enterprise behavior.
+live audit export sink, Slack, and live enterprise behavior beyond the bounded
+GitHub REST family.

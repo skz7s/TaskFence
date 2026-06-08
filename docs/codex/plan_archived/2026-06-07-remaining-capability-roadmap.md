@@ -109,12 +109,10 @@ Verification:
 
 ## Overall Status
 
-Status: planned
+Status: done
 
-This file is the active durable plan for the remaining implementation roadmap.
-Future execution should update phase statuses in this file as work starts,
-finishes, or blocks. When all phases are terminal, archive this file under
-`docs/codex/plan_archived/` with the same filename.
+All implementation phases are terminal. The completed roadmap implementation is
+archived under `docs/codex/plan_archived/` with this same filename.
 
 ## Phases
 
@@ -409,7 +407,7 @@ Completion evidence:
 
 ### Phase 7: Enterprise Connectors And Audit Export
 
-Status: pending
+Status: done
 
 Scope:
 
@@ -436,7 +434,43 @@ Additional verification:
 
 Completion evidence:
 
-- Pending.
+- Added explicit task-file connector contracts for `github_enterprise_rest`,
+  `gitlab`, `jira`, `feishu`, `wecom`, `dingtalk`, `gitee`, `coding`,
+  `database`, `internal_http`, and `siem_export`. Config validation rejects
+  unsafe API bases, unsafe project/repository references, inline DSNs, and
+  secret-bearing sink/reference values.
+- Reused the bounded GitHub REST adapter for `github_enterprise_rest` with
+  gateway-side environment token handling and the same limited
+  `github.read_issue`, `github.create_pr`, and `github.comment_issue`
+  operations. GitHub Enterprise tests prove raw tokens are passed only to the
+  mocked client and do not appear in audit events.
+- Added connector-specific policy template contracts for GitHub Enterprise,
+  GitLab, Jira, Feishu, WeCom, DingTalk, Gitee, CODING, database, internal
+  HTTP, and SIEM export, including supported operation sets, approval-required
+  operation sets, and secret scopes.
+- Added contract-only unsupported adapter handling for non-GitHub enterprise
+  connectors so configured actions still pass registry, policy, approval, and
+  redacted secret-reference handling, then fail closed with structured
+  unsupported execution evidence. Template-unsupported operations fail closed
+  before secret attachment.
+- Added validated audit-export sink contracts in `taskfence-state` for SIEM,
+  webhook, and object storage destinations, while preserving explicit
+  unsupported live export-sink behavior.
+- Added `examples/enterprise-connectors-task.yaml` and
+  `docs/decisions/2026-06-08-enterprise-connector-contracts.md`, and updated
+  README, roadmap, architecture, runtime architecture, and development design
+  to document bounded behavior without overclaiming live Slack, live
+  service-specific clients, team-server execution, live SIEM export, managed
+  runners, or compliance report exports.
+- Passed: `cargo test -p taskfence-config -p taskfence-gateway -p
+  taskfence-state`; `cargo run -p taskfence-cli -- validate
+  examples/enterprise-connectors-task.yaml`; `cargo fmt --all --check`;
+  `git diff --check`; `cargo clippy --workspace --all-targets -- -D warnings`;
+  `cargo test --workspace`. The workspace suite reported the Docker
+  integration test ignored because it requires a Docker daemon and a locally
+  available test image. Live enterprise integration tests were not run because
+  no operator-supplied credentials or live environments were provided, and
+  non-GitHub enterprise connectors are contract-only in this phase.
 
 ## Cross-Phase Requirements
 
@@ -465,7 +499,13 @@ Completion evidence:
 
 ## Final Evidence
 
-Status: pending
+Status: done
 
-This roadmap plan has been authored, but the implementation phases remain
-pending. Record phase-specific validation output here as future work completes.
+All seven phases are complete and recorded above with phase-specific evidence.
+Final validation passed with `cargo fmt --all --check`, `cargo clippy
+--workspace --all-targets -- -D warnings`, `cargo test --workspace`, and
+`cargo run -p taskfence-cli -- validate examples/enterprise-connectors-task.yaml`.
+The workspace suite kept the Docker integration test ignored because it requires
+a Docker daemon and a locally available test image. Completed change scopes were
+committed through Phase 7, including the final `feat: add enterprise connector
+and audit export foundations` commit.

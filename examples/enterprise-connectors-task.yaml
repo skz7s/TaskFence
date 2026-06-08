@@ -1,0 +1,217 @@
+# Example TaskFence task file for enterprise connector contracts.
+#
+# This file is for validation and configuration reference. GitHub Enterprise
+# REST reuses the bounded GitHub REST adapter. The other connector types below
+# are contract-only and fail closed for live execution while still exercising
+# registry, policy, approval, redacted secret-reference, and unsupported-action
+# evidence.
+#
+# Live GitHub Enterprise REST calls require a gateway-side token exported as:
+#
+#   TASKFENCE_GATEWAY_SECRET_GITHUB_ENTERPRISE_TOKEN=...
+
+id: "enterprise-connectors-demo"
+goal: "Reference enterprise connector contracts without exposing credentials"
+workspace: "./repo"
+
+agent:
+  type: "generic"
+  command: "/usr/bin/true"
+
+sandbox:
+  type: "docker"
+  image: "debian:bookworm-slim"
+
+permissions:
+  paths:
+    read:
+      - "./repo/README.md"
+    write:
+      - "./repo/src"
+  commands:
+    allow:
+      - "/usr/bin/true"
+  network:
+    default: "disabled"
+  tools:
+    allow:
+      - "github.read_issue"
+      - "gitlab.read_issue"
+      - "jira.read_issue"
+      - "database.read"
+    approval_required:
+      - "github.create_pr"
+      - "gitlab.create_merge_request"
+      - "jira.create_issue"
+      - "feishu.send_message"
+      - "wecom.send_message"
+      - "dingtalk.send_message"
+      - "gitee.create_pr"
+      - "coding.create_merge_request"
+      - "database.write"
+      - "internal_http.call"
+      - "siem.export_events"
+  budget:
+    allow:
+      - kind: "gateway_calls"
+        max_amount: 5
+
+secrets:
+  expose_to_agent: false
+  available_to_gateway:
+    - name: "github_enterprise_token"
+      use_for:
+        - "github.read_issue"
+        - "github.create_pr"
+    - name: "gitlab_token"
+      use_for:
+        - "gitlab.read_issue"
+        - "gitlab.create_merge_request"
+    - name: "jira_token"
+      use_for:
+        - "jira.read_issue"
+        - "jira.create_issue"
+    - name: "chat_token"
+      use_for:
+        - "feishu.send_message"
+        - "wecom.send_message"
+        - "dingtalk.send_message"
+    - name: "gitee_token"
+      use_for:
+        - "gitee.create_pr"
+    - name: "coding_token"
+      use_for:
+        - "coding.create_merge_request"
+    - name: "database_credential"
+      use_for:
+        - "database.read"
+        - "database.write"
+    - name: "internal_http_token"
+      use_for:
+        - "internal_http.call"
+    - name: "siem_export_token"
+      use_for:
+        - "siem.export_events"
+
+gateway:
+  tools:
+    - protocol: "mcp"
+      tool: "github"
+      operation: "read_issue"
+      connector:
+        type: "github_enterprise_rest"
+        api_base: "https://github.enterprise.example/api/v3"
+        repository: "owner/repo"
+      secret_refs:
+        - name: "github_enterprise_token"
+          parameter: "authorization"
+          scope: "github.read_issue"
+    - protocol: "mcp"
+      tool: "gitlab"
+      operation: "create_merge_request"
+      connector:
+        type: "gitlab"
+        api_base: "https://gitlab.example/api/v4"
+        project: "group/project"
+      secret_refs:
+        - name: "gitlab_token"
+          parameter: "authorization"
+          scope: "gitlab.create_merge_request"
+    - protocol: "mcp"
+      tool: "jira"
+      operation: "create_issue"
+      connector:
+        type: "jira"
+        api_base: "https://jira.example/rest/api/3"
+        project_key: "TF"
+      secret_refs:
+        - name: "jira_token"
+          parameter: "authorization"
+          scope: "jira.create_issue"
+    - protocol: "mcp"
+      tool: "feishu"
+      operation: "send_message"
+      connector:
+        type: "feishu"
+        api_base: "https://open.feishu.cn/open-apis"
+        app: "taskfence_app"
+      secret_refs:
+        - name: "chat_token"
+          parameter: "authorization"
+          scope: "feishu.send_message"
+    - protocol: "mcp"
+      tool: "wecom"
+      operation: "send_message"
+      connector:
+        type: "wecom"
+        api_base: "https://qyapi.weixin.qq.com/cgi-bin"
+        corp_id: "ww123"
+      secret_refs:
+        - name: "chat_token"
+          parameter: "authorization"
+          scope: "wecom.send_message"
+    - protocol: "mcp"
+      tool: "dingtalk"
+      operation: "send_message"
+      connector:
+        type: "dingtalk"
+        api_base: "https://oapi.dingtalk.com"
+        tenant: "taskfence"
+      secret_refs:
+        - name: "chat_token"
+          parameter: "authorization"
+          scope: "dingtalk.send_message"
+    - protocol: "mcp"
+      tool: "gitee"
+      operation: "create_pr"
+      connector:
+        type: "gitee"
+        api_base: "https://gitee.com/api/v5"
+        repository: "owner/repo"
+      secret_refs:
+        - name: "gitee_token"
+          parameter: "authorization"
+          scope: "gitee.create_pr"
+    - protocol: "mcp"
+      tool: "coding"
+      operation: "create_merge_request"
+      connector:
+        type: "coding"
+        api_base: "https://example.coding.net/open-api"
+        project: "team/project"
+      secret_refs:
+        - name: "coding_token"
+          parameter: "authorization"
+          scope: "coding.create_merge_request"
+    - protocol: "mcp"
+      tool: "database"
+      operation: "write"
+      connector:
+        type: "database"
+        engine: "postgres"
+        database_ref: "taskfence_reporting"
+      secret_refs:
+        - name: "database_credential"
+          parameter: "credential"
+          scope: "database.write"
+    - protocol: "http"
+      tool: "internal_http"
+      operation: "call"
+      connector:
+        type: "internal_http"
+        api_base: "https://internal.example/api"
+        service: "ticket-router"
+      secret_refs:
+        - name: "internal_http_token"
+          parameter: "authorization"
+          scope: "internal_http.call"
+    - protocol: "mcp"
+      tool: "siem"
+      operation: "export_events"
+      connector:
+        type: "siem_export"
+        sink: "soc-pipeline"
+      secret_refs:
+        - name: "siem_export_token"
+          parameter: "authorization"
+          scope: "siem.export_events"

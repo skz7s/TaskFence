@@ -393,6 +393,60 @@ enum RawGatewayConnector {
         #[serde(default = "default_github_api_base")]
         api_base: String,
     },
+    #[serde(rename = "github_enterprise_rest")]
+    GitHubEnterpriseRest {
+        repository: String,
+        api_base: String,
+    },
+    #[serde(rename = "gitlab")]
+    GitLab {
+        api_base: String,
+        project: String,
+    },
+    #[serde(rename = "jira")]
+    Jira {
+        api_base: String,
+        project_key: String,
+    },
+    #[serde(rename = "feishu")]
+    Feishu {
+        api_base: String,
+        app: String,
+    },
+    #[serde(rename = "wecom")]
+    WeCom {
+        api_base: String,
+        corp_id: String,
+    },
+    #[serde(rename = "dingtalk")]
+    DingTalk {
+        api_base: String,
+        tenant: String,
+    },
+    #[serde(rename = "gitee")]
+    Gitee {
+        api_base: String,
+        repository: String,
+    },
+    #[serde(rename = "coding")]
+    Coding {
+        api_base: String,
+        project: String,
+    },
+    #[serde(rename = "database")]
+    Database {
+        engine: String,
+        database_ref: String,
+    },
+    #[serde(rename = "internal_http")]
+    InternalHttp {
+        api_base: String,
+        service: String,
+    },
+    #[serde(rename = "siem_export")]
+    SiemExport {
+        sink: String,
+    },
     Unsupported {
         kind: String,
     },
@@ -445,6 +499,71 @@ impl RawGatewayConnector {
             } => Ok(GatewayConnectorConfig::GitHubRest {
                 api_base: normalize_gateway_api_base(&api_base)?,
                 repository: normalize_github_repository(&repository)?,
+            }),
+            Self::GitHubEnterpriseRest {
+                api_base,
+                repository,
+            } => Ok(GatewayConnectorConfig::GitHubEnterpriseRest {
+                api_base: normalize_gateway_api_base(&api_base)?,
+                repository: normalize_github_repository(&repository)?,
+            }),
+            Self::GitLab { api_base, project } => Ok(GatewayConnectorConfig::GitLab {
+                api_base: normalize_gateway_api_base(&api_base)?,
+                project: normalize_connector_path("gateway.tools.connector.project", &project)?,
+            }),
+            Self::Jira {
+                api_base,
+                project_key,
+            } => Ok(GatewayConnectorConfig::Jira {
+                api_base: normalize_gateway_api_base(&api_base)?,
+                project_key: normalize_connector_token(
+                    "gateway.tools.connector.project_key",
+                    &project_key,
+                )?,
+            }),
+            Self::Feishu { api_base, app } => Ok(GatewayConnectorConfig::Feishu {
+                api_base: normalize_gateway_api_base(&api_base)?,
+                app: normalize_connector_token("gateway.tools.connector.app", &app)?,
+            }),
+            Self::WeCom { api_base, corp_id } => Ok(GatewayConnectorConfig::WeCom {
+                api_base: normalize_gateway_api_base(&api_base)?,
+                corp_id: normalize_connector_token("gateway.tools.connector.corp_id", &corp_id)?,
+            }),
+            Self::DingTalk { api_base, tenant } => Ok(GatewayConnectorConfig::DingTalk {
+                api_base: normalize_gateway_api_base(&api_base)?,
+                tenant: normalize_connector_token("gateway.tools.connector.tenant", &tenant)?,
+            }),
+            Self::Gitee {
+                api_base,
+                repository,
+            } => Ok(GatewayConnectorConfig::Gitee {
+                api_base: normalize_gateway_api_base(&api_base)?,
+                repository: normalize_connector_path(
+                    "gateway.tools.connector.repository",
+                    &repository,
+                )?,
+            }),
+            Self::Coding { api_base, project } => Ok(GatewayConnectorConfig::Coding {
+                api_base: normalize_gateway_api_base(&api_base)?,
+                project: normalize_connector_path("gateway.tools.connector.project", &project)?,
+            }),
+            Self::Database {
+                engine,
+                database_ref,
+            } => Ok(GatewayConnectorConfig::Database {
+                engine: normalize_connector_token("gateway.tools.connector.engine", &engine)?
+                    .to_ascii_lowercase(),
+                database_ref: normalize_connector_reference(
+                    "gateway.tools.connector.database_ref",
+                    &database_ref,
+                )?,
+            }),
+            Self::InternalHttp { api_base, service } => Ok(GatewayConnectorConfig::InternalHttp {
+                api_base: normalize_gateway_api_base(&api_base)?,
+                service: normalize_connector_token("gateway.tools.connector.service", &service)?,
+            }),
+            Self::SiemExport { sink } => Ok(GatewayConnectorConfig::SiemExport {
+                sink: normalize_connector_reference("gateway.tools.connector.sink", &sink)?,
             }),
             Self::Unsupported { kind } => Ok(GatewayConnectorConfig::Unsupported {
                 kind: normalize_gateway_segment("gateway.tools.connector.kind", &kind)?,
@@ -713,6 +832,62 @@ fn is_safe_github_path_segment(value: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
 }
 
+fn normalize_connector_token(field: &str, value: &str) -> taskfence_core::Result<String> {
+    let normalized = value.trim();
+    if normalized.is_empty()
+        || normalized.contains("..")
+        || !normalized
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+    {
+        return Err(TaskFenceError::Config(format!(
+            "{field} must contain only ASCII letters, digits, '.', '_' or '-'"
+        )));
+    }
+    Ok(normalized.to_owned())
+}
+
+fn normalize_connector_path(field: &str, value: &str) -> taskfence_core::Result<String> {
+    let normalized = value.trim().trim_matches('/');
+    if normalized.is_empty()
+        || normalized.contains("..")
+        || normalized
+            .split('/')
+            .any(|segment| normalize_connector_token(field, segment).is_err())
+    {
+        return Err(TaskFenceError::Config(format!(
+            "{field} must be a safe slash-separated connector path"
+        )));
+    }
+    Ok(normalized.to_owned())
+}
+
+fn normalize_connector_reference(field: &str, value: &str) -> taskfence_core::Result<String> {
+    let normalized = value.trim();
+    let lower = normalized.to_ascii_lowercase();
+    if normalized.is_empty()
+        || normalized.chars().any(char::is_whitespace)
+        || normalized.contains('@')
+        || normalized.contains('?')
+        || normalized.contains('#')
+        || lower.contains("password=")
+        || lower.contains("token=")
+        || lower.contains("secret=")
+        || lower.contains("api_key=")
+        || lower.contains("authorization=")
+        || lower.contains("bearer ")
+        || lower.starts_with("postgres://")
+        || lower.starts_with("postgresql://")
+        || lower.starts_with("mysql://")
+        || lower.starts_with("sqlserver://")
+    {
+        return Err(TaskFenceError::Config(format!(
+            "{field} must be a non-secret reference, not an inline credential or DSN"
+        )));
+    }
+    Ok(normalized.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -960,6 +1135,186 @@ gateway:
                 repository,
             } if api_base == "https://api.github.example" && repository == "owner/repo"
         ));
+    }
+
+    #[test]
+    fn parses_enterprise_gateway_connector_contracts() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("repo")).unwrap();
+        let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+        let yaml = r#"
+goal: Test enterprise gateway connector contracts
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+gateway:
+  tools:
+    - protocol: mcp
+      tool: github
+      operation: read_issue
+      connector:
+        type: github_enterprise_rest
+        api_base: "https://github.enterprise.example/api/v3"
+        repository: owner/repo
+    - protocol: mcp
+      tool: gitlab
+      operation: create_merge_request
+      connector:
+        type: gitlab
+        api_base: "https://gitlab.example/api/v4"
+        project: group/subgroup/project
+    - protocol: mcp
+      tool: jira
+      operation: create_issue
+      connector:
+        type: jira
+        api_base: "https://jira.example/rest/api/3"
+        project_key: TF
+    - protocol: mcp
+      tool: feishu
+      operation: send_message
+      connector:
+        type: feishu
+        api_base: "https://open.feishu.cn/open-apis"
+        app: taskfence_app
+    - protocol: mcp
+      tool: wecom
+      operation: send_message
+      connector:
+        type: wecom
+        api_base: "https://qyapi.weixin.qq.com/cgi-bin"
+        corp_id: ww123
+    - protocol: mcp
+      tool: dingtalk
+      operation: send_message
+      connector:
+        type: dingtalk
+        api_base: "https://oapi.dingtalk.com"
+        tenant: taskfence
+    - protocol: mcp
+      tool: gitee
+      operation: create_pr
+      connector:
+        type: gitee
+        api_base: "https://gitee.com/api/v5"
+        repository: owner/repo
+    - protocol: mcp
+      tool: coding
+      operation: create_merge_request
+      connector:
+        type: coding
+        api_base: "https://example.coding.net/open-api"
+        project: team/project
+    - protocol: mcp
+      tool: database
+      operation: write
+      connector:
+        type: database
+        engine: Postgres
+        database_ref: taskfence_reporting
+    - protocol: http
+      tool: internal_http
+      operation: call
+      connector:
+        type: internal_http
+        api_base: "https://internal.example/api"
+        service: ticket-router
+    - protocol: mcp
+      tool: siem
+      operation: export_events
+      connector:
+        type: siem_export
+        sink: soc-pipeline
+"#;
+
+        let task = parse_task_file(&task_file, yaml).unwrap();
+
+        assert_eq!(task.gateway.tools.len(), 11);
+        assert!(matches!(
+            &task.gateway.tools[0].connector,
+            GatewayConnectorConfig::GitHubEnterpriseRest { api_base, repository }
+                if api_base == "https://github.enterprise.example/api/v3"
+                    && repository == "owner/repo"
+        ));
+        assert!(matches!(
+            &task.gateway.tools[1].connector,
+            GatewayConnectorConfig::GitLab { api_base, project }
+                if api_base == "https://gitlab.example/api/v4"
+                    && project == "group/subgroup/project"
+        ));
+        assert!(matches!(
+            &task.gateway.tools[8].connector,
+            GatewayConnectorConfig::Database { engine, database_ref }
+                if engine == "postgres" && database_ref == "taskfence_reporting"
+        ));
+        assert!(matches!(
+            &task.gateway.tools[10].connector,
+            GatewayConnectorConfig::SiemExport { sink } if sink == "soc-pipeline"
+        ));
+    }
+
+    #[test]
+    fn rejects_secret_bearing_enterprise_connector_references() {
+        for yaml in [
+            r#"
+goal: Test database secret rejection
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+gateway:
+  tools:
+    - protocol: mcp
+      tool: database
+      operation: read
+      connector:
+        type: database
+        engine: postgres
+        database_ref: "postgres://user:password@db.example/taskfence"
+"#,
+            r#"
+goal: Test SIEM secret rejection
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+gateway:
+  tools:
+    - protocol: mcp
+      tool: siem
+      operation: export_events
+      connector:
+        type: siem_export
+        sink: "https://token=secret@example.invalid"
+"#,
+            r#"
+goal: Test unsafe connector path rejection
+workspace: ./repo
+agent:
+  command: codex
+sandbox:
+  type: docker
+gateway:
+  tools:
+    - protocol: mcp
+      tool: gitlab
+      operation: create_merge_request
+      connector:
+        type: gitlab
+        api_base: "https://gitlab.example/api/v4"
+        project: "../secret"
+"#,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            fs::create_dir(temp.path().join("repo")).unwrap();
+            let task_file = Utf8PathBuf::from_path_buf(temp.path().join("task.yaml")).unwrap();
+
+            assert!(parse_task_file(&task_file, yaml).is_err());
+        }
     }
 
     #[test]

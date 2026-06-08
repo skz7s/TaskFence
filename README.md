@@ -16,19 +16,26 @@ records what happened, and creates evidence that can be reviewed later.
 > local artifacts, and Markdown reports. It also contains a CLI-owned
 > `taskfence gateway call` path for configured local fixture tools and a
 > bounded GitHub REST connector, plus a request/response gateway spool
-> prototype for sandboxed agents. These paths prove policy, approval,
-> registry, gateway-side secret brokering, audit, and report behavior.
+> prototype for sandboxed agents. GitHub Enterprise REST can reuse that
+> bounded GitHub adapter contract; GitLab, Jira, Feishu, WeCom, DingTalk,
+> Gitee, CODING, database, internal HTTP, and SIEM export are opt-in
+> contract-only connector surfaces that validate configuration, policy
+> templates, approval boundaries, redacted secret references, and unsupported
+> live execution. These paths prove policy, approval, registry, gateway-side
+> secret brokering, audit, and report behavior.
 > The local review foundation can render workspace evidence as a static or
 > foreground-served HTML page, resolve workspace-local approvals from that
 > page, and plan replay inputs from saved structured evidence. A contract-only
 > team foundation now defines API resources, RBAC decisions, approval-owner
 > checks, worker leases, Postgres state configuration validation, artifact-root
-> boundaries, audit-export unsupported behavior, and local-to-team migration
-> planning from structured evidence. MCP/HTTP listener or proxy servers,
+> boundaries, validated audit-export sink contracts with unsupported live
+> export behavior, and local-to-team migration planning from structured
+> evidence. MCP/HTTP listener or proxy servers,
 > SDK/webhook connectors, persistent API server, live Postgres backend,
 > deterministic replay execution, live remote SSH, Kubernetes, microVM, or
-> managed cloud runner execution, persistent team server, audit export sink,
-> and enterprise connector surfaces remain future work.
+> managed cloud runner execution, persistent team server, live audit export
+> sink, and live enterprise connector execution beyond the bounded GitHub REST
+> family remain future work.
 
 ## Why TaskFence
 
@@ -68,10 +75,11 @@ execution isolation.
 
 TaskFence is designed around two complementary modes. The local Docker runner is
 implemented first. Gateway-enhanced execution is currently limited to a
-deterministic local fixture command, a bounded GitHub REST connector for three
-operations, executor-backed MCP/HTTP adapter entry points, configured tool
-policy decisions, optional approval mediation, known-tool registry checks,
-redacted secret references, structured evidence, and unsupported-action errors.
+deterministic local fixture command, a bounded GitHub/GitHub Enterprise REST
+connector for three operations, contract-only enterprise connector definitions,
+executor-backed MCP/HTTP adapter entry points, configured tool policy decisions,
+optional approval mediation, known-tool registry checks, redacted secret
+references, structured evidence, and unsupported-action errors.
 
 ### 1. Generic Sandbox Mode
 
@@ -232,6 +240,16 @@ approval checks; the token is not written to task files, sandbox parameters,
 audit events, reports, or artifacts. For the example secret name
 `github_token`, set `TASKFENCE_GATEWAY_SECRET_GITHUB_TOKEN`.
 
+GitHub Enterprise task tools can opt into
+`connector.type: github_enterprise_rest` with an explicit HTTPS `api_base`; it
+uses the same bounded operations and credential rules as `github_rest`. Other
+enterprise connector types are configuration and policy-template contracts
+only: `gitlab`, `jira`, `feishu`, `wecom`, `dingtalk`, `gitee`, `coding`,
+`database`, `internal_http`, and `siem_export` remain fail-closed for live
+execution while still proving registry, policy, approval, redacted
+secret-reference, and unsupported-action evidence. See
+`examples/enterprise-connectors-task.yaml`.
+
 The demo requires Docker and the configured image to be available locally. The
 runner uses `docker run --pull=never`, so it does not silently acquire images at
 task runtime.
@@ -379,7 +397,13 @@ The first implementation currently includes:
     existing `head`/`base`, and `github.comment_issue`; it uses gateway-side
     environment secrets only after policy, registry, approval, and planned
     `gateway_calls` budget checks.
-12. An agent-facing gateway spool prototype: task artifact setup creates
+12. Enterprise connector foundations: `github_enterprise_rest` reuses the
+    bounded GitHub REST adapter contract, while `gitlab`, `jira`, `feishu`,
+    `wecom`, `dingtalk`, `gitee`, `coding`, `database`, `internal_http`, and
+    `siem_export` provide opt-in config parsing, connector-specific policy
+    templates, approval-sensitive operation sets, redacted secret-reference
+    handling, and explicit unsupported live execution.
+13. An agent-facing gateway spool prototype: task artifact setup creates
     `gateway-spool/requests`, `gateway-spool/responses`, and a generated
     `taskfence-gateway-submit` wrapper; the Docker runner mounts only the
     dedicated spool path for tasks with configured gateway tools; the host-side
@@ -387,28 +411,29 @@ The first implementation currently includes:
     one mediated local fixture action, and writes typed success, denied,
     timeout, cancellation, malformed-request, unsupported-action, or failure
     responses with structured evidence.
-13. Task-file `permissions.tools` parsing and policy/audit/report evidence for
+14. Task-file `permissions.tools` parsing and policy/audit/report evidence for
     future gateway-mediated tool actions, including optional approval evidence,
     optional known-tool registry checks, redacted gateway secret references, and
     MCP/HTTP adapter requests that execute through the existing gateway
     executor when explicitly configured. This is not a production MCP server or
     HTTP proxy.
-14. A local review and replay-planning foundation: `taskfence review` renders a
+15. A local review and replay-planning foundation: `taskfence review` renders a
     static HTML task review page, `taskfence review --serve` exposes it through
     a foreground loopback-only server with workspace-local approval resolution,
     and `taskfence replay plan` reports saved replay inputs, blockers, and
     deterministic limits without executing replay.
-15. Expanded runner contracts for `remote_ssh`, `kubernetes_job`, `microvm`,
+16. Expanded runner contracts for `remote_ssh`, `kubernetes_job`, `microvm`,
     and `managed_cloud` sandbox families. They currently provide typed
     capability reports and fail-closed validation when required controls are
     unavailable; Docker remains the only executable runner.
-16. A contract-only team-server foundation in `taskfence-state`: typed team API
+17. A contract-only team-server foundation in `taskfence-state`: typed team API
     resource boundaries, role-based access decisions, approval-owner
     enforcement, deterministic in-memory worker leases for local development
     tests, Postgres state config validation with explicit unsupported live
-    backend errors, team artifact root containment checks, unsupported
-    audit-export behavior, and migration planning from structured local
-    `.taskfence` evidence without treating rendered reports as source of truth.
+    backend errors, team artifact root containment checks, validated but
+    unsupported audit-export sink contracts, and migration planning from
+    structured local `.taskfence` evidence without treating rendered reports as
+    source of truth.
 
 ## Non-Goals
 

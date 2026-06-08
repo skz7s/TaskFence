@@ -44,20 +44,22 @@ evidence, including optional approval request/resolution records for
 approval-required tool calls, known-tool registry checks, and redacted gateway
 secret references. The executable gateway surface is currently limited to
 configured task-file tools through `taskfence gateway call`: deterministic
-local fixtures and a bounded GitHub REST connector for `github.read_issue`,
-`github.create_pr`, and `github.comment_issue`. A bounded agent-facing
-request/response spool prototype is processed by `taskfence gateway spool
-process`. The spool path is task-local, mounted separately into Docker only for
-tasks with configured gateway tools, and produces typed responses plus
-structured evidence. The team-server foundation is currently contract-only:
-typed API resources, RBAC decisions, approval-owner checks, local development
-worker leases, Postgres state config validation, artifact-root containment,
-explicit unsupported audit export, and local-to-team migration planning from
-structured `.taskfence` files exist without starting a server or live
-database. MCP/HTTP listener or proxy servers, SDK/webhook connectors,
-arbitrary HTTP proxying, branch/commit creation, persistent API server, live
-Postgres backend, deterministic replay execution, persistent team-server, and
-enterprise control-plane behavior are not implemented yet.
+local fixtures, bounded GitHub/GitHub Enterprise REST connectors for
+`github.read_issue`, `github.create_pr`, and `github.comment_issue`, and
+contract-only enterprise connector surfaces that fail closed for live
+execution. A bounded agent-facing request/response spool prototype is processed
+by `taskfence gateway spool process`. The spool path is task-local, mounted
+separately into Docker only for tasks with configured gateway tools, and
+produces typed responses plus structured evidence. The team-server foundation is
+currently contract-only: typed API resources, RBAC decisions, approval-owner
+checks, local development worker leases, Postgres state config validation,
+artifact-root containment, validated but unsupported audit-export sink
+contracts, and local-to-team migration planning from structured `.taskfence`
+files exist without starting a server or live database. MCP/HTTP listener or
+proxy servers, SDK/webhook connectors, arbitrary HTTP proxying, branch/commit
+creation, persistent API server, live Postgres backend, deterministic replay
+execution, persistent team-server, Slack, and live enterprise connector
+behavior beyond the bounded GitHub REST family are not implemented yet.
 The local review foundation is CLI-owned: it can render file-backed evidence as
 a static or foreground-served loopback HTML page, resolve pending
 workspace-local approvals from that page, and plan replay inputs without
@@ -243,10 +245,14 @@ points that execute through the existing gateway executor when explicitly
 configured, and a CLI-owned local fixture execution path. The local fixture path
 executes only configured task-file tools and currently models GitHub-shaped
 `github.read_issue` and `github.create_pr` behavior without network access or
-raw credentials. The live `github_rest` connector supports only
-`github.read_issue`, `github.create_pr`, and `github.comment_issue`; PR creation
-assumes the requested `head` and `base` already exist and does not create
-branches or commits. The agent-facing spool prototype creates
+raw credentials. The live `github_rest` and `github_enterprise_rest` connector
+contracts support only `github.read_issue`, `github.create_pr`, and
+`github.comment_issue`; PR creation assumes the requested `head` and `base`
+already exist and does not create branches or commits. GitLab, Jira, Feishu,
+WeCom, DingTalk, Gitee, CODING, database, internal HTTP, and SIEM export are
+opt-in connector contracts that validate configuration, policy templates,
+approval-sensitive operation sets, redacted secret references, and structured
+unsupported live execution. The agent-facing spool prototype creates
 `gateway-spool/requests`, `gateway-spool/responses`, and a generated
 `taskfence-gateway-submit` wrapper under the task evidence directory; Docker
 mounts only that dedicated spool path at `/taskfence/gateway-spool` when
@@ -259,8 +265,8 @@ structured evidence. When a registry is configured, unregistered tool actions
 fail before policy evaluation and record an audit error. It does not implement
 MCP/HTTP listener or proxy servers, SDK/webhook connectors, arbitrary HTTP
 proxying, branch/commit creation, persistent Web/API server behavior,
-deterministic replay execution, team-server, or enterprise connector behavior
-yet.
+deterministic replay execution, team-server, Slack, or live enterprise
+connector behavior beyond the bounded GitHub REST family yet.
 
 Supported gateway surfaces can include:
 
@@ -292,7 +298,7 @@ Current implementation defines the gateway-side broker trait and
 `secrets.available_to_gateway` and attach a redacted parameter reference before
 adapter execution. The local fixture broker issues only redacted handles; it
 does not read, store, validate, or use a raw credential. The environment-backed
-broker is used for configured live GitHub REST tools and reads
+broker is used for configured live GitHub/GitHub Enterprise REST tools and reads
 `TASKFENCE_GATEWAY_SECRET_<NORMALIZED_SECRET_NAME>` only inside the host gateway
 process after policy, registry, and approval checks. Raw token values are passed
 out-of-band to the connector client and are not written to task files, sandbox
@@ -395,8 +401,9 @@ The local development worker model is an in-memory lease queue. Tasks can be
 enqueued, leased by one worker id, completed, or failed; wrong-worker,
 duplicate, unleased, and already-terminal transitions are rejected. This is a
 contract for future team execution semantics, not a persistent queue or live
-worker service. Audit export is similarly an RBAC/API boundary with an
-unsupported export-sink error until a concrete sink is implemented.
+worker service. Audit export is similarly an RBAC/API boundary with validated
+sink contracts and an unsupported live export-sink error until a concrete sink
+is implemented.
 
 ## Security Boundary
 

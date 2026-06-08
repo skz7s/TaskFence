@@ -838,6 +838,9 @@ impl<'a> GatewayExecutor<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnsupportedGatewayAdapter {
     identity: ToolAdapterIdentity,
+    secret_refs: Vec<GatewaySecretReferenceConfig>,
+    contract_only: bool,
+    template_supports_operation: bool,
 }
 
 impl UnsupportedGatewayAdapter {
@@ -847,6 +850,20 @@ impl UnsupportedGatewayAdapter {
                 kind: kind.into(),
                 name: name.into(),
             },
+            secret_refs: Vec::new(),
+            contract_only: false,
+            template_supports_operation: false,
+        }
+    }
+
+    pub fn for_contract_tool(tool: GatewayToolConfig) -> Self {
+        let template_supports_operation =
+            connector_supports_operation(&tool.connector, &tool.tool, &tool.operation);
+        Self {
+            identity: connector_identity(&tool.connector),
+            secret_refs: tool.secret_refs,
+            contract_only: true,
+            template_supports_operation,
         }
     }
 }
@@ -856,12 +873,34 @@ impl ToolAdapter for UnsupportedGatewayAdapter {
         self.identity.clone()
     }
 
+    fn secret_references(&self) -> &[GatewaySecretReferenceConfig] {
+        &self.secret_refs
+    }
+
     fn execute(
         &self,
         _task: &ResolvedTask,
         action: &ToolAction,
         _context: &ToolExecutionContext,
     ) -> std::result::Result<ToolResult, ToolExecutionError> {
+        if self.contract_only {
+            if !self.template_supports_operation {
+                return Err(ToolExecutionError {
+                    kind: ToolExecutionErrorKind::UnsupportedTool,
+                    message: format!(
+                        "{} connector template does not support {}.{}",
+                        self.identity.kind, action.tool, action.operation
+                    ),
+                });
+            }
+            return Err(ToolExecutionError {
+                kind: ToolExecutionErrorKind::UnsupportedTool,
+                message: format!(
+                    "{} connector is contract-only; no live adapter is implemented for {}.{}",
+                    self.identity.kind, action.tool, action.operation
+                ),
+            });
+        }
         Err(ToolExecutionError {
             kind: ToolExecutionErrorKind::UnsupportedTool,
             message: format!(
@@ -869,6 +908,24 @@ impl ToolAdapter for UnsupportedGatewayAdapter {
                 self.identity.name, action.tool, action.operation
             ),
         })
+    }
+
+    fn planned_budget_usage(
+        &self,
+        _task: &ResolvedTask,
+        action: &ToolAction,
+        _context: &ToolExecutionContext,
+    ) -> std::result::Result<Vec<BudgetUsage>, ToolExecutionError> {
+        if self.contract_only && !self.template_supports_operation {
+            return Err(ToolExecutionError {
+                kind: ToolExecutionErrorKind::UnsupportedTool,
+                message: format!(
+                    "{} connector template does not support {}.{}",
+                    self.identity.kind, action.tool, action.operation
+                ),
+            });
+        }
+        Ok(Vec::new())
     }
 }
 
@@ -1016,8 +1073,8 @@ where
 {
     fn identity(&self) -> ToolAdapterIdentity {
         ToolAdapterIdentity {
-            kind: "github_rest".into(),
-            name: "github".into(),
+            kind: connector_kind(&self.tool.connector),
+            name: connector_name(&self.tool.connector),
         }
     }
 
@@ -1040,16 +1097,14 @@ where
         action: &ToolAction,
         _context: &ToolExecutionContext,
     ) -> std::result::Result<Vec<BudgetUsage>, ToolExecutionError> {
+        let connector = connector_kind(&self.tool.connector);
         Ok(vec![BudgetUsage {
             kind: "gateway_calls".into(),
             amount: 1,
             provider: Some("github".into()),
             model: None,
             operation: Some(format!("github.{}", action.operation)),
-            metadata: BTreeMap::from([(
-                "connector".into(),
-                RedactedValue::Plain("github_rest".into()),
-            )]),
+            metadata: BTreeMap::from([("connector".into(), RedactedValue::Plain(connector))]),
         }])
     }
 
@@ -1073,14 +1128,10 @@ where
             });
         }
 
-        let GatewayConnectorConfig::GitHubRest {
-            api_base,
-            repository,
-        } = &self.tool.connector
-        else {
+        let Some((api_base, repository)) = github_rest_connector_parts(&self.tool.connector) else {
             return Err(ToolExecutionError {
                 kind: ToolExecutionErrorKind::UnsupportedTool,
-                message: "gateway connector is not github_rest".into(),
+                message: "gateway connector is not a bounded GitHub REST connector".into(),
             });
         };
 
@@ -1106,7 +1157,7 @@ where
                     values: BTreeMap::from([
                         (
                             "repository".into(),
-                            RedactedValue::Plain(repository.clone()),
+                            RedactedValue::Plain(repository.to_owned()),
                         ),
                         (
                             "number".into(),
@@ -1151,7 +1202,7 @@ where
                     values: BTreeMap::from([
                         (
                             "repository".into(),
-                            RedactedValue::Plain(repository.clone()),
+                            RedactedValue::Plain(repository.to_owned()),
                         ),
                         (
                             "number".into(),
@@ -1184,7 +1235,7 @@ where
                     values: BTreeMap::from([
                         (
                             "repository".into(),
-                            RedactedValue::Plain(repository.clone()),
+                            RedactedValue::Plain(repository.to_owned()),
                         ),
                         ("number".into(), RedactedValue::Plain(number.to_string())),
                         (
@@ -1228,20 +1279,7 @@ impl LocalFixtureToolAdapter {
 
 impl ToolAdapter for LocalFixtureToolAdapter {
     fn identity(&self) -> ToolAdapterIdentity {
-        match &self.tool.connector {
-            GatewayConnectorConfig::LocalFixture { kind, .. } => ToolAdapterIdentity {
-                kind: "local_fixture".into(),
-                name: kind.clone(),
-            },
-            GatewayConnectorConfig::GitHubRest { .. } => ToolAdapterIdentity {
-                kind: "github_rest".into(),
-                name: "github".into(),
-            },
-            GatewayConnectorConfig::Unsupported { kind } => ToolAdapterIdentity {
-                kind: "unsupported".into(),
-                name: kind.clone(),
-            },
-        }
+        connector_identity(&self.tool.connector)
     }
 
     fn secret_references(&self) -> &[GatewaySecretReferenceConfig] {
@@ -1289,6 +1327,212 @@ impl ToolAdapter for LocalFixtureToolAdapter {
                 ),
             }),
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConnectorPolicyTemplate {
+    pub connector: String,
+    pub supported_operations: Vec<String>,
+    pub approval_required_operations: Vec<String>,
+    pub secret_scopes: Vec<String>,
+}
+
+pub fn connector_policy_template(kind: &str) -> Option<ConnectorPolicyTemplate> {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "github_rest" | "github_enterprise_rest" => Some(template(
+            kind,
+            &[
+                "github.read_issue",
+                "github.create_pr",
+                "github.comment_issue",
+            ],
+            &["github.create_pr", "github.comment_issue"],
+            &[
+                "github.read_issue",
+                "github.create_pr",
+                "github.comment_issue",
+            ],
+        )),
+        "gitlab" => Some(template(
+            "gitlab",
+            &[
+                "gitlab.read_issue",
+                "gitlab.create_merge_request",
+                "gitlab.comment_issue",
+            ],
+            &["gitlab.create_merge_request", "gitlab.comment_issue"],
+            &[
+                "gitlab.read_issue",
+                "gitlab.create_merge_request",
+                "gitlab.comment_issue",
+            ],
+        )),
+        "jira" => Some(template(
+            "jira",
+            &["jira.read_issue", "jira.create_issue", "jira.comment_issue"],
+            &["jira.create_issue", "jira.comment_issue"],
+            &["jira.read_issue", "jira.create_issue", "jira.comment_issue"],
+        )),
+        "feishu" => Some(template(
+            "feishu",
+            &["feishu.send_message", "feishu.create_doc"],
+            &["feishu.send_message", "feishu.create_doc"],
+            &["feishu.send_message", "feishu.create_doc"],
+        )),
+        "wecom" => Some(template(
+            "wecom",
+            &["wecom.send_message"],
+            &["wecom.send_message"],
+            &["wecom.send_message"],
+        )),
+        "dingtalk" => Some(template(
+            "dingtalk",
+            &["dingtalk.send_message"],
+            &["dingtalk.send_message"],
+            &["dingtalk.send_message"],
+        )),
+        "gitee" => Some(template(
+            "gitee",
+            &["gitee.read_issue", "gitee.create_pr", "gitee.comment_issue"],
+            &["gitee.create_pr", "gitee.comment_issue"],
+            &["gitee.read_issue", "gitee.create_pr", "gitee.comment_issue"],
+        )),
+        "coding" => Some(template(
+            "coding",
+            &[
+                "coding.read_issue",
+                "coding.create_merge_request",
+                "coding.comment_issue",
+            ],
+            &["coding.create_merge_request", "coding.comment_issue"],
+            &[
+                "coding.read_issue",
+                "coding.create_merge_request",
+                "coding.comment_issue",
+            ],
+        )),
+        "database" => Some(template(
+            "database",
+            &["database.read", "database.write"],
+            &["database.write"],
+            &["database.read", "database.write"],
+        )),
+        "internal_http" => Some(template(
+            "internal_http",
+            &["internal_http.call"],
+            &["internal_http.call"],
+            &["internal_http.call"],
+        )),
+        "siem_export" => Some(template(
+            "siem_export",
+            &["siem.export_events"],
+            &["siem.export_events"],
+            &["siem.export_events"],
+        )),
+        _ => None,
+    }
+}
+
+pub fn connector_operation_supported(
+    connector: &GatewayConnectorConfig,
+    action: &ToolAction,
+) -> bool {
+    connector_supports_operation(connector, &action.tool, &action.operation)
+}
+
+pub fn connector_supports_operation(
+    connector: &GatewayConnectorConfig,
+    tool: &str,
+    operation: &str,
+) -> bool {
+    let operation = format!("{tool}.{operation}");
+    connector_policy_template(&connector_kind(connector))
+        .map(|template| {
+            template
+                .supported_operations
+                .iter()
+                .any(|item| item == &operation)
+        })
+        .unwrap_or(false)
+}
+
+pub fn connector_identity(connector: &GatewayConnectorConfig) -> ToolAdapterIdentity {
+    ToolAdapterIdentity {
+        kind: connector_kind(connector),
+        name: connector_name(connector),
+    }
+}
+
+pub fn connector_kind(connector: &GatewayConnectorConfig) -> String {
+    match connector {
+        GatewayConnectorConfig::LocalFixture { .. } => "local_fixture".into(),
+        GatewayConnectorConfig::GitHubRest { .. } => "github_rest".into(),
+        GatewayConnectorConfig::GitHubEnterpriseRest { .. } => "github_enterprise_rest".into(),
+        GatewayConnectorConfig::GitLab { .. } => "gitlab".into(),
+        GatewayConnectorConfig::Jira { .. } => "jira".into(),
+        GatewayConnectorConfig::Feishu { .. } => "feishu".into(),
+        GatewayConnectorConfig::WeCom { .. } => "wecom".into(),
+        GatewayConnectorConfig::DingTalk { .. } => "dingtalk".into(),
+        GatewayConnectorConfig::Gitee { .. } => "gitee".into(),
+        GatewayConnectorConfig::Coding { .. } => "coding".into(),
+        GatewayConnectorConfig::Database { .. } => "database".into(),
+        GatewayConnectorConfig::InternalHttp { .. } => "internal_http".into(),
+        GatewayConnectorConfig::SiemExport { .. } => "siem_export".into(),
+        GatewayConnectorConfig::Unsupported { .. } => "unsupported".into(),
+    }
+}
+
+pub fn connector_name(connector: &GatewayConnectorConfig) -> String {
+    match connector {
+        GatewayConnectorConfig::LocalFixture { kind, .. } => kind.clone(),
+        GatewayConnectorConfig::GitHubRest { .. }
+        | GatewayConnectorConfig::GitHubEnterpriseRest { .. } => "github".into(),
+        GatewayConnectorConfig::GitLab { project, .. } => project.clone(),
+        GatewayConnectorConfig::Jira { project_key, .. } => project_key.clone(),
+        GatewayConnectorConfig::Feishu { app, .. } => app.clone(),
+        GatewayConnectorConfig::WeCom { corp_id, .. } => corp_id.clone(),
+        GatewayConnectorConfig::DingTalk { tenant, .. } => tenant.clone(),
+        GatewayConnectorConfig::Gitee { repository, .. } => repository.clone(),
+        GatewayConnectorConfig::Coding { project, .. } => project.clone(),
+        GatewayConnectorConfig::Database { database_ref, .. } => database_ref.clone(),
+        GatewayConnectorConfig::InternalHttp { service, .. } => service.clone(),
+        GatewayConnectorConfig::SiemExport { sink } => sink.clone(),
+        GatewayConnectorConfig::Unsupported { kind } => kind.clone(),
+    }
+}
+
+fn github_rest_connector_parts(connector: &GatewayConnectorConfig) -> Option<(&str, &str)> {
+    match connector {
+        GatewayConnectorConfig::GitHubRest {
+            api_base,
+            repository,
+        }
+        | GatewayConnectorConfig::GitHubEnterpriseRest {
+            api_base,
+            repository,
+        } => Some((api_base, repository)),
+        _ => None,
+    }
+}
+
+fn template(
+    connector: &str,
+    supported_operations: &[&str],
+    approval_required_operations: &[&str],
+    secret_scopes: &[&str],
+) -> ConnectorPolicyTemplate {
+    ConnectorPolicyTemplate {
+        connector: connector.trim().to_ascii_lowercase(),
+        supported_operations: supported_operations
+            .iter()
+            .map(|operation| (*operation).into())
+            .collect(),
+        approval_required_operations: approval_required_operations
+            .iter()
+            .map(|operation| (*operation).into())
+            .collect(),
+        secret_scopes: secret_scopes.iter().map(|scope| (*scope).into()).collect(),
     }
 }
 
@@ -2549,6 +2793,24 @@ mod tests {
         }
     }
 
+    fn contract_connector_tool(
+        tool_name: &str,
+        operation: &str,
+        connector: GatewayConnectorConfig,
+    ) -> GatewayToolConfig {
+        GatewayToolConfig {
+            protocol: "mcp".into(),
+            tool: tool_name.into(),
+            operation: operation.into(),
+            connector,
+            secret_refs: vec![GatewaySecretReferenceConfig {
+                name: format!("{tool_name}_token"),
+                parameter: "authorization".into(),
+                scope: format!("{tool_name}.{operation}"),
+            }],
+        }
+    }
+
     #[test]
     fn normalizes_tool_action_before_policy_and_audit() {
         let policy = StaticPolicy::new(allow());
@@ -3642,6 +3904,209 @@ mod tests {
             }) if message.contains("github.close_issue")
         ));
         assert!(client.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn github_enterprise_rest_reuses_bounded_github_adapter_without_auditing_token() {
+        let token = "ghp_enterprise_live_secret";
+        let client = RecordingGitHubClient::default();
+        let mut tool = github_rest_tool("read_issue");
+        tool.connector = GatewayConnectorConfig::GitHubEnterpriseRest {
+            api_base: "https://github.enterprise.example/api/v3".into(),
+            repository: "taskfence/example".into(),
+        };
+        let adapter = GitHubRestAdapter::new(tool, client.clone());
+        let broker = StaticLiveSecretBroker::new(token);
+        let policy = StaticPolicy::new(allow());
+        let audit = RecordingAudit::default();
+        let task = task_with_gateway_secret_scope("github.read_issue");
+        let registry =
+            InMemoryToolRegistry::new(
+                [RegisteredTool::new("mcp", "github", "read_issue").unwrap()],
+            );
+        let mediator = GatewayMediator::new(&policy, &audit)
+            .with_tool_registry(&registry)
+            .with_supported_protocols(["mcp"]);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
+
+        let execution = executor
+            .execute_tool_action(
+                &task,
+                ToolAction {
+                    protocol: "mcp".into(),
+                    tool: "github".into(),
+                    operation: "read_issue".into(),
+                    parameters: BTreeMap::from([(
+                        "number".into(),
+                        RedactedValue::Plain("42".into()),
+                    )]),
+                },
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(execution.error.is_none());
+        assert_eq!(
+            client.calls.lock().unwrap().as_slice(),
+            &[GitHubClientCall::ReadIssue {
+                api_base: "https://github.enterprise.example/api/v3".into(),
+                repository: "taskfence/example".into(),
+                token: token.into(),
+                number: 42,
+            }]
+        );
+        assert_eq!(adapter.identity().kind, "github_enterprise_rest");
+        let serialized = serde_json::to_string(&audit.events.lock().unwrap().clone()).unwrap();
+        assert!(!serialized.contains(token));
+    }
+
+    #[test]
+    fn enterprise_connector_templates_define_approval_and_secret_boundaries() {
+        let template = connector_policy_template("gitlab").unwrap();
+
+        assert!(template
+            .supported_operations
+            .contains(&"gitlab.create_merge_request".into()));
+        assert!(template
+            .approval_required_operations
+            .contains(&"gitlab.create_merge_request".into()));
+        assert!(template
+            .secret_scopes
+            .contains(&"gitlab.comment_issue".into()));
+        assert!(connector_supports_operation(
+            &GatewayConnectorConfig::GitLab {
+                api_base: "https://gitlab.example/api/v4".into(),
+                project: "group/project".into(),
+            },
+            "gitlab",
+            "create_merge_request"
+        ));
+        assert!(!connector_supports_operation(
+            &GatewayConnectorConfig::GitLab {
+                api_base: "https://gitlab.example/api/v4".into(),
+                project: "group/project".into(),
+            },
+            "gitlab",
+            "delete_project"
+        ));
+    }
+
+    #[test]
+    fn enterprise_connector_contract_fails_closed_after_policy_and_secret_reference() {
+        let tool = contract_connector_tool(
+            "gitlab",
+            "create_merge_request",
+            GatewayConnectorConfig::GitLab {
+                api_base: "https://gitlab.example/api/v4".into(),
+                project: "group/project".into(),
+            },
+        );
+        let adapter = UnsupportedGatewayAdapter::for_contract_tool(tool);
+        let broker = StaticSecretBroker::default();
+        let mut task = task();
+        task.secrets.available_to_gateway = vec![SecretGrant {
+            name: "gitlab_token".into(),
+            use_for: vec!["gitlab.create_merge_request".into()],
+        }];
+        task.permissions.tools.allow = vec!["gitlab.create_merge_request".into()];
+        let policy = StaticPolicy::new(allow());
+        let audit = RecordingAudit::default();
+        let registry = InMemoryToolRegistry::new([RegisteredTool::new(
+            "mcp",
+            "gitlab",
+            "create_merge_request",
+        )
+        .unwrap()]);
+        let mediator = GatewayMediator::new(&policy, &audit)
+            .with_tool_registry(&registry)
+            .with_supported_protocols(["mcp"]);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
+
+        let execution = executor
+            .execute_tool_action(
+                &task,
+                ToolAction {
+                    protocol: "mcp".into(),
+                    tool: "gitlab".into(),
+                    operation: "create_merge_request".into(),
+                    parameters: BTreeMap::from([(
+                        "title".into(),
+                        RedactedValue::Plain("Ship MR".into()),
+                    )]),
+                },
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            execution.error,
+            Some(ToolExecutionError {
+                kind: ToolExecutionErrorKind::UnsupportedTool,
+                message,
+            }) if message.contains("contract-only")
+        ));
+        assert!(matches!(
+            execution.request.action.parameters.get("authorization"),
+            Some(RedactedValue::Redacted { .. })
+        ));
+        assert!(audit.events.lock().unwrap().iter().any(|event| {
+            matches!(event, AuditEvent::ToolExecutionStarted { request, .. }
+            if matches!(
+                request.action.parameters.get("authorization"),
+                Some(RedactedValue::Redacted { .. })
+            ))
+        }));
+    }
+
+    #[test]
+    fn enterprise_connector_contract_rejects_template_unsupported_operation() {
+        let tool = contract_connector_tool(
+            "gitlab",
+            "delete_project",
+            GatewayConnectorConfig::GitLab {
+                api_base: "https://gitlab.example/api/v4".into(),
+                project: "group/project".into(),
+            },
+        );
+        let adapter = UnsupportedGatewayAdapter::for_contract_tool(tool);
+        let broker = StaticSecretBroker::default();
+        let mut task = task();
+        task.secrets.available_to_gateway = vec![SecretGrant {
+            name: "gitlab_token".into(),
+            use_for: vec!["gitlab.delete_project".into()],
+        }];
+        task.permissions.tools.allow = vec!["gitlab.delete_project".into()];
+        let policy = StaticPolicy::new(allow());
+        let audit = RecordingAudit::default();
+        let registry =
+            InMemoryToolRegistry::new([
+                RegisteredTool::new("mcp", "gitlab", "delete_project").unwrap()
+            ]);
+        let mediator = GatewayMediator::new(&policy, &audit)
+            .with_tool_registry(&registry)
+            .with_supported_protocols(["mcp"]);
+        let executor = GatewayExecutor::new(mediator, &audit, &adapter).with_secret_broker(&broker);
+
+        let execution = executor
+            .execute_tool_action(
+                &task,
+                ToolAction {
+                    protocol: "mcp".into(),
+                    tool: "gitlab".into(),
+                    operation: "delete_project".into(),
+                    parameters: BTreeMap::new(),
+                },
+                ToolExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            execution.error,
+            Some(ToolExecutionError {
+                kind: ToolExecutionErrorKind::UnsupportedTool,
+                message,
+            }) if message.contains("template does not support")
+        ));
     }
 
     #[test]

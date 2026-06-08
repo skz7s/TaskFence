@@ -318,6 +318,54 @@ pub enum GatewayConnectorConfig {
         api_base: String,
         repository: String,
     },
+    #[serde(rename = "github_enterprise_rest")]
+    GitHubEnterpriseRest {
+        api_base: String,
+        repository: String,
+    },
+    #[serde(rename = "gitlab")]
+    GitLab {
+        api_base: String,
+        project: String,
+    },
+    Jira {
+        api_base: String,
+        project_key: String,
+    },
+    Feishu {
+        api_base: String,
+        app: String,
+    },
+    #[serde(rename = "wecom")]
+    WeCom {
+        api_base: String,
+        corp_id: String,
+    },
+    #[serde(rename = "dingtalk")]
+    DingTalk {
+        api_base: String,
+        tenant: String,
+    },
+    Gitee {
+        api_base: String,
+        repository: String,
+    },
+    #[serde(rename = "coding")]
+    Coding {
+        api_base: String,
+        project: String,
+    },
+    Database {
+        engine: String,
+        database_ref: String,
+    },
+    InternalHttp {
+        api_base: String,
+        service: String,
+    },
+    SiemExport {
+        sink: String,
+    },
     Unsupported {
         kind: String,
     },

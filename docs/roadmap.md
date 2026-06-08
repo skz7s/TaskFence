@@ -186,10 +186,15 @@ Current implemented gateway coverage:
 - the GitHub-shaped fixture supports `github.read_issue` from local JSON and
   `github.create_pr` as a PR proposal artifact after explicit approval; it does
   not call live GitHub or use a real token
-- the live `github_rest` connector supports `github.read_issue`,
-  `github.create_pr`, and `github.comment_issue`; `create_pr` assumes the
-  requested `head` and `base` already exist and does not create branches or
-  commits
+- the live `github_rest` and `github_enterprise_rest` connector contracts
+  support `github.read_issue`, `github.create_pr`, and
+  `github.comment_issue`; `create_pr` assumes the requested `head` and `base`
+  already exist and does not create branches or commits
+- opt-in enterprise connector contracts exist for GitLab, Jira, Feishu, WeCom,
+  DingTalk, Gitee, CODING, database, internal HTTP, and SIEM export; these
+  currently validate configuration, connector-specific policy templates,
+  approval-sensitive operation sets, redacted secret references, and explicit
+  unsupported live execution rather than calling live services
 - MCP and HTTP adapter entry points normalize protocol-shaped requests into
   `ToolAction` values and execute through the existing gateway executor when
   the action is explicitly configured
@@ -198,8 +203,8 @@ Current implemented gateway coverage:
   parameter values
 - MCP/HTTP listener or proxy servers, SDK/webhook connectors, arbitrary HTTP
   proxying, branch/commit creation, persistent Web/API server behavior,
-  deterministic replay execution, team-server, and enterprise gateway surfaces
-  remain future work
+  deterministic replay execution, team-server, and live enterprise connector
+  execution beyond the bounded GitHub REST family remain future work
 
 Current local fixture demo:
 
@@ -317,11 +322,11 @@ Current team-server foundation:
 - implemented: local `.taskfence` to team migration planning from structured
   task input and event files without treating rendered Markdown reports as
   source-of-truth state
-- implemented: audit export as an RBAC/API boundary with an explicit
-  unsupported export-sink error
+- implemented: audit export as an RBAC/API boundary with validated sink
+  contracts and an explicit unsupported live export-sink error
 - remaining: persistent API server, live Postgres backend, durable worker
   queue, SSO, team quota/chargeback, object storage, remote-runner-backed team
-  execution, SIEM export sink, and live GitHub Enterprise/GitLab team
+  execution, live SIEM export sink, and live GitHub Enterprise/GitLab team
   integrations
 
 ## Phase 7: Broader Enterprise Agent Gateway
@@ -331,11 +336,26 @@ Goal: expand beyond coding agents.
 Deliverables:
 
 - model gateway integration
-- Feishu, WeCom, DingTalk, Jira, Slack, and database connectors
+- GitHub Enterprise, GitLab, Jira, Feishu, WeCom, DingTalk, Gitee, CODING,
+  database, internal HTTP API, and SIEM/export connectors
 - business tool approval workflows
 - policy templates by department and use case
 - managed runner option
 - compliance-oriented audit reports
+
+Current bounded connector foundation:
+
+- `github_enterprise_rest` reuses the bounded GitHub REST adapter contract with
+  an explicit HTTPS API base, gateway-side token lookup, and the same
+  `github.read_issue`, `github.create_pr`, and `github.comment_issue` operation
+  limits.
+- GitLab, Jira, Feishu, WeCom, DingTalk, Gitee, CODING, database, internal HTTP,
+  and SIEM export connectors are opt-in configuration and policy-template
+  contracts. They fail closed for live execution with structured unsupported
+  evidence after registry, policy, approval, and redacted secret-reference
+  handling.
+- Live service-specific clients, Slack, department-level policy packs, managed
+  runner execution, and compliance report exports remain future work.
 
 ## Open Questions
 

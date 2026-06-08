@@ -265,6 +265,38 @@ impl PostgresTeamStateConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuditExportSinkKind {
+    Siem,
+    Webhook,
+    ObjectStorage,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuditExportSinkConfig {
+    pub kind: AuditExportSinkKind,
+    pub destination_ref: String,
+    pub credential_env: String,
+}
+
+impl AuditExportSinkConfig {
+    pub fn new(
+        kind: AuditExportSinkKind,
+        destination_ref: impl Into<String>,
+        credential_env: impl Into<String>,
+    ) -> taskfence_core::Result<Self> {
+        let destination_ref = destination_ref.into();
+        validate_non_secret_ref("audit export destination_ref", &destination_ref)?;
+        let credential_env = credential_env.into();
+        validate_env_ref("audit export credential_env", &credential_env)?;
+        Ok(Self {
+            kind,
+            destination_ref,
+            credential_env,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalToTeamMigrationPlan {
     pub workspace: Utf8PathBuf,
     pub organization: String,
@@ -280,6 +312,7 @@ pub struct TeamServerBoundary {
     pub worker_model: String,
     pub state_config: PostgresTeamStateConfig,
     pub artifact_roots: Vec<Utf8PathBuf>,
+    pub audit_export_sinks: Vec<AuditExportSinkConfig>,
 }
 
 impl TeamServerBoundary {
@@ -302,7 +335,21 @@ impl TeamServerBoundary {
                     .into(),
             state_config,
             artifact_roots,
+            audit_export_sinks: Vec::new(),
         })
+    }
+
+    pub fn with_audit_export_sinks(
+        mut self,
+        sinks: Vec<AuditExportSinkConfig>,
+    ) -> taskfence_core::Result<Self> {
+        if sinks.is_empty() {
+            return Err(TaskFenceError::State(
+                "team audit export sinks require at least one configured destination".into(),
+            ));
+        }
+        self.audit_export_sinks = sinks;
+        Ok(self)
     }
 
     pub fn unsupported_start_error(&self) -> TaskFenceError {
@@ -314,7 +361,8 @@ impl TeamServerBoundary {
 
     pub fn unsupported_audit_export_error(&self) -> TaskFenceError {
         TaskFenceError::Unsupported(
-            "team audit export is an API/RBAC boundary only; no export sink is implemented".into(),
+            "team audit export is a validated sink contract only; no live export sink is implemented"
+                .into(),
         )
     }
 }
@@ -1147,6 +1195,32 @@ fn normalize_non_empty(field: &str, value: String) -> taskfence_core::Result<Str
     Ok(normalized.to_owned())
 }
 
+fn validate_non_secret_ref(field: &str, value: &str) -> taskfence_core::Result<()> {
+    let normalized = value.trim();
+    let lower = normalized.to_ascii_lowercase();
+    if normalized.is_empty()
+        || normalized.chars().any(char::is_whitespace)
+        || normalized.contains('@')
+        || normalized.contains('?')
+        || normalized.contains('#')
+        || lower.contains("token=")
+        || lower.contains("password=")
+        || lower.contains("secret=")
+        || lower.contains("api_key=")
+        || lower.contains("authorization=")
+        || lower.contains("bearer ")
+        || lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("postgres://")
+        || lower.starts_with("postgresql://")
+    {
+        return Err(TaskFenceError::State(format!(
+            "{field} must be a non-secret operator-owned reference"
+        )));
+    }
+    Ok(())
+}
+
 fn read_task_summary(task_id: TaskId, task_dir: Utf8PathBuf) -> TaskSummary {
     let mut warnings = Vec::new();
     let goal = read_task_goal(&task_id, &task_dir, &mut warnings);
@@ -1751,12 +1825,24 @@ mod tests {
             PostgresTeamStateConfig::new("TASKFENCE_DATABASE_URL", "taskfence_team").unwrap(),
             vec![root],
         )
+        .unwrap()
+        .with_audit_export_sinks(vec![AuditExportSinkConfig::new(
+            AuditExportSinkKind::Siem,
+            "soc-pipeline",
+            "TASKFENCE_AUDIT_EXPORT_TOKEN",
+        )
+        .unwrap()])
         .unwrap();
 
         assert!(boundary
             .api_resources
             .iter()
             .any(|resource| matches!(resource, TeamApiResource::AuditExport)));
+        assert_eq!(boundary.audit_export_sinks.len(), 1);
+        assert_eq!(
+            boundary.audit_export_sinks[0].credential_env,
+            "TASKFENCE_AUDIT_EXPORT_TOKEN"
+        );
         assert!(boundary
             .worker_model
             .contains("deterministic in-memory lease"));
@@ -1766,7 +1852,23 @@ mod tests {
         ));
         assert!(matches!(
             boundary.unsupported_audit_export_error(),
-            TaskFenceError::Unsupported(message) if message.contains("no export sink")
+            TaskFenceError::Unsupported(message) if message.contains("no live export sink")
+        ));
+        assert!(matches!(
+            AuditExportSinkConfig::new(
+                AuditExportSinkKind::Webhook,
+                "https://token=secret@example.invalid",
+                "TASKFENCE_WEBHOOK_TOKEN",
+            ),
+            Err(TaskFenceError::State(message)) if message.contains("non-secret")
+        ));
+        assert!(matches!(
+            AuditExportSinkConfig::new(
+                AuditExportSinkKind::ObjectStorage,
+                "archive-bucket",
+                "taskfence_audit_token",
+            ),
+            Err(TaskFenceError::State(message)) if message.contains("uppercase")
         ));
         assert!(matches!(
             TeamServerBoundary::new(
