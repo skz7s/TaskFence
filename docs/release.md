@@ -26,6 +26,7 @@ cargo fmt --all --check
 cargo check --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+cargo package --workspace --no-verify
 python3 scripts/governance/build_agents.py --check
 python3 scripts/governance/check_codex_governance.py
 ```
@@ -53,6 +54,13 @@ Each release note should include:
 
 Crates should not be published until crate descriptions, README links, licensing
 metadata, API stability expectations, and semver policy have been reviewed.
+Run `cargo package -p taskfence-core` as the first full packaging verification.
+Other TaskFence crates depend on internal crates by version plus path, so their
+full `cargo package` verification will resolve those internal dependencies from
+crates.io and requires publishing in dependency order. Before that first publish
+wave, use `cargo package --workspace --no-verify` to verify package manifests
+and included files without claiming that unpublished internal dependencies are
+already available from crates.io.
 
 Do not publish release artifacts, merge release branches, or push tags without
 operator approval.

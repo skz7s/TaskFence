@@ -51,6 +51,7 @@ cargo fmt --all --check
 cargo check --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+cargo package --workspace --no-verify
 python3 scripts/governance/build_agents.py --check
 python3 scripts/governance/check_codex_governance.py
 ```
@@ -58,6 +59,12 @@ python3 scripts/governance/check_codex_governance.py
 Docker, database, remote runner, and live connector integration tests require
 matching local services or credentials. When unavailable, record the exact
 limitation in release notes instead of claiming coverage.
+
+For the first crates.io publish wave, `cargo package -p taskfence-core` is the
+only full package verification expected to pass before internal TaskFence crates
+are published. Other crates have versioned internal path dependencies and
+require dependency-order publication before full verification can resolve those
+packages from crates.io.
 
 ## Repository Automation
 

@@ -95,11 +95,20 @@ Acceptance criteria:
 
 ### 3. Codebase Hardening Review
 
-- Status: pending
+- Status: done
 - Scope: audit high-risk runtime paths for avoidable panics, weak error
   messages, under-tested fail-closed behavior, and package publication gaps
 - Verification command: targeted crate tests plus workspace gate when touched
-- Verification evidence: pending
+- Verification evidence: passed on 2026-06-09. Scanned non-test Rust source for
+  `unwrap(`, `expect(`, `panic!`, `todo!`, and `unimplemented!`; no production
+  hits were found outside `#[cfg(test)]` modules. Ran clippy with additional
+  unwrap/expect/panic warnings and confirmed the warnings are test-only. Added
+  version requirements to internal workspace path dependencies so package
+  manifests are valid. Verified with `cargo check --workspace --locked`,
+  `cargo package --workspace --no-verify --allow-dirty`, `cargo package -p
+  taskfence-core --allow-dirty`, and `git diff --check`. Full package
+  verification for crates above `taskfence-core` remains gated on
+  dependency-order publication to crates.io.
 
 ### 4. Release Candidate Pass
 

@@ -44,15 +44,15 @@ tokio = { version = "1.37", features = ["io-util", "macros", "process", "rt-mult
 ureq = { version = "2.12", features = ["json"] }
 uuid = { version = "1.8", features = ["serde", "v4", "v7"] }
 
-taskfence-agent = { path = "crates/taskfence-agent" }
-taskfence-approval = { path = "crates/taskfence-approval" }
-taskfence-artifacts = { path = "crates/taskfence-artifacts" }
-taskfence-audit = { path = "crates/taskfence-audit" }
-taskfence-config = { path = "crates/taskfence-config" }
-taskfence-core = { path = "crates/taskfence-core" }
-taskfence-gateway = { path = "crates/taskfence-gateway" }
-taskfence-policy = { path = "crates/taskfence-policy" }
-taskfence-report = { path = "crates/taskfence-report" }
-taskfence-runner = { path = "crates/taskfence-runner" }
-taskfence-state = { path = "crates/taskfence-state" }
-taskfence-testkit = { path = "crates/taskfence-testkit" }
+taskfence-agent = { version = "0.1.0", path = "crates/taskfence-agent" }
+taskfence-approval = { version = "0.1.0", path = "crates/taskfence-approval" }
+taskfence-artifacts = { version = "0.1.0", path = "crates/taskfence-artifacts" }
+taskfence-audit = { version = "0.1.0", path = "crates/taskfence-audit" }
+taskfence-config = { version = "0.1.0", path = "crates/taskfence-config" }
+taskfence-core = { version = "0.1.0", path = "crates/taskfence-core" }
+taskfence-gateway = { version = "0.1.0", path = "crates/taskfence-gateway" }
+taskfence-policy = { version = "0.1.0", path = "crates/taskfence-policy" }
+taskfence-report = { version = "0.1.0", path = "crates/taskfence-report" }
+taskfence-runner = { version = "0.1.0", path = "crates/taskfence-runner" }
+taskfence-state = { version = "0.1.0", path = "crates/taskfence-state" }
+taskfence-testkit = { version = "0.1.0", path = "crates/taskfence-testkit" }
