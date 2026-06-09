@@ -53,6 +53,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 cargo package --workspace --no-verify --locked
 python3 scripts/governance/build_agents.py --check
 python3 scripts/governance/check_codex_governance.py
+python3 scripts/docs/check_markdown_links.py
 ```
 
 The repository should also have:
@@ -70,6 +71,8 @@ The repository should also have:
 - crate metadata, crate-level rustdoc introductions, and package manifest
   inspection through the locked package gate
 - generated governance checks passing and generated governance outputs in sync
+- public Markdown relative-link checks passing for README, docs, examples,
+  GitHub templates, and governance entry docs
 - a high-confidence secret-shape scan with no real provider tokens, private
   keys, GitHub tokens, AWS access key ids, Slack tokens, or URL userinfo
 

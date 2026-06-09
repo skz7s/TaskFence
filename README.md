@@ -478,6 +478,12 @@ python3 scripts/governance/build_agents.py --check
 python3 scripts/governance/check_codex_governance.py
 ```
 
+Documentation link validation:
+
+```bash
+python3 scripts/docs/check_markdown_links.py
+```
+
 Release/readiness checklist:
 
 ```bash

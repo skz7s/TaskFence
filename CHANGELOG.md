@@ -39,6 +39,8 @@ development snapshots and readiness milestones.
   documenting crate responsibilities and preview boundaries.
 - GitHub Actions concurrency cancellation and job timeouts for bounded public
   pull request validation.
+- Markdown relative-link validation for public README, docs, examples, GitHub
+  templates, and governance entry docs, wired into CI and release gates.
 - Installation documentation for the supported source-build path, local binary
   commands, runtime prerequisites, and unsupported distribution channels.
 - Troubleshooting documentation for local-preview setup, validation, Docker,

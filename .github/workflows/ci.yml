@@ -81,5 +81,8 @@ jobs:
       - name: Check governance assets
         run: python3 scripts/governance/check_codex_governance.py
 
+      - name: Check Markdown links
+        run: python3 scripts/docs/check_markdown_links.py
+
       - name: Print readiness checklist
         run: bash deploy/manage.sh readiness

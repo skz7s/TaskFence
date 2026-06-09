@@ -17,6 +17,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 cargo package --workspace --no-verify --locked
 python3 scripts/governance/build_agents.py --check
 python3 scripts/governance/check_codex_governance.py
+python3 scripts/docs/check_markdown_links.py
 ```
 
 The `--locked` checks ensure CI and local release gates use the committed

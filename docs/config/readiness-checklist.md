@@ -59,6 +59,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 cargo package --workspace --no-verify --locked
 python3 scripts/governance/build_agents.py --check
 python3 scripts/governance/check_codex_governance.py
+python3 scripts/docs/check_markdown_links.py
 ```
 
 Docker, database, remote runner, and live connector integration tests require
@@ -87,9 +88,10 @@ publication state.
 
 GitHub Actions checks the Rust workspace gate with locked dependencies, rustdoc
 generation with warnings denied, package manifest inclusion, generated-governance
-drift, governance asset health, shell syntax, and readiness output for pull
-requests and pushes to `main`. CI cancels superseded runs on the same ref and
-sets job timeouts for the MSRV, Rust workspace, and governance/readiness jobs.
+drift, governance asset health, Markdown relative links, shell syntax, and
+readiness output for pull requests and pushes to `main`. CI cancels superseded
+runs on the same ref and sets job timeouts for the MSRV, Rust workspace, and
+governance/readiness jobs.
 Dependabot proposes Cargo and GitHub Actions dependency updates weekly.
 CODEOWNERS routes default pull request review to the public repository owner as
 a triage signal. Issue templates route bug reports, feature requests,

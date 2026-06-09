@@ -63,6 +63,12 @@ python3 scripts/governance/build_agents.py --check
 python3 scripts/governance/check_codex_governance.py
 ```
 
+For public documentation or GitHub template changes, also run:
+
+```bash
+python3 scripts/docs/check_markdown_links.py
+```
+
 For shell script changes, run:
 
 ```bash

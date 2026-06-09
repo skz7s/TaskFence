@@ -68,6 +68,12 @@ python3 scripts/governance/check_codex_governance.py
 
 Governance scripts require Python 3.11+ or another Python runtime with `tomllib`. The scripts may re-execute themselves with a detected `python3.13`, `python3.12`, `python3.11`, or repo virtualenv Python when the shell `python3` is older.
 
+Documentation validation gate:
+
+```bash
+python3 scripts/docs/check_markdown_links.py
+```
+
 Readiness checklist:
 
 ```bash

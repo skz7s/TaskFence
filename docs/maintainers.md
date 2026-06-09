@@ -51,6 +51,13 @@ python3 scripts/governance/build_agents.py --check
 python3 scripts/governance/check_codex_governance.py
 ```
 
+Run Markdown link validation before merging public documentation or GitHub
+template changes:
+
+```bash
+python3 scripts/docs/check_markdown_links.py
+```
+
 ## Release Stewardship
 
 Before tagging or publishing:
@@ -65,7 +72,8 @@ Before tagging or publishing:
    [docs/release-notes-template.md](release-notes-template.md).
 6. Run the release gate in [docs/release.md](release.md).
 7. Record unavailable integration and external audit-tool coverage.
-8. Confirm crate/package metadata and repository URLs are correct.
+8. Confirm public Markdown relative links, crate/package metadata, and
+   repository URLs are correct.
 
 Before switching repository visibility to public, use
 [docs/publication-readiness.md](publication-readiness.md) and confirm the

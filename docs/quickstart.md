@@ -79,6 +79,7 @@ cargo test --workspace --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 python3 scripts/governance/build_agents.py --check
 python3 scripts/governance/check_codex_governance.py
+python3 scripts/docs/check_markdown_links.py
 ```
 
 For focused crate checks, example validation, Docker integration prerequisites,

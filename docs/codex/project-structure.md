@@ -74,6 +74,7 @@
 - `docs/publication-readiness.md` 放公开仓库前的本地证据、外部 GitHub 设置和发布边界
 - `examples/README.md` 放示例矩阵、运行要求和验证命令
   - `governance/*` 放治理生成、skill routing、profile 和变更同步规则
+- `scripts/docs/` 放文档质量检查脚本，例如 Markdown 相对链接校验
 - 运行时治理源码：`governance/*`
 - 可复用治理模板：由已安装的本地治理 catalog 提供；目标项目不要把 helper 源仓库本身当作模板真值
 - 机器本地环境事实：`.codex-helper/local-env.toml`，由 `project-env-baseline` 或 `deploy/manage.sh detect-env` 生成，不进入 Git。
@@ -82,5 +83,5 @@
 - 项目设计资产：`.codex-helper/design/draft/` 与 `.codex-helper/design/ui-library/`
 - 可复用工作流：`.codex/skills/*`；默认安装列表以 helper baseline manifest 为准，新增默认 skill 必须同步路由和生成输出。`managed-project-onboarding` 保持为显式选择的可选模板
 - 项目私有 agent/skill 源码：`governance/private/*`，不要直接修改生成输出
-- `scripts/` 建议按 `bootstrap/`、`governance/`、`test/` 分层
+- `scripts/` 建议按 `bootstrap/`、`docs/`、`governance/`、`test/` 分层
 - 当前测试主要跟随 Rust crate 放在各 crate 的 `src/*.rs` 单元测试和 `taskfence-testkit` fixtures 中；只有出现跨 crate 或端到端测试需要时再新增顶层 `tests/`。

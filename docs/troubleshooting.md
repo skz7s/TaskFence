@@ -176,6 +176,7 @@ files:
 ```bash
 python3 scripts/governance/build_agents.py --check
 python3 scripts/governance/check_codex_governance.py
+python3 scripts/docs/check_markdown_links.py
 ```
 
 If these fail after changing generated files such as `AGENTS.md`,

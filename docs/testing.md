@@ -17,10 +17,11 @@ cargo test --workspace --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 python3 scripts/governance/build_agents.py --check
 python3 scripts/governance/check_codex_governance.py
+python3 scripts/docs/check_markdown_links.py
 ```
 
 GitHub Actions runs the Rust and governance surfaces above, plus shell syntax,
-readiness output, and package manifest inspection with
+Markdown relative-link validation, readiness output, and package manifest inspection with
 `cargo package --workspace --no-verify --locked`. CI cancels superseded runs on
 the same ref and uses job timeouts so public pull requests cannot consume
 unbounded runner time.
@@ -141,6 +142,7 @@ Documentation-only changes should still run:
 git diff --check
 python3 scripts/governance/build_agents.py --check
 python3 scripts/governance/check_codex_governance.py
+python3 scripts/docs/check_markdown_links.py
 ```
 
 Rust public API or CLI doc-comment changes should also run:
@@ -164,6 +166,7 @@ Pull requests and release notes should state:
 - live connector, database, remote runner, or deployed service coverage, if
   any
 - governance and rustdoc checks when docs, policy, or public APIs changed
+- Markdown link checks when public docs or GitHub templates changed
 
 Do not imply integration coverage from CI unless the workflow explicitly
 provisions that integration environment.

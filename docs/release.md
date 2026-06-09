@@ -35,11 +35,13 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 cargo package --workspace --no-verify --locked
 python3 scripts/governance/build_agents.py --check
 python3 scripts/governance/check_codex_governance.py
+python3 scripts/docs/check_markdown_links.py
 ```
 
 Confirm the GitHub Actions workflow for the release branch has passed the same
-Rust, governance, shell syntax, and readiness checks. Superseded workflow runs
-may be canceled by CI concurrency; use the latest run for release evidence.
+Rust, governance, documentation-link, shell syntax, and readiness checks.
+Superseded workflow runs may be canceled by CI concurrency; use the latest run
+for release evidence.
 
 When Docker, database, remote runner, or live connector integration tests are
 unavailable, record that limitation in release notes instead of claiming
