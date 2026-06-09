@@ -423,6 +423,7 @@ independent and does not require team state.
 - [Quickstart](docs/quickstart.md)
 - [CLI Reference](docs/cli-reference.md)
 - [Task File Reference](docs/task-file-reference.md)
+- [Testing Strategy](docs/testing.md)
 - [Security Model](docs/security-model.md)
 - [Versioning And Compatibility](docs/versioning.md)
 - [Supply-Chain Maintenance](docs/supply-chain.md)
@@ -476,9 +477,11 @@ dependencies.
 
 GitHub Actions runs the Rust workspace gate, rustdoc generation with warnings
 denied, generated-governance drift checks, shell syntax check, and readiness
-output on pull requests. Docker, database, remote runner, and live connector
-integration tests still require matching local services or credentials and
-must be called out explicitly when skipped.
+output on pull requests. See [Testing Strategy](docs/testing.md) for focused
+checks, example validation, Docker integration prerequisites, and live coverage
+reporting. Docker, database, remote runner, and live connector integration
+tests still require matching local services or credentials and must be called
+out explicitly when skipped.
 See [Supply-Chain Maintenance](docs/supply-chain.md) for dependency update and
 external advisory-tool expectations.
 

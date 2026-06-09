@@ -62,6 +62,10 @@ Docker, database, remote runner, and live connector integration tests require
 matching local services or credentials. When unavailable, record the exact
 limitation in release notes instead of claiming coverage.
 
+Use `docs/testing.md` for the current testing matrix, focused crate checks,
+example validation, Docker integration prerequisites, and live coverage
+reporting expectations.
+
 Release notes must also follow the security, compatibility, and supply-chain
 policy in `docs/security-model.md`, `docs/versioning.md`, and
 `docs/supply-chain.md`.

@@ -11,6 +11,7 @@
 - [ ] `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked`
 - [ ] Governance checks, if governance files changed
 - [ ] Integration limitations recorded, if Docker/database/remote/live connector coverage was unavailable
+- [ ] Testing scope follows `docs/testing.md`
 
 ## Security Boundary
 

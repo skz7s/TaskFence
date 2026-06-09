@@ -44,6 +44,9 @@ When Docker, database, remote runner, or live connector integration tests are
 unavailable, record that limitation in release notes instead of claiming
 coverage.
 
+Use [docs/testing.md](testing.md) to decide which focused, workspace, example,
+Docker, and live-environment checks apply to the release.
+
 Follow [docs/supply-chain.md](supply-chain.md) for dependency-update review,
 package publication checks, and optional external advisory/license/source
 checks. `cargo-audit` and `cargo-deny` are recommended when available, but they
@@ -60,6 +63,7 @@ Each release note should include:
 - migration or compatibility notes
 - dependency and supply-chain notes
 - validation commands run
+- integration coverage and skipped coverage by surface
 - skipped integration tests and why they were skipped
 
 ## Publication

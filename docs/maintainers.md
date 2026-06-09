@@ -48,10 +48,11 @@ Before tagging or publishing:
 2. Confirm [docs/security-model.md](security-model.md),
    [docs/versioning.md](versioning.md), and
    [docs/supply-chain.md](supply-chain.md) match the release claims.
-3. Update `CHANGELOG.md`.
-4. Run the release gate in [docs/release.md](release.md).
-5. Record unavailable integration and external audit-tool coverage.
-6. Confirm crate/package metadata and repository URLs are correct.
+3. Confirm [docs/testing.md](testing.md) matches the tested surfaces.
+4. Update `CHANGELOG.md`.
+5. Run the release gate in [docs/release.md](release.md).
+6. Record unavailable integration and external audit-tool coverage.
+7. Confirm crate/package metadata and repository URLs are correct.
 
 ## Compatibility Stewardship
 

@@ -79,6 +79,9 @@ python3 scripts/governance/build_agents.py --check
 python3 scripts/governance/check_codex_governance.py
 ```
 
+For focused crate checks, example validation, Docker integration prerequisites,
+and live coverage reporting, see [docs/testing.md](testing.md).
+
 The workspace test suite contains a Docker integration test that is ignored by
 default because it requires a Docker daemon and a locally available test image.
 Record that limitation in release notes or pull requests when Docker was not

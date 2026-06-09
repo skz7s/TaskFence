@@ -19,6 +19,8 @@ development snapshots and readiness milestones.
   interface.
 - Rustdoc generation with warnings denied in the documented release and CI
   gates.
+- Public testing strategy for default CI, focused crate checks, examples,
+  Docker integration prerequisites, and skipped coverage reporting.
 
 ### Current Preview Scope
 
