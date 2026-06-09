@@ -46,6 +46,8 @@
 - `docs/config/*.md` 放环境变量、部署和操作参数
 - `docs/decisions/*.md` 放持久治理、部署、依赖源、安全或架构决策记录
 - `docs/quickstart.md` 放首次贡献者无需 Docker/token 的成功路径
+- `docs/cli-reference.md` 放当前 preview CLI 命令、参数和本地证据工作流参考
+- `docs/task-file-reference.md` 放当前 preview task YAML 字段、默认值和 fail-closed 限制
 - `docs/security-model.md` 放面向外部审查的安全边界、受保护资产、威胁范围和当前限制
 - `docs/versioning.md` 放 preview 版本、MSRV、task-file、CLI、结构化证据和弃用兼容策略
 - `docs/supply-chain.md` 放依赖更新、外部审计工具、包发布和 secret/source hygiene 策略

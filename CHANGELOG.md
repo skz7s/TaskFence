@@ -15,6 +15,8 @@ development snapshots and readiness milestones.
   validation.
 - Public security model, versioning and compatibility policy, and supply-chain
   maintenance policy for preview releases.
+- Public CLI and task-file reference documentation for the implemented preview
+  interface.
 
 ### Current Preview Scope
 

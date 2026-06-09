@@ -3,6 +3,10 @@
 Examples are designed to separate deterministic local validation from surfaces
 that require operator-provided infrastructure.
 
+For field-level task YAML details, see
+[Task File Reference](../docs/task-file-reference.md). For command syntax, see
+[CLI Reference](../docs/cli-reference.md).
+
 ## Quick Matrix
 
 | File | Purpose | Runs Without Docker | Needs Live Credentials |

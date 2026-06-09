@@ -421,6 +421,8 @@ independent and does not require team state.
 - [Roadmap](docs/roadmap.md)
 - [Development Design](docs/development-design.md)
 - [Quickstart](docs/quickstart.md)
+- [CLI Reference](docs/cli-reference.md)
+- [Task File Reference](docs/task-file-reference.md)
 - [Security Model](docs/security-model.md)
 - [Versioning And Compatibility](docs/versioning.md)
 - [Supply-Chain Maintenance](docs/supply-chain.md)

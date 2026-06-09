@@ -80,6 +80,9 @@ When a task-file change is intentionally breaking, release notes must include
 the old shape, the new shape, the migration path, and any fail-closed behavior
 users should expect.
 
+Task-file changes must keep [docs/task-file-reference.md](task-file-reference.md)
+aligned with the parser and examples.
+
 ## CLI Compatibility
 
 The `taskfence` CLI is preview-level. Maintainers should keep documented
@@ -89,6 +92,9 @@ CLI changes must update examples, quickstart docs, release docs, and issue/PR
 templates when they alter user-facing commands or validation expectations.
 Removing a documented command should include at least one preview release note
 of warning unless the old command is unsafe.
+
+CLI changes must keep [docs/cli-reference.md](cli-reference.md) aligned with
+the Clap command tree.
 
 ## Evidence And API Compatibility
 
