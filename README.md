@@ -1,5 +1,10 @@
 # TaskFence
 
+[![CI](https://github.com/skz7s/TaskFence/actions/workflows/ci.yml/badge.svg)](https://github.com/skz7s/TaskFence/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![MSRV: 1.88](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](docs/versioning.md)
+[![Status: local preview](https://img.shields.io/badge/status-local%20preview-yellow.svg)](docs/config/readiness-checklist.md)
+
 TaskFence is an open-source secure runtime and gateway for AI agent tasks.
 
 It helps teams run AI agents against real repositories, tools, and internal

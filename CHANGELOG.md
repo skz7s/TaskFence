@@ -29,6 +29,8 @@ development snapshots and readiness milestones.
   security changes, compatibility impact, validation evidence, skipped
   integration coverage, supply-chain notes, known issues, and publication
   approvals.
+- README badges for CI, Apache-2.0 licensing, Rust MSRV, and local-preview
+  readiness status.
 
 ### Current Preview Scope
 
