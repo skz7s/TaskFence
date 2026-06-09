@@ -299,14 +299,14 @@ mod tests {
                 task_id: task.id,
                 chunk: LogChunk {
                     stream: LogStream::Stdout,
-                    text: "token=sk-testsecret\x1b[31m password=hunter2".into(),
+                    text: "token=FAKE_SECRET_TOKEN\x1b[31m password=FAKE_PASSWORD".into(),
                     timestamp: datetime!(2024-01-01 00:00 UTC),
                 },
             })
             .unwrap();
 
         let contents = fs::read_to_string(path).unwrap();
-        assert!(!contents.contains("sk-testsecret"));
+        assert!(!contents.contains("FAKE_SECRET_TOKEN"));
         assert!(!contents.contains("hunter2"));
         assert!(!contents.contains('\x1b'));
         assert!(contents.contains(REDACTION_MARKER));

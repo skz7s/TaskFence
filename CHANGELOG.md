@@ -42,6 +42,8 @@ development snapshots and readiness milestones.
 - Installation documentation for the supported source-build path, local binary
   commands, runtime prerequisites, and unsupported distribution channels.
 - Locked package manifest inspection in CI and release documentation.
+- Placeholder secret strings in tests avoid real provider-token shapes while
+  preserving redaction coverage.
 
 ### Current Preview Scope
 

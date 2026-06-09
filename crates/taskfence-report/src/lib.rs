@@ -894,7 +894,7 @@ mod tests {
             AuditEvent::PolicyDecision {
                 task_id: task.id.clone(),
                 at: datetime!(2024-01-01 00:01 UTC),
-                action: Action::Command(CommandAction::parse("npm test --token sk-testsecret")),
+                action: Action::Command(CommandAction::parse("npm test --token=FAKE_SECRET_TOKEN")),
                 decision: ActionDecision::Deny {
                     rule_id: Some("deny-token".into()),
                     reason: "command contains token".into(),
@@ -924,7 +924,7 @@ mod tests {
         assert!(contents.contains("## Summary"));
         assert!(contents.contains("Final status: Failed"));
         assert!(contents.contains("dirty_before_run: false"));
-        assert!(!contents.contains("sk-testsecret"));
+        assert!(!contents.contains("FAKE_SECRET_TOKEN"));
         assert!(contents.contains("[redacted]"));
     }
 
@@ -1020,7 +1020,7 @@ mod tests {
             operation: "create_pr".into(),
             parameters: BTreeMap::from([(
                 "authorization".into(),
-                RedactedValue::Plain("Bearer sk-secret-should-not-render".into()),
+                RedactedValue::Plain("Bearer FAKE_SECRET_SHOULD_NOT_RENDER".into()),
             )]),
         });
         let approval_decision = ActionDecision::RequireApproval {
@@ -1086,7 +1086,7 @@ mod tests {
             .contains("tool call mcp github.delete_repo denied: tool call matched deny rule"));
         assert!(contents.contains("| approval-tool-1 | gateway | approved |"));
         assert!(!contents.contains("ghp_secret_should_not_render"));
-        assert!(!contents.contains("sk-secret-should-not-render"));
+        assert!(!contents.contains("FAKE_SECRET_SHOULD_NOT_RENDER"));
     }
 
     #[test]
