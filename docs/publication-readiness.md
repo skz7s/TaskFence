@@ -9,9 +9,9 @@ Current remote status observed from this checkout:
 - Repository: `skz7s/TaskFence`
 - Default branch: `main`
 - GitHub visibility: private
-- GitHub description: empty
-- GitHub homepage URL: empty
-- GitHub topics: none observed
+- GitHub description: `Secure runtime and gateway for AI agent tasks`
+- GitHub homepage URL: `https://github.com/skz7s/TaskFence#readme`
+- GitHub topics observed: `agents`, `ai`, `gateway`, `policy`, `sandbox`
 - GitHub issues: enabled
 - GitHub projects: enabled
 - GitHub wiki: disabled
@@ -81,9 +81,10 @@ These settings are external state; do not claim they are configured unless
 verified in GitHub.
 
 As of the latest local audit, the repository still needs external GitHub
-settings review before publication because the description, homepage, and
-topics are empty, vulnerability alerts are disabled, and branch protection was
-not confirmable through the API while the repository remained private.
+settings review before publication because vulnerability alerts are disabled,
+branch protection was not confirmable through the API while the repository
+remained private, and private vulnerability reporting, secret scanning, push
+protection, and Dependabot security updates still need maintainer confirmation.
 
 ## Publication Steps
 
