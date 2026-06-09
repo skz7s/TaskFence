@@ -47,6 +47,9 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --locked
 
+      - name: Build documentation
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+
       - name: Check package manifests
         run: cargo package --workspace --no-verify
 

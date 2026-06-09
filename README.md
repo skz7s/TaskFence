@@ -453,6 +453,7 @@ cargo fmt --all
 cargo check --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 ```
 
 Governance validation:
@@ -473,10 +474,11 @@ The checklist separates local preview, beta-candidate, and not-production
 supported surfaces. It is read-only and does not start a daemon or install
 dependencies.
 
-GitHub Actions runs the Rust workspace gate, generated-governance drift checks,
-shell syntax check, and readiness output on pull requests. Docker, database,
-remote runner, and live connector integration tests still require matching
-local services or credentials and must be called out explicitly when skipped.
+GitHub Actions runs the Rust workspace gate, rustdoc generation with warnings
+denied, generated-governance drift checks, shell syntax check, and readiness
+output on pull requests. Docker, database, remote runner, and live connector
+integration tests still require matching local services or credentials and
+must be called out explicitly when skipped.
 See [Supply-Chain Maintenance](docs/supply-chain.md) for dependency update and
 external advisory-tool expectations.
 

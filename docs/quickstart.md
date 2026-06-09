@@ -74,6 +74,7 @@ cargo fmt --all --check
 cargo check --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 python3 scripts/governance/build_agents.py --check
 python3 scripts/governance/check_codex_governance.py
 ```

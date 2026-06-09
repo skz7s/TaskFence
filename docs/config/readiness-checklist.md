@@ -8,7 +8,8 @@ deployment claim.
 
 - Rust 1.88 or newer workspace build and validation through `cargo fmt --all`,
   `cargo check --workspace --locked`, `cargo clippy --workspace --all-targets
-  --locked -- -D warnings`, and `cargo test --workspace --locked`.
+  --locked -- -D warnings`, `cargo test --workspace --locked`, and
+  `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked`.
 - Local task-file scaffolding, validation, Docker execution when Docker and the
   task image are already available, local review serving, local replay for
   supported inputs, bounded gateway fixture/GitHub/enterprise connector
@@ -51,6 +52,7 @@ cargo fmt --all --check
 cargo check --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 cargo package --workspace --no-verify
 python3 scripts/governance/build_agents.py --check
 python3 scripts/governance/check_codex_governance.py
@@ -72,9 +74,10 @@ packages from crates.io.
 
 ## Repository Automation
 
-GitHub Actions checks the Rust workspace gate with locked dependencies, package
-manifest inclusion, generated-governance drift, governance asset health, shell
-syntax, and readiness output for pull requests and pushes to `main`. Dependabot
-proposes Cargo and GitHub Actions dependency updates weekly. CI does not imply
-Docker, database, remote runner, or live connector integration coverage unless a
-workflow explicitly provisions those services.
+GitHub Actions checks the Rust workspace gate with locked dependencies, rustdoc
+generation with warnings denied, package manifest inclusion, generated-governance
+drift, governance asset health, shell syntax, and readiness output for pull
+requests and pushes to `main`. Dependabot proposes Cargo and GitHub Actions
+dependency updates weekly. CI does not imply Docker, database, remote runner, or
+live connector integration coverage unless a workflow explicitly provisions
+those services.

@@ -10,7 +10,7 @@ Review runtime changes in this order:
    [docs/security-model.md](security-model.md).
 2. Typed contracts at crate boundaries.
 3. Evidence quality for audit, reports, approvals, and artifacts.
-4. Documentation accuracy and readiness claims.
+4. Documentation accuracy, rustdoc health, and readiness claims.
 5. Developer ergonomics.
 
 ## Boundary Claims

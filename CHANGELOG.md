@@ -17,6 +17,8 @@ development snapshots and readiness milestones.
   maintenance policy for preview releases.
 - Public CLI and task-file reference documentation for the implemented preview
   interface.
+- Rustdoc generation with warnings denied in the documented release and CI
+  gates.
 
 ### Current Preview Scope
 

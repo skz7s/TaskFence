@@ -247,7 +247,7 @@ enum ReplayCommand {
         /// Workspace that owns the .taskfence task evidence directory.
         #[arg(long, default_value = ".")]
         workspace: Utf8PathBuf,
-        /// Override the replay task id. Defaults to <task-id>-replay.
+        /// Override the replay task id. Defaults to TASK_ID-replay.
         #[arg(long)]
         replay_id: Option<String>,
         /// Execute despite recorded non-deterministic limitations.
