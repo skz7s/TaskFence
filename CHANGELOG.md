@@ -34,6 +34,7 @@ development snapshots and readiness milestones.
 - GitHub issue routing for documentation issues and support questions, with
   blank issues disabled to keep security and support reports on documented
   paths.
+- CODEOWNERS default review routing for public pull request triage.
 
 ### Current Preview Scope
 

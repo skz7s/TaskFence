@@ -13,6 +13,17 @@ Review runtime changes in this order:
 4. Documentation accuracy, rustdoc health, and readiness claims.
 5. Developer ergonomics.
 
+## Review Routing
+
+`.github/CODEOWNERS` routes default pull request review to the public
+repository owner, `@skz7s`. This is a lightweight triage signal for the current
+preview project. It does not create production support, hosted-service,
+incident-response, or module-owner commitments.
+
+Add narrower code owners only when maintainers are explicitly confirmed for a
+subsystem. Do not use CODEOWNERS to imply support for production surfaces that
+remain unsupported in `docs/config/readiness-checklist.md`.
+
 ## Boundary Claims
 
 Do not describe a surface as production supported until it has:

@@ -88,6 +88,8 @@ Report vulnerabilities through [SECURITY.md](SECURITY.md), not public issues.
 ## Pull Request Guidelines
 
 - Keep changes scoped to one feature, fix, or documentation improvement.
+- `CODEOWNERS` routes default pull request review to the public repository
+  owner; this is a triage path, not a support SLA.
 - Include tests for runtime behavior, especially deny/approval/error branches.
 - Update affected docs in the same change when commands, schema, examples,
   readiness status, or public behavior changes.
