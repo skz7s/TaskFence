@@ -1,3 +1,10 @@
+//! Sandbox runner planning and execution backends for TaskFence.
+//!
+//! This crate prepares local Docker and remote SSH runs, reports backend
+//! capability limits, and rejects unsupported or unenforceable isolation claims
+//! instead of silently weakening policy. Kubernetes, microVM, and managed-cloud
+//! runner families remain typed capability contracts until implemented.
+
 use camino::{Utf8Path, Utf8PathBuf};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;

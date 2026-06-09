@@ -1,3 +1,10 @@
+//! Agent invocation profiles for TaskFence.
+//!
+//! This crate builds runner-facing agent commands for generic CLI agents and
+//! known coding-agent profiles. Specialized profiles add non-secret hints and
+//! conservative policy-template guidance only; provider credentials and host
+//! secrets remain outside the sandbox by default.
+
 use std::collections::BTreeMap;
 
 use taskfence_core::{

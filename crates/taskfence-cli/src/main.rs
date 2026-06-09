@@ -1,3 +1,10 @@
+//! Command-line interface for the TaskFence local preview runtime.
+//!
+//! The binary owns terminal UX for task initialization, validation, local
+//! runner execution, approval commands, gateway fixture/live connector calls,
+//! local review, replay planning, and local team-state commands. It does not
+//! start a production daemon or claim unsupported production surfaces.
+
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use serde::Serialize;

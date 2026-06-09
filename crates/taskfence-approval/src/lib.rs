@@ -1,3 +1,10 @@
+//! Local approval records and resolution flows for TaskFence.
+//!
+//! This crate owns fail-closed approval behavior for local runs, including
+//! preconfigured decisions, terminal prompts, and workspace-local external
+//! approval queues. Production team approval services remain outside this
+//! crate's current preview scope.
+
 use camino::{Utf8Path, Utf8PathBuf};
 use std::collections::BTreeMap;
 use std::fs;

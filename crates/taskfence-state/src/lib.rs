@@ -1,3 +1,10 @@
+//! Queryable local and team state models for TaskFence evidence.
+//!
+//! This crate reads workspace-local task evidence, maintains local review
+//! indexes, plans replay and migration inputs, and models local/team state
+//! service behavior. The current team surface is library and CLI state
+//! foundation, not a deployed production daemon.
+
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};

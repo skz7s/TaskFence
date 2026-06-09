@@ -1,3 +1,10 @@
+//! Fail-closed built-in policy decisions for TaskFence.
+//!
+//! This crate evaluates path, command, network, environment, gateway-tool, and
+//! budget actions against resolved task permissions. Explicit deny wins over
+//! approval and allow, approval-required wins over allow, and no matching rule
+//! defaults to deny.
+
 use globset::{Glob, GlobMatcher};
 use serde::{Deserialize, Serialize};
 use taskfence_core::{

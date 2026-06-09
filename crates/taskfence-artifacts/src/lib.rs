@@ -1,3 +1,10 @@
+//! Local artifact layout and contained artifact writes for TaskFence tasks.
+//!
+//! This crate creates workspace-local `.taskfence/tasks/<task-id>` evidence
+//! directories, writes resolved task inputs and logs, prepares gateway spool
+//! files, captures Git baselines, and collects diffs without treating rendered
+//! reports as source-of-truth state.
+
 use camino::{Utf8Path, Utf8PathBuf};
 use std::fs::{self, File};
 use std::io::Write;

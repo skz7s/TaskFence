@@ -1,3 +1,10 @@
+//! Shared domain contracts for the TaskFence workspace.
+//!
+//! This crate owns task, policy, approval, audit, artifact, runner, gateway,
+//! report, and state types that cross crate boundaries. Concrete CLI, runner,
+//! gateway, and storage implementations live in sibling crates behind these
+//! typed contracts.
+
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

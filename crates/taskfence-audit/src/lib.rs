@@ -1,3 +1,10 @@
+//! Structured audit logging and redaction support for TaskFence.
+//!
+//! This crate writes append-only JSONL audit events and sanitizes secret-like
+//! fields before persistence. Audit evidence is intended to feed reports,
+//! replay planning, local review, and future team state without scraping
+//! terminal output.
+
 use camino::{Utf8Path, Utf8PathBuf};
 use serde_json::Value;
 use std::fs::{self, File, OpenOptions};

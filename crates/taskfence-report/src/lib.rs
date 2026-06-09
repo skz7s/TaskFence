@@ -1,3 +1,9 @@
+//! Markdown and compliance report rendering from structured TaskFence evidence.
+//!
+//! This crate renders reports from resolved task data, artifact references, and
+//! audit events. Reports are review artifacts; local and team state should
+//! continue to use structured evidence as the source of truth.
+
 use camino::{Utf8Path, Utf8PathBuf};
 use std::fs::{self, File};
 use std::io::Write;

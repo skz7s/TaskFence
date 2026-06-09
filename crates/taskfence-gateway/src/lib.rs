@@ -1,3 +1,10 @@
+//! Gateway mediation, tool registry, and secret-broker helpers for TaskFence.
+//!
+//! This crate executes configured local fixture tools, bounded GitHub and
+//! enterprise connector operations, local gateway spool requests, and
+//! allowlisted egress helper calls. It keeps raw credentials gateway-side and
+//! treats unsupported operations as structured fail-closed evidence.
+
 use base64::Engine as _;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};

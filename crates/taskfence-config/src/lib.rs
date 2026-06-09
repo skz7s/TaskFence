@@ -1,3 +1,10 @@
+//! Task-file parsing, validation, and path resolution for TaskFence.
+//!
+//! This crate resolves YAML task files into typed runtime configuration with
+//! fail-closed behavior for unknown fields, parent-directory escapes, unsafe
+//! secret exposure, unsupported runner capabilities, and unsupported gateway
+//! network allowlist claims.
+
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Deserialize;
 use std::fs;

@@ -1,3 +1,9 @@
+//! Test fakes, fixtures, and sample TaskFence task data.
+//!
+//! This crate provides reusable in-memory implementations and fixture builders
+//! for sibling crates. It is intended for tests and examples, not for runtime
+//! policy or production state behavior.
+
 use camino::Utf8PathBuf;
 use std::cell::RefCell;
 use std::collections::BTreeMap;

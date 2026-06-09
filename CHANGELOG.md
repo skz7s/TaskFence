@@ -35,6 +35,8 @@ development snapshots and readiness milestones.
   blank issues disabled to keep security and support reports on documented
   paths.
 - CODEOWNERS default review routing for public pull request triage.
+- Crate-level rustdoc introductions for workspace crates and the CLI binary,
+  documenting crate responsibilities and preview boundaries.
 
 ### Current Preview Scope
 
