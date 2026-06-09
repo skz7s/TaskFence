@@ -41,6 +41,8 @@ development snapshots and readiness milestones.
   pull request validation.
 - Installation documentation for the supported source-build path, local binary
   commands, runtime prerequisites, and unsupported distribution channels.
+- Troubleshooting documentation for local-preview setup, validation, Docker,
+  approval, gateway, SSH, artifact, governance, and CI failures.
 - Locked package manifest inspection in CI and release documentation.
 - Placeholder secret strings in tests avoid real provider-token shapes while
   preserving redaction coverage.

@@ -431,6 +431,7 @@ independent and does not require team state.
 - [Development Design](docs/development-design.md)
 - [Installation](docs/installation.md)
 - [Quickstart](docs/quickstart.md)
+- [Troubleshooting](docs/troubleshooting.md)
 - [CLI Reference](docs/cli-reference.md)
 - [Task File Reference](docs/task-file-reference.md)
 - [Testing Strategy](docs/testing.md)

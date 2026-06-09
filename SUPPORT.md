@@ -14,6 +14,8 @@ Use GitHub issues for:
 Use the matching issue template for bug reports, feature requests,
 documentation issues, or support questions. Blank issues are disabled so
 security reports and support requests are routed through the documented paths.
+For local-preview setup and validation failures, check
+[docs/troubleshooting.md](docs/troubleshooting.md) before opening an issue.
 
 Include:
 

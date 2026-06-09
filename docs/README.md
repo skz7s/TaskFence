@@ -9,6 +9,8 @@ surfaces and explicit limitations, not future production support.
 - [Installation](installation.md): current source-build path, local binary
   commands, and unsupported distribution channels.
 - [Quickstart](quickstart.md): no-Docker validation and fixture gateway path.
+- [Troubleshooting](troubleshooting.md): common local-preview setup,
+  validation, Docker, approval, gateway, SSH, artifact, and CI failures.
 - [Contributing](../CONTRIBUTING.md): contribution workflow, validation, and
   security expectations.
 - [Testing Strategy](testing.md): CI gate, focused crate checks, examples,

@@ -57,8 +57,9 @@ python3 scripts/governance/check_codex_governance.py
 
 The repository should also have:
 
-- `README.md`, `docs/README.md`, `docs/installation.md`, and
-  `docs/quickstart.md` aligned with the local-preview source-build path
+- `README.md`, `docs/README.md`, `docs/installation.md`,
+  `docs/quickstart.md`, and `docs/troubleshooting.md` aligned with the
+  local-preview source-build path
 - `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `SUPPORT.md`, and
   `CHANGELOG.md`
 - GitHub Actions CI, Dependabot, pull request template, issue templates, and
