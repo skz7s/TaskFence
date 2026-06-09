@@ -330,7 +330,9 @@ mod tests {
                         operation: "create_pr".into(),
                         parameters: BTreeMap::from([(
                             "authorization".into(),
-                            RedactedValue::Plain("Bearer ghp_secret_should_not_survive".into()),
+                            RedactedValue::Plain(
+                                "Bearer PROVIDER_SECRET_SHOULD_NOT_SURVIVE".into(),
+                            ),
                         )]),
                     },
                     adapter: Some(ToolAdapterIdentity {
@@ -342,7 +344,7 @@ mod tests {
             .unwrap();
 
         let contents = fs::read_to_string(path).unwrap();
-        assert!(!contents.contains("ghp_secret_should_not_survive"));
+        assert!(!contents.contains("PROVIDER_SECRET_SHOULD_NOT_SURVIVE"));
         let event: AuditEvent = serde_json::from_str(contents.lines().next().unwrap()).unwrap();
         assert!(matches!(
             event,

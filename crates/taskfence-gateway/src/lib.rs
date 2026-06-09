@@ -5886,7 +5886,7 @@ mod tests {
 
     #[test]
     fn github_rest_read_issue_uses_live_token_without_auditing_it() {
-        let token = "ghp_live_test_token";
+        let token = "provider-live-test-token";
         let client = RecordingGitHubClient::default();
         let adapter = GitHubRestAdapter::new(github_rest_tool("read_issue"), client.clone());
         let broker = StaticLiveSecretBroker::new(token);
@@ -5964,7 +5964,7 @@ mod tests {
 
     #[test]
     fn github_rest_create_pr_runs_after_approval() {
-        let token = "ghp_live_test_token";
+        let token = "provider-live-test-token";
         let client = RecordingGitHubClient::default();
         let adapter = GitHubRestAdapter::new(github_rest_tool("create_pr"), client.clone());
         let broker = StaticLiveSecretBroker::new(token);
@@ -6071,7 +6071,7 @@ mod tests {
 
     #[test]
     fn github_rest_comment_issue_uses_mocked_api_client() {
-        let token = "ghp_live_test_token";
+        let token = "provider-live-test-token";
         let client = RecordingGitHubClient::default();
         let adapter = GitHubRestAdapter::new(github_rest_tool("comment_issue"), client.clone());
         let broker = StaticLiveSecretBroker::new(token);
@@ -6133,7 +6133,7 @@ mod tests {
 
     #[test]
     fn github_rest_create_branch_runs_after_approval() {
-        let token = "ghp_live_test_token";
+        let token = "provider-live-test-token";
         let client = RecordingGitHubClient::default();
         let adapter = GitHubRestAdapter::new(github_rest_tool("create_branch"), client.clone());
         let broker = StaticLiveSecretBroker::new(token);
@@ -6201,7 +6201,7 @@ mod tests {
 
     #[test]
     fn github_rest_commit_file_uses_safe_path_branch_and_sha() {
-        let token = "ghp_live_test_token";
+        let token = "provider-live-test-token";
         let client = RecordingGitHubClient::default();
         let adapter = GitHubRestAdapter::new(github_rest_tool("commit_file"), client.clone());
         let broker = StaticLiveSecretBroker::new(token);
@@ -6282,7 +6282,7 @@ mod tests {
 
     #[test]
     fn github_rest_update_pr_requires_update_fields_and_safe_state() {
-        let token = "ghp_live_test_token";
+        let token = "provider-live-test-token";
         let client = RecordingGitHubClient::default();
         let adapter = GitHubRestAdapter::new(github_rest_tool("update_pr"), client.clone());
         let broker = StaticLiveSecretBroker::new(token);
@@ -6366,7 +6366,7 @@ mod tests {
 
     #[test]
     fn github_rest_comment_report_posts_structured_pr_comment() {
-        let token = "ghp_live_test_token";
+        let token = "provider-live-test-token";
         let client = RecordingGitHubClient::default();
         let adapter = GitHubRestAdapter::new(github_rest_tool("comment_report"), client.clone());
         let broker = StaticLiveSecretBroker::new(token);
@@ -6431,7 +6431,7 @@ mod tests {
     fn github_rest_commit_file_rejects_path_escape_before_client_call() {
         let client = RecordingGitHubClient::default();
         let adapter = GitHubRestAdapter::new(github_rest_tool("commit_file"), client.clone());
-        let broker = StaticLiveSecretBroker::new("ghp_live_test_token");
+        let broker = StaticLiveSecretBroker::new("provider-live-test-token");
         let policy = BuiltInPolicyEngine;
         let audit = RecordingAudit::default();
         let registry =
@@ -6481,7 +6481,7 @@ mod tests {
     fn github_rest_unsupported_operation_fails_closed() {
         let client = RecordingGitHubClient::default();
         let adapter = GitHubRestAdapter::new(github_rest_tool("close_issue"), client.clone());
-        let broker = StaticLiveSecretBroker::new("ghp_live_test_token");
+        let broker = StaticLiveSecretBroker::new("provider-live-test-token");
         let policy = BuiltInPolicyEngine;
         let audit = RecordingAudit::default();
         let registry =
@@ -6527,7 +6527,7 @@ mod tests {
 
     #[test]
     fn github_enterprise_rest_reuses_bounded_github_adapter_without_auditing_token() {
-        let token = "ghp_enterprise_live_secret";
+        let token = "provider-enterprise-live-secret";
         let client = RecordingGitHubClient::default();
         let mut tool = github_rest_tool("read_issue");
         tool.connector = GatewayConnectorConfig::GitHubEnterpriseRest {

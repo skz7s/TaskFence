@@ -5994,7 +5994,7 @@ mod tests {
     #[test]
     fn gateway_call_approved_create_pr_redacts_secret_references_and_fixture_output() {
         let (_temp, workspace, task_file) = gateway_fixture_task("gateway-secret-redaction");
-        let raw_secret = "ghp_phase4rawsecret";
+        let raw_secret = "provider-phase4-raw-secret";
 
         run_gateway_call(
             task_file,
@@ -6117,8 +6117,8 @@ mod tests {
         let report = report_text(workspace, &task_id).unwrap();
         assert!(event_text.contains("SecretUnavailable"));
         assert!(report.contains("SecretUnavailable"));
-        assert!(!event_text.contains("ghp_"));
-        assert!(!report.contains("ghp_"));
+        assert!(!event_text.contains("provider-live-test-token"));
+        assert!(!report.contains("provider-live-test-token"));
     }
 
     #[test]

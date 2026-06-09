@@ -1011,7 +1011,7 @@ mod tests {
             operation: "delete_repo".into(),
             parameters: BTreeMap::from([(
                 "token".into(),
-                RedactedValue::Plain("ghp_secret_should_not_render".into()),
+                RedactedValue::Plain("PROVIDER_SECRET_SHOULD_NOT_RENDER".into()),
             )]),
         });
         let approval_action = Action::ToolCall(ToolAction {
@@ -1085,7 +1085,7 @@ mod tests {
         assert!(contents
             .contains("tool call mcp github.delete_repo denied: tool call matched deny rule"));
         assert!(contents.contains("| approval-tool-1 | gateway | approved |"));
-        assert!(!contents.contains("ghp_secret_should_not_render"));
+        assert!(!contents.contains("PROVIDER_SECRET_SHOULD_NOT_RENDER"));
         assert!(!contents.contains("FAKE_SECRET_SHOULD_NOT_RENDER"));
     }
 
