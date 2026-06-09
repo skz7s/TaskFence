@@ -37,6 +37,8 @@ development snapshots and readiness milestones.
 - CODEOWNERS default review routing for public pull request triage.
 - Crate-level rustdoc introductions for workspace crates and the CLI binary,
   documenting crate responsibilities and preview boundaries.
+- GitHub Actions concurrency cancellation and job timeouts for bounded public
+  pull request validation.
 
 ### Current Preview Scope
 

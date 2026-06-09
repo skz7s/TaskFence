@@ -81,11 +81,13 @@ packages from crates.io.
 GitHub Actions checks the Rust workspace gate with locked dependencies, rustdoc
 generation with warnings denied, package manifest inclusion, generated-governance
 drift, governance asset health, shell syntax, and readiness output for pull
-requests and pushes to `main`. Dependabot proposes Cargo and GitHub Actions
-dependency updates weekly. CODEOWNERS routes default pull request review to the
-public repository owner as a triage signal. Issue templates route bug reports,
-feature requests, documentation issues, and support questions; blank issues are
-disabled so security reports and support requests follow the documented paths.
+requests and pushes to `main`. CI cancels superseded runs on the same ref and
+sets job timeouts for the MSRV, Rust workspace, and governance/readiness jobs.
+Dependabot proposes Cargo and GitHub Actions dependency updates weekly.
+CODEOWNERS routes default pull request review to the public repository owner as
+a triage signal. Issue templates route bug reports, feature requests,
+documentation issues, and support questions; blank issues are disabled so
+security reports and support requests follow the documented paths.
 `.editorconfig` records editor whitespace defaults, and `.gitattributes`
 normalizes committed text to LF while marking generated governance output for
 repository statistics. CI does not imply Docker, database, remote runner, or
