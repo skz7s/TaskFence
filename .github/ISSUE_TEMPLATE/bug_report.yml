@@ -1,0 +1,71 @@
+name: Bug report
+description: Report reproducible TaskFence behavior that appears incorrect.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include secrets, tokens, private URLs, or credential-bearing logs.
+        Use the security reporting path for approval bypass, sandbox escape, secret exposure, or audit integrity issues.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Provide the smallest task file, command, or steps that reproduce the issue.
+      placeholder: |
+        cargo run -p taskfence-cli -- validate examples/task.yaml
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: TaskFence version or commit
+      placeholder: 0.1.0 or commit SHA
+  - type: input
+    id: rust
+    attributes:
+      label: Rust version
+      placeholder: rustc --version
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - CLI
+        - Config/schema
+        - Policy
+        - Approval
+        - Audit/artifacts/report
+        - Docker runner
+        - Remote SSH runner
+        - Gateway connector
+        - Local review/replay
+        - Team state
+        - Governance/docs
+        - Other
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation tried
+      description: Commands run and a short summary of the result.

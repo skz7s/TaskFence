@@ -15,7 +15,8 @@ or generalized by governance sync.
 - `deploy/manage.sh` is the only supported project-local operations entrypoint.
 - No legacy `setup.sh`, `deploy.sh`, or `build.sh` wrappers are currently part of the supported contract.
 - Default dependency policy is reuse-first: discover tools, record paths, and install missing tools only when the operator explicitly asks.
-- Current local development target is the Rust workspace rooted at `Cargo.toml`.
+- Current local development target is the Rust 1.88+ workspace rooted at
+  `Cargo.toml`.
 - Current deployment target is not implemented. Do not add systemd, launchd, Docker image deployment, or persistent service behavior until a concrete TaskFence runtime command is ready.
 - The team-state foundation is a library and local CLI surface, including local audit-export artifact generation. It does not add a supported deployed API server, worker service, managed Postgres service, background audit-export service, port, launchd unit, systemd unit, or deployment command.
 - Do not generalize Ubuntu-only, Debian-only, macOS-only, WSL-specific, or other OS-specific deployment facts into generic Linux systemd support.
@@ -36,8 +37,9 @@ Rust validation gates:
 
 ```bash
 cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo check --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 ```
 
 Local runner smoke test:

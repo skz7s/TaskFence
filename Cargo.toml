@@ -19,8 +19,13 @@ members = [
 [workspace.package]
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/taskfence/taskfence"
-rust-version = "1.78"
+repository = "https://github.com/skz7s/TaskFence"
+rust-version = "1.88"
+homepage = "https://github.com/skz7s/TaskFence"
+documentation = "https://github.com/skz7s/TaskFence/tree/main/docs"
+readme = "README.md"
+keywords = ["ai", "agents", "sandbox", "policy", "gateway"]
+categories = ["command-line-utilities", "development-tools"]
 
 [workspace.dependencies]
 camino = { version = "1.1", features = ["serde1"] }

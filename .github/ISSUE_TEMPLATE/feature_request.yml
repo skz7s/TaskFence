@@ -1,0 +1,50 @@
+name: Feature request
+description: Propose a TaskFence improvement inside the project boundary.
+title: "feature: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        TaskFence is a task-level secure runtime and gateway around AI agents, not a new general-purpose agent framework.
+        Please separate implemented behavior from future production claims.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or operator problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What should TaskFence do?
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security and policy impact
+      description: Which permissions, approvals, secrets, audit evidence, or sandbox boundaries are affected?
+    validations:
+      required: true
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Non-goals
+      description: What should this proposal explicitly not do?
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: readiness
+    attributes:
+      label: Intended readiness level
+      options:
+        - Local preview
+        - Beta candidate
+        - Production-supported proposal
+        - Unsure

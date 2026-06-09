@@ -416,18 +416,31 @@ independent and does not require team state.
 - [Architecture](docs/architecture.md)
 - [Roadmap](docs/roadmap.md)
 - [Development Design](docs/development-design.md)
+- [Readiness Checklist](docs/config/readiness-checklist.md)
+- [Release Process](docs/release.md)
+- [Maintainer Guide](docs/maintainers.md)
+- [Decision Records](docs/decisions/README.md)
+
+## Community
+
+- [Contributing Guide](CONTRIBUTING.md)
+- [Code Of Conduct](CODE_OF_CONDUCT.md)
+- [Security Policy](SECURITY.md)
+- [Support Policy](SUPPORT.md)
+- [Changelog](CHANGELOG.md)
 
 ## Development
 
 TaskFence uses a Rust workspace rooted at `Cargo.toml`. The workspace currently
-targets Rust 1.78 or newer.
+targets Rust 1.88 or newer.
 
 Core validation gates:
 
 ```bash
 cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo check --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 ```
 
 Governance validation:
@@ -447,6 +460,11 @@ bash deploy/manage.sh readiness
 The checklist separates local preview, beta-candidate, and not-production
 supported surfaces. It is read-only and does not start a daemon or install
 dependencies.
+
+GitHub Actions runs the Rust workspace gate, generated-governance drift checks,
+shell syntax check, and readiness output on pull requests. Docker, database,
+remote runner, and live connector integration tests still require matching
+local services or credentials and must be called out explicitly when skipped.
 
 ## Initial Scope
 

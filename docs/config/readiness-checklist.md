@@ -6,9 +6,9 @@ deployment claim.
 
 ## Local Preview Supported
 
-- Rust workspace build and validation through `cargo fmt --all`,
-  `cargo clippy --workspace --all-targets -- -D warnings`, and
-  `cargo test --workspace`.
+- Rust 1.88 or newer workspace build and validation through `cargo fmt --all`,
+  `cargo check --workspace --locked`, `cargo clippy --workspace --all-targets
+  --locked -- -D warnings`, and `cargo test --workspace --locked`.
 - Local task-file scaffolding, validation, Docker execution when Docker and the
   task image are already available, local review serving, local replay for
   supported inputs, bounded gateway fixture/GitHub/enterprise connector
@@ -48,10 +48,22 @@ Run from the repository root:
 bash deploy/manage.sh readiness
 bash -n deploy/manage.sh
 cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo check --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+python3 scripts/governance/build_agents.py --check
+python3 scripts/governance/check_codex_governance.py
 ```
 
 Docker, database, remote runner, and live connector integration tests require
 matching local services or credentials. When unavailable, record the exact
 limitation in release notes instead of claiming coverage.
+
+## Repository Automation
+
+GitHub Actions checks the Rust workspace gate with locked dependencies,
+generated-governance drift, governance asset health, shell syntax, and
+readiness output for pull requests and pushes to `main`. Dependabot proposes
+Cargo and GitHub Actions dependency updates weekly. CI does not imply Docker,
+database, remote runner, or live connector integration coverage unless a
+workflow explicitly provisions those services.

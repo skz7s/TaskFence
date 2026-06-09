@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+description = "Agent invocation profiles and policy templates for TaskFence."
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 taskfence-core.workspace = true
