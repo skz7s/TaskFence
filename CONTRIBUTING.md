@@ -7,24 +7,25 @@ prefer small, reviewable changes that preserve fail-closed behavior.
 ## Start Here
 
 1. Read [README.md](README.md) for the product status.
-2. Run the no-Docker path in [docs/quickstart.md](docs/quickstart.md).
-3. Review [examples/README.md](examples/README.md) before changing examples or
+2. Use [docs/README.md](docs/README.md) to choose the right reference path.
+3. Run the no-Docker path in [docs/quickstart.md](docs/quickstart.md).
+4. Review [examples/README.md](examples/README.md) before changing examples or
    claiming integration coverage.
-4. Read [docs/testing.md](docs/testing.md) before choosing validation scope or
+5. Read [docs/testing.md](docs/testing.md) before choosing validation scope or
    claiming integration coverage.
-5. Read [docs/cli-reference.md](docs/cli-reference.md) and
+6. Read [docs/cli-reference.md](docs/cli-reference.md) and
    [docs/task-file-reference.md](docs/task-file-reference.md) before changing
    public commands or task YAML.
-6. Read [docs/architecture.md](docs/architecture.md) and
+7. Read [docs/architecture.md](docs/architecture.md) and
    [docs/development-design.md](docs/development-design.md) before changing
    runtime boundaries.
-7. Read [docs/security-model.md](docs/security-model.md) before changing
+8. Read [docs/security-model.md](docs/security-model.md) before changing
    policy, approval, sandbox, gateway, audit, artifact, or secret behavior.
-8. Read [docs/versioning.md](docs/versioning.md) before changing MSRV,
+9. Read [docs/versioning.md](docs/versioning.md) before changing MSRV,
    task-file contracts, CLI behavior, or structured evidence formats.
-9. Read [docs/config/readiness-checklist.md](docs/config/readiness-checklist.md)
+10. Read [docs/config/readiness-checklist.md](docs/config/readiness-checklist.md)
    before describing a surface as beta or production ready.
-10. For governance or agent-rule changes, read
+11. For governance or agent-rule changes, read
    [governance/change-map.md](governance/change-map.md).
 
 ## Development Setup

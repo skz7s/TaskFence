@@ -14,6 +14,7 @@
 - `deploy/`
 - `governance/`
 - `docs/codex/`
+- `docs/README.md`
 - `docs/config/`
 - `docs/decisions/`
 - `examples/`
@@ -52,6 +53,7 @@
 - 稳定项目事实：`docs/codex/*.md` 与 `docs/config/*.md`
 - 文档位置规则：
   - `README.md` 只放项目入口、核心边界、最小命令和文档地图
+  - `docs/README.md` 放面向外部贡献者和维护者的文档索引
   - `docs/codex/project-structure.md` 放目录职责和文档布局
   - `docs/codex/structure-contract.md` 放模块边界、禁止耦合和长期架构约束
   - `docs/codex/runtime-architecture.md` 放已实现或已确认的运行时流程

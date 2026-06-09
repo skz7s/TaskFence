@@ -23,6 +23,8 @@ development snapshots and readiness milestones.
   Docker integration prerequisites, and skipped coverage reporting.
 - Repository metadata defaults for editor settings, Git text normalization,
   generated-governance language statistics, and binary/archive attributes.
+- Documentation index organized by contributor task, public preview interface,
+  runtime direction, security/release maintenance, and governance references.
 
 ### Current Preview Scope
 

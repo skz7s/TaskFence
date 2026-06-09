@@ -415,6 +415,7 @@ independent and does not require team state.
 
 ## Documentation
 
+- [Documentation Index](docs/README.md)
 - [Product Positioning](docs/positioning.md)
 - [Requirements](docs/requirements.md)
 - [Architecture](docs/architecture.md)
