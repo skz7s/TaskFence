@@ -80,12 +80,18 @@ Acceptance criteria:
 
 ### 2. Contributor Quickstart And Examples
 
-- Status: pending
+- Status: done
 - Scope: review README and examples for first-time contributor ergonomics,
   reduce ambiguity around Docker/image prerequisites, gateway secrets, and
   unsupported surfaces
 - Verification command: targeted docs/link checks plus example validation
-- Verification evidence: pending
+- Verification evidence: passed on 2026-06-09. Added no-Docker
+  `docs/quickstart.md`, `examples/README.md`, README links, contributing
+  guidance, and structure-doc ownership notes. Verified all example task files
+  with `cargo run -p taskfence-cli -- validate ...`, verified the deterministic
+  fixture gateway call with `cargo run -p taskfence-cli -- gateway call
+  examples/task.yaml github read_issue --param number=1`, ran `python3
+  scripts/governance/check_codex_governance.py`, and ran `git diff --check`.
 
 ### 3. Codebase Hardening Review
 

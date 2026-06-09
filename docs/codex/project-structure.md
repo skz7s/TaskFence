@@ -43,8 +43,10 @@
   - `docs/codex/runtime-architecture.md` 放已实现或已确认的运行时流程
   - `docs/codex/plans/*.md` 放 Codex plan mode 的活跃或阻塞持久化执行计划和 phase 状态
   - `docs/codex/plan_archived/*.md` 放已完成并记录最终证据的计划归档，保留原文件名
-  - `docs/config/*.md` 放环境变量、部署和操作参数
-  - `docs/decisions/*.md` 放持久治理、部署、依赖源、安全或架构决策记录
+- `docs/config/*.md` 放环境变量、部署和操作参数
+- `docs/decisions/*.md` 放持久治理、部署、依赖源、安全或架构决策记录
+- `docs/quickstart.md` 放首次贡献者无需 Docker/token 的成功路径
+- `examples/README.md` 放示例矩阵、运行要求和验证命令
   - `governance/*` 放治理生成、skill routing、profile 和变更同步规则
 - 运行时治理源码：`governance/*`
 - 可复用治理模板：由已安装的本地治理 catalog 提供；目标项目不要把 helper 源仓库本身当作模板真值

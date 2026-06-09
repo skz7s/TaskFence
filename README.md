@@ -211,9 +211,13 @@ permissions:
         max_amount: 100000
 ```
 
-See [examples/task.yaml](examples/task.yaml) for the runnable demo.
+See [examples/task.yaml](examples/task.yaml) for the runnable demo and
+[examples/README.md](examples/README.md) for the example matrix.
 
 ## Local Demo
+
+For a first pass that does not require Docker, SSH, database services, live
+GitHub credentials, or provider tokens, follow [Quickstart](docs/quickstart.md).
 
 Create a starter task file in the current directory with:
 
@@ -416,6 +420,7 @@ independent and does not require team state.
 - [Architecture](docs/architecture.md)
 - [Roadmap](docs/roadmap.md)
 - [Development Design](docs/development-design.md)
+- [Quickstart](docs/quickstart.md)
 - [Readiness Checklist](docs/config/readiness-checklist.md)
 - [Release Process](docs/release.md)
 - [Maintainer Guide](docs/maintainers.md)

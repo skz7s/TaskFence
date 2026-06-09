@@ -6,13 +6,16 @@ prefer small, reviewable changes that preserve fail-closed behavior.
 
 ## Start Here
 
-1. Read [README.md](README.md) for the product status and local demo.
-2. Read [docs/architecture.md](docs/architecture.md) and
+1. Read [README.md](README.md) for the product status.
+2. Run the no-Docker path in [docs/quickstart.md](docs/quickstart.md).
+3. Review [examples/README.md](examples/README.md) before changing examples or
+   claiming integration coverage.
+4. Read [docs/architecture.md](docs/architecture.md) and
    [docs/development-design.md](docs/development-design.md) before changing
    runtime boundaries.
-3. Read [docs/config/readiness-checklist.md](docs/config/readiness-checklist.md)
+5. Read [docs/config/readiness-checklist.md](docs/config/readiness-checklist.md)
    before describing a surface as beta or production ready.
-4. For governance or agent-rule changes, read
+6. For governance or agent-rule changes, read
    [governance/change-map.md](governance/change-map.md).
 
 ## Development Setup
