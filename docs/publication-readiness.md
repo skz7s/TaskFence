@@ -34,8 +34,8 @@ Current remote status observed from this checkout:
 - GitHub repository rulesets: not confirmed; the GitHub API returned a
   private-repository plan/visibility restriction when queried from this
   checkout
-- Issue template labels observed: `bug`, `enhancement`, `documentation`, and
-  `question` all exist
+- Issue template and Dependabot labels observed: `bug`, `enhancement`,
+  `documentation`, `question`, and `dependencies` all exist
 - Supported public status after publication: local preview only
 
 ## Local Evidence Ready
