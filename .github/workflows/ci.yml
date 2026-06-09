@@ -47,6 +47,9 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --locked
 
+      - name: Check package manifests
+        run: cargo package --workspace --no-verify
+
   governance:
     name: Governance and readiness
     runs-on: ubuntu-latest

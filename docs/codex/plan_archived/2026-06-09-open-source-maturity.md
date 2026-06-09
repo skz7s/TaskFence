@@ -112,15 +112,37 @@ Acceptance criteria:
 
 ### 4. Release Candidate Pass
 
-- Status: pending
+- Status: done
 - Scope: run release/readiness gate, update final release notes, archive this
   plan when all phases are terminal, and prepare for operator-approved merge or
   push
 - Verification command: full documented release gate
-- Verification evidence: pending
+- Verification evidence: passed on 2026-06-09. Ran `bash deploy/manage.sh
+  readiness`, `bash -n deploy/manage.sh`, `cargo fmt --all --check`, `cargo
+  check --workspace --locked`, `cargo clippy --workspace --all-targets --locked
+  -- -D warnings`, `cargo test --workspace --locked`, `cargo package
+  --workspace --no-verify`, `python3 scripts/governance/build_agents.py
+  --check`, `python3 scripts/governance/check_codex_governance.py`, and `git
+  diff --check`. Docker integration test remained ignored because it requires a
+  Docker daemon and a locally available test image. Full package verification
+  above `taskfence-core` remains gated on dependency-order publication.
 
 ## Commit Plan
 
-1. `docs: add open source collaboration and release readiness`
-2. `ci: add repository validation workflows`
-3. `rust: tighten package metadata and maturity gaps`
+1. `docs: add open source release shell` - `3b1e4ad`
+2. `docs: improve quickstart and examples` - `7260fbf`
+3. `rust: harden package metadata` - `0eea433`
+4. `docs: archive open source maturity plan` - `39c3cc1`
+
+## Final Evidence
+
+- Public collaboration and release shell added: contribution, conduct,
+  security, support, changelog, release, maintainer, issue/PR templates,
+  Dependabot, and GitHub Actions.
+- First-contributor path added: no-Docker quickstart, examples matrix, README
+  and contributing links.
+- Package metadata hardened: Rust 1.88 MSRV, repository/homepage/docs metadata,
+  crate descriptions, categories, keywords, readme inheritance, and versioned
+  internal path dependencies.
+- Final release gate passed locally on 2026-06-09 with the limitations recorded
+  above.

@@ -68,9 +68,9 @@ packages from crates.io.
 
 ## Repository Automation
 
-GitHub Actions checks the Rust workspace gate with locked dependencies,
-generated-governance drift, governance asset health, shell syntax, and
-readiness output for pull requests and pushes to `main`. Dependabot proposes
-Cargo and GitHub Actions dependency updates weekly. CI does not imply Docker,
-database, remote runner, or live connector integration coverage unless a
+GitHub Actions checks the Rust workspace gate with locked dependencies, package
+manifest inclusion, generated-governance drift, governance asset health, shell
+syntax, and readiness output for pull requests and pushes to `main`. Dependabot
+proposes Cargo and GitHub Actions dependency updates weekly. CI does not imply
+Docker, database, remote runner, or live connector integration coverage unless a
 workflow explicitly provisions those services.
