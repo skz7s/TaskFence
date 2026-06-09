@@ -421,6 +421,9 @@ independent and does not require team state.
 - [Roadmap](docs/roadmap.md)
 - [Development Design](docs/development-design.md)
 - [Quickstart](docs/quickstart.md)
+- [Security Model](docs/security-model.md)
+- [Versioning And Compatibility](docs/versioning.md)
+- [Supply-Chain Maintenance](docs/supply-chain.md)
 - [Readiness Checklist](docs/config/readiness-checklist.md)
 - [Release Process](docs/release.md)
 - [Maintainer Guide](docs/maintainers.md)
@@ -437,7 +440,9 @@ independent and does not require team state.
 ## Development
 
 TaskFence uses a Rust workspace rooted at `Cargo.toml`. The workspace currently
-targets Rust 1.88 or newer.
+targets Rust 1.88 or newer. See
+[Versioning And Compatibility](docs/versioning.md) before changing MSRV,
+task-file contracts, CLI behavior, or structured evidence shapes.
 
 Core validation gates:
 
@@ -470,6 +475,8 @@ GitHub Actions runs the Rust workspace gate, generated-governance drift checks,
 shell syntax check, and readiness output on pull requests. Docker, database,
 remote runner, and live connector integration tests still require matching
 local services or credentials and must be called out explicitly when skipped.
+See [Supply-Chain Maintenance](docs/supply-chain.md) for dependency update and
+external advisory-tool expectations.
 
 ## Initial Scope
 

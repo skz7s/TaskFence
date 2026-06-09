@@ -13,6 +13,8 @@ development snapshots and readiness milestones.
   release, and maintainer workflows.
 - GitHub pull request, issue, and CI scaffolding for standard repository
   validation.
+- Public security model, versioning and compatibility policy, and supply-chain
+  maintenance policy for preview releases.
 
 ### Current Preview Scope
 

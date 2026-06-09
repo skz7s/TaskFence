@@ -13,9 +13,13 @@ prefer small, reviewable changes that preserve fail-closed behavior.
 4. Read [docs/architecture.md](docs/architecture.md) and
    [docs/development-design.md](docs/development-design.md) before changing
    runtime boundaries.
-5. Read [docs/config/readiness-checklist.md](docs/config/readiness-checklist.md)
+5. Read [docs/security-model.md](docs/security-model.md) before changing
+   policy, approval, sandbox, gateway, audit, artifact, or secret behavior.
+6. Read [docs/versioning.md](docs/versioning.md) before changing MSRV,
+   task-file contracts, CLI behavior, or structured evidence formats.
+7. Read [docs/config/readiness-checklist.md](docs/config/readiness-checklist.md)
    before describing a surface as beta or production ready.
-6. For governance or agent-rule changes, read
+8. For governance or agent-rule changes, read
    [governance/change-map.md](governance/change-map.md).
 
 ## Development Setup
@@ -56,6 +60,10 @@ For shell script changes, run:
 ```bash
 bash -n deploy/manage.sh
 ```
+
+Dependency updates should also follow
+[docs/supply-chain.md](docs/supply-chain.md), including MSRV review and release
+note limitations for unavailable external audit tools.
 
 ## Security Expectations
 

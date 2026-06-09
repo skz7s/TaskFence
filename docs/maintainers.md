@@ -6,7 +6,8 @@ This guide captures repository maintenance expectations for TaskFence.
 
 Review runtime changes in this order:
 
-1. Security boundary correctness and fail-closed behavior.
+1. Security boundary correctness and fail-closed behavior against
+   [docs/security-model.md](security-model.md).
 2. Typed contracts at crate boundaries.
 3. Evidence quality for audit, reports, approvals, and artifacts.
 4. Documentation accuracy and readiness claims.
@@ -44,10 +45,20 @@ python3 scripts/governance/check_codex_governance.py
 Before tagging or publishing:
 
 1. Confirm `docs/config/readiness-checklist.md` matches implemented behavior.
-2. Update `CHANGELOG.md`.
-3. Run the release gate in [docs/release.md](release.md).
-4. Record unavailable integration coverage.
-5. Confirm crate/package metadata and repository URLs are correct.
+2. Confirm [docs/security-model.md](security-model.md),
+   [docs/versioning.md](versioning.md), and
+   [docs/supply-chain.md](supply-chain.md) match the release claims.
+3. Update `CHANGELOG.md`.
+4. Run the release gate in [docs/release.md](release.md).
+5. Record unavailable integration and external audit-tool coverage.
+6. Confirm crate/package metadata and repository URLs are correct.
+
+## Compatibility Stewardship
+
+During `0.x` preview releases, maintainers may make breaking changes when the
+security boundary or unstable contracts require them. Release notes must call
+out task-file, CLI, audit-event, gateway, runner, state, and MSRV impact, and
+must include migration notes when users can act on them.
 
 ## Incident Handling
 

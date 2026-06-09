@@ -3,11 +3,15 @@
 TaskFence exists to constrain AI agent execution, so security reports are
 treated as high priority even while the project is in local preview.
 
+For the trust boundaries, protected assets, secure defaults, and current
+preview limitations, read [docs/security-model.md](docs/security-model.md).
+
 ## Supported Versions
 
 TaskFence has not made a stable production release yet. Security fixes are
 handled on the main development line until the first versioned release branch
-exists.
+exists. Compatibility expectations for preview releases are documented in
+[docs/versioning.md](docs/versioning.md).
 
 ## Reporting A Vulnerability
 

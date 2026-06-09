@@ -15,6 +15,11 @@ support before it exists.
 
 The current project status is local preview.
 
+Versioning and compatibility expectations are documented in
+[docs/versioning.md](versioning.md). A release must not claim stable CLI,
+task-file, audit-event, gateway, runner, or state compatibility beyond that
+policy.
+
 ## Pre-Release Checklist
 
 Run from the repository root:
@@ -38,6 +43,11 @@ When Docker, database, remote runner, or live connector integration tests are
 unavailable, record that limitation in release notes instead of claiming
 coverage.
 
+Follow [docs/supply-chain.md](supply-chain.md) for dependency-update review,
+package publication checks, and optional external advisory/license/source
+checks. `cargo-audit` and `cargo-deny` are recommended when available, but they
+are not mandatory release gates until configured in this repository and CI.
+
 ## Release Notes
 
 Each release note should include:
@@ -47,13 +57,15 @@ Each release note should include:
 - unsupported surfaces
 - security-relevant changes
 - migration or compatibility notes
+- dependency and supply-chain notes
 - validation commands run
 - skipped integration tests and why they were skipped
 
 ## Publication
 
 Crates should not be published until crate descriptions, README links, licensing
-metadata, API stability expectations, and semver policy have been reviewed.
+metadata, API stability expectations, compatibility policy, and semver impact
+have been reviewed.
 Run `cargo package -p taskfence-core` as the first full packaging verification.
 Other TaskFence crates depend on internal crates by version plus path, so their
 full `cargo package` verification will resolve those internal dependencies from

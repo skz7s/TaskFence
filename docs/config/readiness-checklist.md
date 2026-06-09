@@ -60,6 +60,10 @@ Docker, database, remote runner, and live connector integration tests require
 matching local services or credentials. When unavailable, record the exact
 limitation in release notes instead of claiming coverage.
 
+Release notes must also follow the security, compatibility, and supply-chain
+policy in `docs/security-model.md`, `docs/versioning.md`, and
+`docs/supply-chain.md`.
+
 For the first crates.io publish wave, `cargo package -p taskfence-core` is the
 only full package verification expected to pass before internal TaskFence crates
 are published. Other crates have versioned internal path dependencies and
