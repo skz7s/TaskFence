@@ -16,9 +16,23 @@ Current remote status observed from this checkout:
 - GitHub projects: enabled
 - GitHub wiki: disabled
 - GitHub discussions: disabled
-- GitHub vulnerability alerts: disabled when queried from this checkout
+- GitHub Actions workflows on `main`: none observed yet; CI config exists on
+  the working branch and must be pushed or merged before final publication
+  validation
+- GitHub vulnerability alerts: enabled; the API returned `204 No Content` when
+  queried from this checkout
+- GitHub Dependabot alerts: enabled; the open-alert query returned `200 OK`
+  from this checkout
+- GitHub Dependabot automated security fixes: enabled; the API returned
+  `200 OK` when queried from this checkout
+- GitHub secret scanning: disabled when queried from this checkout
+- GitHub private vulnerability reporting: not confirmed; the API returned
+  `404 Not Found` when queried from this checkout
 - GitHub branch protection for `main`: not confirmed; the GitHub API returned
   a private-repository plan/visibility restriction when queried from this
+  checkout
+- GitHub repository rulesets: not confirmed; the GitHub API returned a
+  private-repository plan/visibility restriction when queried from this
   checkout
 - Issue template labels observed: `bug`, `enhancement`, `documentation`, and
   `question` all exist
@@ -71,20 +85,23 @@ repository settings outside the worktree:
   contact path exists in the repository profile
 - branch protection or rulesets require the CI workflow on `main`
 - GitHub secret scanning and push protection are enabled when available
-- Dependabot alerts and security updates are enabled when available
+- Dependabot alerts and security updates remain enabled
 - issue labels referenced by templates exist or are acceptable for GitHub to
   create on first use
 - repository description, topics, homepage, and profile contact path match the
   local-preview status
+- CI workflow files from this branch have been merged to `main`, and the latest
+  `main` workflow run is green
 
 These settings are external state; do not claim they are configured unless
 verified in GitHub.
 
 As of the latest local audit, the repository still needs external GitHub
-settings review before publication because vulnerability alerts are disabled,
-branch protection was not confirmable through the API while the repository
-remained private, and private vulnerability reporting, secret scanning, push
-protection, and Dependabot security updates still need maintainer confirmation.
+settings review before publication because CI is not present on the remote
+default branch yet, branch protection and rulesets were not confirmable through
+the API while the repository remained private, and private vulnerability
+reporting, secret scanning, and push protection still need maintainer
+confirmation.
 
 ## Publication Steps
 
