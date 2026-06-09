@@ -1,0 +1,50 @@
+name: Documentation issue
+description: Report missing, stale, unclear, or incorrect TaskFence documentation.
+title: "docs: "
+labels:
+  - documentation
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include secrets, tokens, private URLs, customer data, or credential-bearing logs.
+        Use the security reporting path for approval bypass, sandbox escape, secret exposure, or audit integrity issues.
+  - type: textarea
+    id: location
+    attributes:
+      label: Documentation location
+      description: Link or name the page, section, command, or example involved.
+      placeholder: docs/quickstart.md
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is missing, stale, confusing, or incorrect?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected documentation
+      description: What should the documentation explain or say instead?
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      options:
+        - Quickstart
+        - CLI reference
+        - Task file reference
+        - Examples
+        - Security model
+        - Testing or release
+        - Architecture or roadmap
+        - Governance
+        - Other
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation tried
+      description: Commands run, docs checked, or behavior observed.

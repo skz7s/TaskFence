@@ -43,8 +43,8 @@
   trailing-whitespace behavior, and common indentation sizes.
 - `.gitattributes`: Git text normalization, generated-governance linguist
   hints, and binary/archive treatment.
-- `.github/`: pull request template, issue templates, Dependabot config, and
-  CI workflows for the public repository.
+- `.github/`: pull request template, bug/feature/documentation/support issue
+  templates, Dependabot config, and CI workflows for the public repository.
 - `.gitignore`: build outputs, runtime task state, example demo output, and
   machine-local helper environment facts.
 

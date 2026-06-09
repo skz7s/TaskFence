@@ -31,6 +31,9 @@ development snapshots and readiness milestones.
   approvals.
 - README badges for CI, Apache-2.0 licensing, Rust MSRV, and local-preview
   readiness status.
+- GitHub issue routing for documentation issues and support questions, with
+  blank issues disabled to keep security and support reports on documented
+  paths.
 
 ### Current Preview Scope
 

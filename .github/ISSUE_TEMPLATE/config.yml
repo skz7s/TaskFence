@@ -1,5 +1,8 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
 contact_links:
+  - name: Documentation index
+    url: https://github.com/skz7s/TaskFence/blob/main/docs/README.md
+    about: Find quickstart, CLI, task-file, security, release, and governance references.
   - name: Security vulnerability
     url: https://github.com/skz7s/TaskFence/blob/main/SECURITY.md
     about: Report approval bypasses, sandbox escapes, secret exposure, or audit integrity issues privately.

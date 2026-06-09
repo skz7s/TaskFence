@@ -11,6 +11,10 @@ Use GitHub issues for:
 - feature proposals inside the TaskFence core boundary
 - validation or setup problems
 
+Use the matching issue template for bug reports, feature requests,
+documentation issues, or support questions. Blank issues are disabled so
+security reports and support requests are routed through the documented paths.
+
 Include:
 
 - TaskFence command and task file involved

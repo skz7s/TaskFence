@@ -1,0 +1,54 @@
+name: Support question
+description: Ask a usage or setup question inside the current local-preview boundary.
+title: "question: "
+labels:
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        TaskFence does not currently provide production support or service-level commitments.
+        Do not include secrets, tokens, private URLs, customer data, or credential-bearing logs.
+        Use the security reporting path for approval bypass, sandbox escape, secret exposure, or audit integrity issues.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What are you trying to understand or accomplish?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Include the TaskFence command, task file shape, runner, connector, or documentation page involved.
+      placeholder: cargo run -p taskfence-cli -- validate examples/task.yaml
+  - type: input
+    id: version
+    attributes:
+      label: TaskFence version or commit
+      placeholder: 0.1.0 or commit SHA
+  - type: input
+    id: rust
+    attributes:
+      label: Rust version
+      placeholder: rustc --version
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - Local preview CLI
+        - Task file configuration
+        - Docker runner demo
+        - Remote SSH runner
+        - Gateway connector
+        - Local review/replay
+        - Team state
+        - Governance/docs
+        - Other
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you tried
+      description: Commands run and a short summary of the result.
