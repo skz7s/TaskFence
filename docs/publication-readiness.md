@@ -9,6 +9,19 @@ Current remote status observed from this checkout:
 - Repository: `skz7s/TaskFence`
 - Default branch: `main`
 - GitHub visibility: private
+- GitHub description: empty
+- GitHub homepage URL: empty
+- GitHub topics: none observed
+- GitHub issues: enabled
+- GitHub projects: enabled
+- GitHub wiki: disabled
+- GitHub discussions: disabled
+- GitHub vulnerability alerts: disabled when queried from this checkout
+- GitHub branch protection for `main`: not confirmed; the GitHub API returned
+  a private-repository plan/visibility restriction when queried from this
+  checkout
+- Issue template labels observed: `bug`, `enhancement`, `documentation`, and
+  `question` all exist
 - Supported public status after publication: local preview only
 
 ## Local Evidence Ready
@@ -66,6 +79,11 @@ repository settings outside the worktree:
 
 These settings are external state; do not claim they are configured unless
 verified in GitHub.
+
+As of the latest local audit, the repository still needs external GitHub
+settings review before publication because the description, homepage, and
+topics are empty, vulnerability alerts are disabled, and branch protection was
+not confirmable through the API while the repository remained private.
 
 ## Publication Steps
 
