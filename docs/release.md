@@ -32,7 +32,7 @@ cargo check --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
-cargo package --workspace --no-verify
+cargo package --workspace --no-verify --locked
 python3 scripts/governance/build_agents.py --check
 python3 scripts/governance/check_codex_governance.py
 ```
@@ -78,9 +78,10 @@ Run `cargo package -p taskfence-core` as the first full packaging verification.
 Other TaskFence crates depend on internal crates by version plus path, so their
 full `cargo package` verification will resolve those internal dependencies from
 crates.io and requires publishing in dependency order. Before that first publish
-wave, use `cargo package --workspace --no-verify` to verify package manifests
-and included files without claiming that unpublished internal dependencies are
-already available from crates.io.
+wave, use `cargo package --workspace --no-verify --locked` to verify package
+manifests and included files against the committed dependency graph without
+claiming that unpublished internal dependencies are already available from
+crates.io.
 
 Keep [docs/installation.md](installation.md) aligned with the actual
 publication state. Do not document `cargo install`, package-manager installs,

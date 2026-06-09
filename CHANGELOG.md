@@ -41,6 +41,7 @@ development snapshots and readiness milestones.
   pull request validation.
 - Installation documentation for the supported source-build path, local binary
   commands, runtime prerequisites, and unsupported distribution channels.
+- Locked package manifest inspection in CI and release documentation.
 
 ### Current Preview Scope
 

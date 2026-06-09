@@ -56,7 +56,7 @@ cargo check --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
-cargo package --workspace --no-verify
+cargo package --workspace --no-verify --locked
 python3 scripts/governance/build_agents.py --check
 python3 scripts/governance/check_codex_governance.py
 ```

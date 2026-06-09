@@ -57,7 +57,7 @@ jobs:
         run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 
       - name: Check package manifests
-        run: cargo package --workspace --no-verify
+        run: cargo package --workspace --no-verify --locked
 
   governance:
     name: Governance and readiness

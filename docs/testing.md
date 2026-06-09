@@ -21,9 +21,9 @@ python3 scripts/governance/check_codex_governance.py
 
 GitHub Actions runs the Rust and governance surfaces above, plus shell syntax,
 readiness output, and package manifest inspection with
-`cargo package --workspace --no-verify`. CI cancels superseded runs on the same
-ref and uses job timeouts so public pull requests cannot consume unbounded
-runner time.
+`cargo package --workspace --no-verify --locked`. CI cancels superseded runs on
+the same ref and uses job timeouts so public pull requests cannot consume
+unbounded runner time.
 
 The default workspace test run covers all non-ignored tests and doc-tests. It
 does not prove Docker, database, live connector, remote host, or deployed

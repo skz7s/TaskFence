@@ -14,7 +14,7 @@ cargo check --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
-cargo package --workspace --no-verify
+cargo package --workspace --no-verify --locked
 python3 scripts/governance/build_agents.py --check
 python3 scripts/governance/check_codex_governance.py
 ```
@@ -63,10 +63,11 @@ Before publishing crates:
 - confirm each crate has license, repository, homepage, documentation, readme,
   description, keyword, category, and `rust-version` metadata
 - run `cargo package -p taskfence-core` as the first full package verification
-- use `cargo package --workspace --no-verify` before the first publish wave to
-  inspect package manifests and included files without pretending unpublished
-  internal crates already exist on crates.io
 - publish internal crates in dependency order
+- before that first publish wave, use
+  `cargo package --workspace --no-verify --locked` to inspect package
+  manifests and included files against the committed dependency graph without
+  pretending unpublished internal crates already exist on crates.io
 - do not publish artifacts, push tags, or merge release branches without
   operator approval
 
