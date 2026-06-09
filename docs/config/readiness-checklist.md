@@ -82,6 +82,8 @@ GitHub Actions checks the Rust workspace gate with locked dependencies, rustdoc
 generation with warnings denied, package manifest inclusion, generated-governance
 drift, governance asset health, shell syntax, and readiness output for pull
 requests and pushes to `main`. Dependabot proposes Cargo and GitHub Actions
-dependency updates weekly. CI does not imply Docker, database, remote runner, or
-live connector integration coverage unless a workflow explicitly provisions
-those services.
+dependency updates weekly. `.editorconfig` records editor whitespace defaults,
+and `.gitattributes` normalizes committed text to LF while marking generated
+governance output for repository statistics. CI does not imply Docker, database,
+remote runner, or live connector integration coverage unless a workflow
+explicitly provisions those services.

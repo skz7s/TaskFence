@@ -21,6 +21,8 @@ development snapshots and readiness milestones.
   gates.
 - Public testing strategy for default CI, focused crate checks, examples,
   Docker integration prerequisites, and skipped coverage reporting.
+- Repository metadata defaults for editor settings, Git text normalization,
+  generated-governance language statistics, and binary/archive attributes.
 
 ### Current Preview Scope
 

@@ -5,6 +5,9 @@
 ## 当前顶层目录
 
 - `Cargo.toml`
+- `.editorconfig`
+- `.gitattributes`
+- `.github/`
 - `.codex/skills/`
 - `.codex-helper/local-env.toml`
 - `crates/`
@@ -32,6 +35,17 @@
 - `crates/taskfence-report/`: Markdown report generation from structured task evidence.
 - `crates/taskfence-state/`: queryable task state store implementations.
 - `crates/taskfence-testkit/`: reusable fakes, fixtures, and test helpers.
+
+## Repository Metadata
+
+- `.editorconfig`: editor defaults for UTF-8, LF endings, final newlines,
+  trailing-whitespace behavior, and common indentation sizes.
+- `.gitattributes`: Git text normalization, generated-governance linguist
+  hints, and binary/archive treatment.
+- `.github/`: pull request template, issue templates, Dependabot config, and
+  CI workflows for the public repository.
+- `.gitignore`: build outputs, runtime task state, example demo output, and
+  machine-local helper environment facts.
 
 ## 文档与治理布局
 
