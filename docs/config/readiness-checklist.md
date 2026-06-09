@@ -17,6 +17,9 @@ deployment claim.
   team-state CLI/state-layer operations.
 - `deploy/manage.sh detect-env`, `doctor`, `setup`, `dev`, and `build` for
   repo-local Rust development and build checks.
+- Source checkout plus local Cargo build as the only supported installation
+  path; no crates.io, package-manager, signed binary, or production container
+  distribution is supported yet.
 
 ## Beta Candidates
 
@@ -74,7 +77,8 @@ For the first crates.io publish wave, `cargo package -p taskfence-core` is the
 only full package verification expected to pass before internal TaskFence crates
 are published. Other crates have versioned internal path dependencies and
 require dependency-order publication before full verification can resolve those
-packages from crates.io.
+packages from crates.io. Keep `docs/installation.md` aligned with that
+publication state.
 
 ## Repository Automation
 

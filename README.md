@@ -224,6 +224,9 @@ See [examples/task.yaml](examples/task.yaml) for the runnable demo and
 For a first pass that does not require Docker, SSH, database services, live
 GitHub credentials, or provider tokens, follow [Quickstart](docs/quickstart.md).
 
+For current installation status, source-build commands, and unsupported
+distribution paths, see [Installation](docs/installation.md).
+
 Create a starter task file in the current directory with:
 
 ```bash
@@ -426,6 +429,7 @@ independent and does not require team state.
 - [Architecture](docs/architecture.md)
 - [Roadmap](docs/roadmap.md)
 - [Development Design](docs/development-design.md)
+- [Installation](docs/installation.md)
 - [Quickstart](docs/quickstart.md)
 - [CLI Reference](docs/cli-reference.md)
 - [Task File Reference](docs/task-file-reference.md)

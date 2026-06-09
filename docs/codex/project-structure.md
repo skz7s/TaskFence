@@ -62,6 +62,7 @@
   - `docs/codex/plan_archived/*.md` 放已完成并记录最终证据的计划归档，保留原文件名
 - `docs/config/*.md` 放环境变量、部署和操作参数
 - `docs/decisions/*.md` 放持久治理、部署、依赖源、安全或架构决策记录
+- `docs/installation.md` 放当前源码构建安装路径、未发布包/二进制状态和分发边界
 - `docs/quickstart.md` 放首次贡献者无需 Docker/token 的成功路径
 - `docs/cli-reference.md` 放当前 preview CLI 命令、参数和本地证据工作流参考
 - `docs/task-file-reference.md` 放当前 preview task YAML 字段、默认值和 fail-closed 限制

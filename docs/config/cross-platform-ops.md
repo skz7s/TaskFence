@@ -17,6 +17,9 @@ or generalized by governance sync.
 - Default dependency policy is reuse-first: discover tools, record paths, and install missing tools only when the operator explicitly asks.
 - Current local development target is the Rust 1.88+ workspace rooted at
   `Cargo.toml`.
+- Current installation path is source checkout plus local Cargo build; see
+  `docs/installation.md`. Do not document package-manager or binary
+  installation until artifacts exist.
 - Current deployment target is not implemented. Do not add systemd, launchd, Docker image deployment, or persistent service behavior until a concrete TaskFence runtime command is ready.
 - The team-state foundation is a library and local CLI surface, including local audit-export artifact generation. It does not add a supported deployed API server, worker service, managed Postgres service, background audit-export service, port, launchd unit, systemd unit, or deployment command.
 - Do not generalize Ubuntu-only, Debian-only, macOS-only, WSL-specific, or other OS-specific deployment facts into generic Linux systemd support.

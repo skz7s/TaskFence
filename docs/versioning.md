@@ -37,7 +37,8 @@ dependencies use both `path` and `version` so local development works before
 publication and package metadata remains reviewable. A first crates.io publish
 wave must publish internal dependencies in dependency order. Until independent
 crate stability is documented, do not promise that individual TaskFence crates
-can be upgraded independently.
+can be upgraded independently. `docs/installation.md` must keep the public
+installation guidance aligned with the actual package publication state.
 
 ## Semver Policy During 0.x
 

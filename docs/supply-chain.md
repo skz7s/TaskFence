@@ -59,6 +59,7 @@ or an equivalent documented advisory/license/source gate and wire it into CI.
 
 Before publishing crates:
 
+- update `docs/installation.md` only when the install path actually exists
 - confirm each crate has license, repository, homepage, documentation, readme,
   description, keyword, category, and `rust-version` metadata
 - run `cargo package -p taskfence-core` as the first full package verification

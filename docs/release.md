@@ -82,5 +82,10 @@ wave, use `cargo package --workspace --no-verify` to verify package manifests
 and included files without claiming that unpublished internal dependencies are
 already available from crates.io.
 
+Keep [docs/installation.md](installation.md) aligned with the actual
+publication state. Do not document `cargo install`, package-manager installs,
+release binaries, or container images until those artifacts exist and their
+provenance expectations are recorded.
+
 Do not publish release artifacts, merge release branches, or push tags without
 operator approval.

@@ -3,6 +3,8 @@
 This guide gives new contributors a deterministic path that does not require
 Docker, SSH, database services, live GitHub credentials, or provider tokens.
 
+For source-build and installation status, read [Installation](installation.md).
+
 ## Prerequisites
 
 - Rust 1.88 or newer

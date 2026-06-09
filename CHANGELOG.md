@@ -39,6 +39,8 @@ development snapshots and readiness milestones.
   documenting crate responsibilities and preview boundaries.
 - GitHub Actions concurrency cancellation and job timeouts for bounded public
   pull request validation.
+- Installation documentation for the supported source-build path, local binary
+  commands, runtime prerequisites, and unsupported distribution channels.
 
 ### Current Preview Scope
 

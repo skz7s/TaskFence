@@ -6,6 +6,8 @@ surfaces and explicit limitations, not future production support.
 
 ## First-Time Contributors
 
+- [Installation](installation.md): current source-build path, local binary
+  commands, and unsupported distribution channels.
 - [Quickstart](quickstart.md): no-Docker validation and fixture gateway path.
 - [Contributing](../CONTRIBUTING.md): contribution workflow, validation, and
   security expectations.
