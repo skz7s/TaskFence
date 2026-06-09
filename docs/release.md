@@ -53,6 +53,11 @@ package publication checks, and optional external advisory/license/source
 checks. `cargo-audit` and `cargo-deny` are recommended when available, but they
 are not mandatory release gates until configured in this repository and CI.
 
+For the public repository visibility switch, use
+[docs/publication-readiness.md](publication-readiness.md). Repository
+publication is separate from crate publication, tags, release binaries,
+containers, or package-manager artifacts.
+
 ## Release Notes
 
 Start from [docs/release-notes-template.md](release-notes-template.md).

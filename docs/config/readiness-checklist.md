@@ -69,6 +69,9 @@ Use `docs/testing.md` for the current testing matrix, focused crate checks,
 example validation, Docker integration prerequisites, and live coverage
 reporting expectations.
 
+Use `docs/publication-readiness.md` for the repository visibility checklist,
+external GitHub settings, and public-repository publication boundary.
+
 Release notes must start from `docs/release-notes-template.md` and follow the
 security, compatibility, and supply-chain policy in `docs/security-model.md`,
 `docs/versioning.md`, and `docs/supply-chain.md`.

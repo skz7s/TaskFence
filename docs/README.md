@@ -48,6 +48,8 @@ surfaces and explicit limitations, not future production support.
 - [Release Notes Template](release-notes-template.md): reusable structure for
   release notes, validation evidence, skipped coverage, and publication
   approvals.
+- [Publication Readiness](publication-readiness.md): repository visibility
+  checklist, external GitHub settings, and publication boundary.
 - [Maintainer Guide](maintainers.md): review priorities, compatibility
   stewardship, and incident handling.
 - [Readiness Checklist](config/readiness-checklist.md): local preview, beta

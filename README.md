@@ -440,6 +440,7 @@ independent and does not require team state.
 - [Readiness Checklist](docs/config/readiness-checklist.md)
 - [Release Process](docs/release.md)
 - [Release Notes Template](docs/release-notes-template.md)
+- [Publication Readiness](docs/publication-readiness.md)
 - [Maintainer Guide](docs/maintainers.md)
 - [Decision Records](docs/decisions/README.md)
 

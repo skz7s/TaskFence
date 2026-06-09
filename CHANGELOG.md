@@ -44,6 +44,8 @@ development snapshots and readiness milestones.
 - Locked package manifest inspection in CI and release documentation.
 - Placeholder secret strings in tests avoid real provider-token shapes while
   preserving redaction coverage.
+- Publication readiness checklist for repository visibility, external GitHub
+  settings, local validation evidence, and unsupported production boundaries.
 
 ### Current Preview Scope
 

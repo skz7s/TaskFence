@@ -67,6 +67,11 @@ Before tagging or publishing:
 7. Record unavailable integration and external audit-tool coverage.
 8. Confirm crate/package metadata and repository URLs are correct.
 
+Before switching repository visibility to public, use
+[docs/publication-readiness.md](publication-readiness.md) and confirm the
+external GitHub settings listed there. Do not treat public repository
+visibility as crate publication, production support, or artifact release.
+
 ## Compatibility Stewardship
 
 During `0.x` preview releases, maintainers may make breaking changes when the
