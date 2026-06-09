@@ -68,6 +68,7 @@
 - `docs/security-model.md` 放面向外部审查的安全边界、受保护资产、威胁范围和当前限制
 - `docs/versioning.md` 放 preview 版本、MSRV、task-file、CLI、结构化证据和弃用兼容策略
 - `docs/supply-chain.md` 放依赖更新、外部审计工具、包发布和 secret/source hygiene 策略
+- `docs/release-notes-template.md` 放发布说明、跳过覆盖、供应链说明和发布批准的可复用结构
 - `examples/README.md` 放示例矩阵、运行要求和验证命令
   - `governance/*` 放治理生成、skill routing、profile 和变更同步规则
 - 运行时治理源码：`governance/*`

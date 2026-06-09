@@ -43,6 +43,9 @@ surfaces and explicit limitations, not future production support.
   publication, and advisory-tool expectations.
 - [Release Process](release.md): preview/beta/stable release gates and release
   note requirements.
+- [Release Notes Template](release-notes-template.md): reusable structure for
+  release notes, validation evidence, skipped coverage, and publication
+  approvals.
 - [Maintainer Guide](maintainers.md): review priorities, compatibility
   stewardship, and incident handling.
 - [Readiness Checklist](config/readiness-checklist.md): local preview, beta

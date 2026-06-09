@@ -51,9 +51,9 @@ cargo deny check advisories bans licenses sources
 ```
 
 If these tools are unavailable for a preview release, record the limitation in
-release notes instead of implying the checks passed. Before beta or stable
-support, add a reviewed `deny.toml` policy or an equivalent documented
-advisory/license/source gate and wire it into CI.
+release notes using `docs/release-notes-template.md` instead of implying the
+checks passed. Before beta or stable support, add a reviewed `deny.toml` policy
+or an equivalent documented advisory/license/source gate and wire it into CI.
 
 ## Package Publication Review
 

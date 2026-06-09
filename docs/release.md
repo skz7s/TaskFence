@@ -54,6 +54,8 @@ are not mandatory release gates until configured in this repository and CI.
 
 ## Release Notes
 
+Start from [docs/release-notes-template.md](release-notes-template.md).
+
 Each release note should include:
 
 - release type and version

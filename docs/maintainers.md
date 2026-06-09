@@ -50,9 +50,11 @@ Before tagging or publishing:
    [docs/supply-chain.md](supply-chain.md) match the release claims.
 3. Confirm [docs/testing.md](testing.md) matches the tested surfaces.
 4. Update `CHANGELOG.md`.
-5. Run the release gate in [docs/release.md](release.md).
-6. Record unavailable integration and external audit-tool coverage.
-7. Confirm crate/package metadata and repository URLs are correct.
+5. Draft release notes from
+   [docs/release-notes-template.md](release-notes-template.md).
+6. Run the release gate in [docs/release.md](release.md).
+7. Record unavailable integration and external audit-tool coverage.
+8. Confirm crate/package metadata and repository URLs are correct.
 
 ## Compatibility Stewardship
 

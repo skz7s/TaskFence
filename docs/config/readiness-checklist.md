@@ -66,9 +66,9 @@ Use `docs/testing.md` for the current testing matrix, focused crate checks,
 example validation, Docker integration prerequisites, and live coverage
 reporting expectations.
 
-Release notes must also follow the security, compatibility, and supply-chain
-policy in `docs/security-model.md`, `docs/versioning.md`, and
-`docs/supply-chain.md`.
+Release notes must start from `docs/release-notes-template.md` and follow the
+security, compatibility, and supply-chain policy in `docs/security-model.md`,
+`docs/versioning.md`, and `docs/supply-chain.md`.
 
 For the first crates.io publish wave, `cargo package -p taskfence-core` is the
 only full package verification expected to pass before internal TaskFence crates

@@ -25,6 +25,10 @@ development snapshots and readiness milestones.
   generated-governance language statistics, and binary/archive attributes.
 - Documentation index organized by contributor task, public preview interface,
   runtime direction, security/release maintenance, and governance references.
+- Release notes template for implemented surfaces, unsupported surfaces,
+  security changes, compatibility impact, validation evidence, skipped
+  integration coverage, supply-chain notes, known issues, and publication
+  approvals.
 
 ### Current Preview Scope
 
