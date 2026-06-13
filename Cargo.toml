@@ -38,7 +38,7 @@ serde_yaml = "0.9"
 postgres = "0.19"
 sha2 = "0.10"
 tempfile = "3.10"
-thiserror = "1.0"
+thiserror = "2.0"
 time = { version = "0.3", features = ["formatting", "macros", "serde"] }
 tokio = { version = "1.37", features = ["io-util", "macros", "process", "rt-multi-thread", "time"] }
 ureq = { version = "2.12", features = ["json"] }
