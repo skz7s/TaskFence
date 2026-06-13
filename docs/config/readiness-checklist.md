@@ -97,6 +97,9 @@ CODEOWNERS routes default pull request review to the public repository owner as
 a triage signal. Issue templates route bug reports, feature requests,
 documentation issues, and support questions; blank issues are disabled so
 security reports and support requests follow the documented paths.
+[docs/community-triage.md](../community-triage.md) records label use,
+reproduction expectations, unsupported-surface routing, and issue closure
+policy for public local-preview reports.
 `.editorconfig` records editor whitespace defaults, and `.gitattributes`
 normalizes committed text to LF while marking generated governance output for
 repository statistics. CI does not imply Docker, database, remote runner, or

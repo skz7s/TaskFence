@@ -59,12 +59,13 @@ python3 scripts/docs/check_markdown_links.py
 The repository should also have:
 
 - `README.md`, `docs/README.md`, `docs/installation.md`,
-  `docs/quickstart.md`, and `docs/troubleshooting.md` aligned with the
-  local-preview source-build path
+  `docs/quickstart.md`, `docs/troubleshooting.md`, and
+  `docs/community-triage.md` aligned with the local-preview source-build and
+  public issue-routing paths
 - `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `SUPPORT.md`, and
   `CHANGELOG.md`
-- GitHub Actions CI, Dependabot, pull request template, issue templates, and
-  CODEOWNERS review routing
+- GitHub Actions CI, Dependabot, pull request template, issue templates,
+  community triage guide, and CODEOWNERS review routing
 - `docs/security-model.md`, `docs/versioning.md`, `docs/testing.md`,
   `docs/supply-chain.md`, `docs/release.md`, and
   `docs/release-notes-template.md`

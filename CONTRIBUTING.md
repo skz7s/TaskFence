@@ -13,19 +13,21 @@ prefer small, reviewable changes that preserve fail-closed behavior.
    claiming integration coverage.
 5. Read [docs/testing.md](docs/testing.md) before choosing validation scope or
    claiming integration coverage.
-6. Read [docs/cli-reference.md](docs/cli-reference.md) and
+6. Read [docs/community-triage.md](docs/community-triage.md) before triaging
+   issues or adding public issue labels.
+7. Read [docs/cli-reference.md](docs/cli-reference.md) and
    [docs/task-file-reference.md](docs/task-file-reference.md) before changing
    public commands or task YAML.
-7. Read [docs/architecture.md](docs/architecture.md) and
+8. Read [docs/architecture.md](docs/architecture.md) and
    [docs/development-design.md](docs/development-design.md) before changing
    runtime boundaries.
-8. Read [docs/security-model.md](docs/security-model.md) before changing
+9. Read [docs/security-model.md](docs/security-model.md) before changing
    policy, approval, sandbox, gateway, audit, artifact, or secret behavior.
-9. Read [docs/versioning.md](docs/versioning.md) before changing MSRV,
+10. Read [docs/versioning.md](docs/versioning.md) before changing MSRV,
    task-file contracts, CLI behavior, or structured evidence formats.
-10. Read [docs/config/readiness-checklist.md](docs/config/readiness-checklist.md)
+11. Read [docs/config/readiness-checklist.md](docs/config/readiness-checklist.md)
    before describing a surface as beta or production ready.
-11. For governance or agent-rule changes, read
+12. For governance or agent-rule changes, read
    [governance/change-map.md](governance/change-map.md).
 
 ## Development Setup
@@ -96,6 +98,8 @@ Report vulnerabilities through [SECURITY.md](SECURITY.md), not public issues.
 - Keep changes scoped to one feature, fix, or documentation improvement.
 - `CODEOWNERS` routes default pull request review to the public repository
   owner; this is a triage path, not a support SLA.
+- Follow [docs/community-triage.md](docs/community-triage.md) when labeling,
+  closing, or asking for reproduction details on public issues.
 - Include tests for runtime behavior, especially deny/approval/error branches.
 - Update affected docs in the same change when commands, schema, examples,
   readiness status, or public behavior changes.

@@ -50,6 +50,8 @@ development snapshots and readiness milestones.
   preserving redaction coverage.
 - Publication readiness checklist for repository visibility, external GitHub
   settings, local validation evidence, and unsupported production boundaries.
+- Community triage guide for public issue labels, reproduction expectations,
+  unsupported-surface routing, and closure policy.
 
 ### Current Preview Scope
 

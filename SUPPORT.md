@@ -16,6 +16,8 @@ documentation issues, or support questions. Blank issues are disabled so
 security reports and support requests are routed through the documented paths.
 For local-preview setup and validation failures, check
 [docs/troubleshooting.md](docs/troubleshooting.md) before opening an issue.
+Maintainers triage public issues using
+[docs/community-triage.md](docs/community-triage.md).
 
 Include:
 

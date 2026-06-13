@@ -24,6 +24,14 @@ Add narrower code owners only when maintainers are explicitly confirmed for a
 subsystem. Do not use CODEOWNERS to imply support for production surfaces that
 remain unsupported in `docs/config/readiness-checklist.md`.
 
+## Issue Triage
+
+Use [docs/community-triage.md](community-triage.md) for public issue routing,
+label use, reproduction expectations, and closure decisions. Keep security
+reports, approval bypasses, sandbox escapes, credential exposure, and audit
+integrity concerns out of public issue threads and route them through
+[SECURITY.md](../SECURITY.md).
+
 ## Boundary Claims
 
 Do not describe a surface as production supported until it has:

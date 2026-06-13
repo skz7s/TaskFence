@@ -15,6 +15,9 @@ surfaces and explicit limitations, not future production support.
   security expectations.
 - [Testing Strategy](testing.md): CI gate, focused crate checks, examples,
   Docker prerequisites, and skipped coverage reporting.
+- [Community Triage](community-triage.md): issue routing, labels,
+  reproduction expectations, and closure policy for public local-preview
+  reports.
 - [Support Policy](../SUPPORT.md): current support boundary.
 
 ## Public Preview Interfaces

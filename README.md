@@ -435,6 +435,7 @@ independent and does not require team state.
 - [CLI Reference](docs/cli-reference.md)
 - [Task File Reference](docs/task-file-reference.md)
 - [Testing Strategy](docs/testing.md)
+- [Community Triage](docs/community-triage.md)
 - [Security Model](docs/security-model.md)
 - [Versioning And Compatibility](docs/versioning.md)
 - [Supply-Chain Maintenance](docs/supply-chain.md)
