@@ -8,7 +8,7 @@ Current remote status observed from this checkout:
 
 - Repository: `skz7s/TaskFence`
 - Default branch: `main`
-- GitHub visibility: private
+- GitHub visibility: public
 - GitHub description: `Secure runtime and gateway for AI agent tasks`
 - GitHub homepage URL: `https://github.com/skz7s/TaskFence#readme`
 - GitHub topics observed: `agents`, `ai`, `gateway`, `policy`, `sandbox`
@@ -16,24 +16,27 @@ Current remote status observed from this checkout:
 - GitHub projects: enabled
 - GitHub wiki: disabled
 - GitHub discussions: disabled
-- GitHub Actions workflows on `main`: none observed yet; CI config exists on
-  the working branch and must be pushed or merged before final publication
-  validation
+- GitHub Actions workflows on `main`: CI observed and green for commit
+  `ba2f73a959216d6edb773522b5384ef7d6d9f006`; run `27482469795` completed
+  successfully with `Minimum supported Rust`, `Rust workspace`, and
+  `Governance and readiness` jobs
 - GitHub vulnerability alerts: enabled; the API returned `204 No Content` when
   queried from this checkout
 - GitHub Dependabot alerts: enabled; the open-alert query returned `200 OK`
   from this checkout
 - GitHub Dependabot automated security fixes: enabled; the API returned
   `200 OK` when queried from this checkout
-- GitHub secret scanning: disabled when queried from this checkout
-- GitHub private vulnerability reporting: not confirmed; the API returned
-  `404 Not Found` when queried from this checkout
-- GitHub branch protection for `main`: not confirmed; the GitHub API returned
-  a private-repository plan/visibility restriction when queried from this
-  checkout
-- GitHub repository rulesets: not confirmed; the GitHub API returned a
-  private-repository plan/visibility restriction when queried from this
-  checkout
+- GitHub secret scanning: not confirmed; the secret scanning alerts API
+  returned `404 Not Found` when queried from this checkout after publication
+- GitHub private vulnerability reporting: enabled; the API returned `200 OK`
+  when queried from this checkout after publication
+- GitHub branch protection for `main`: enabled; required status checks are
+  strict and require `Minimum supported Rust`, `Rust workspace`, and
+  `Governance and readiness`; admins are enforced, linear history is required,
+  force pushes and deletions are disabled, and conversation resolution is
+  required
+- GitHub repository rulesets: none observed; the rulesets API returned an empty
+  list when queried from this checkout after publication
 - Issue template and Dependabot labels observed: `bug`, `enhancement`,
   `documentation`, `question`, and `dependencies` all exist
 - Supported public status after publication: local preview only
@@ -101,12 +104,12 @@ repository settings outside the worktree:
 These settings are external state; do not claim they are configured unless
 verified in GitHub.
 
-As of the latest local audit, the repository still needs external GitHub
-settings review before publication because CI is not present on the remote
-default branch yet, branch protection and rulesets were not confirmable through
-the API while the repository remained private, and private vulnerability
-reporting, secret scanning, and push protection still need maintainer
-confirmation.
+As of the latest local audit after publication, CI is present and green on
+`main`, branch protection requires the CI jobs listed above, private
+vulnerability reporting is enabled, and Dependabot alerts/security updates are
+enabled. Secret scanning and push protection still need maintainer confirmation
+because the secret scanning alerts API returned `404 Not Found` from this
+checkout.
 
 ## Publication Steps
 

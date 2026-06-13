@@ -100,6 +100,10 @@ security reports and support requests follow the documented paths.
 [docs/community-triage.md](../community-triage.md) records label use,
 reproduction expectations, unsupported-surface routing, and issue closure
 policy for public local-preview reports.
+The public `main` branch is protected with strict required status checks for
+`Minimum supported Rust`, `Rust workspace`, and `Governance and readiness`;
+admins are enforced, linear history is required, force pushes and branch
+deletions are disabled, and conversation resolution is required.
 `.editorconfig` records editor whitespace defaults, and `.gitattributes`
 normalizes committed text to LF while marking generated governance output for
 repository statistics. CI does not imply Docker, database, remote runner, or
